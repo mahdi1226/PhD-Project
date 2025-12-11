@@ -280,7 +280,7 @@ void assemble_ns_system_scalar(
                 const double kappa_theta = compute_susceptibility_nochetto(c_val, epsilon, kappa_0);
 
                 // Kelvin force: F_mag = μ₀ κ_θ (h·∇)h
-                const double coeff = mu_0 * kappa_theta;
+                const double coeff = -mu_0 * kappa_theta;
                 for (unsigned int i = 0; i < dim; ++i)
                 {
                     F_mag[i] = 0.0;
