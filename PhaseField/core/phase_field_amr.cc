@@ -23,9 +23,9 @@ void PhaseFieldProblem<dim>::refine_mesh()
         return;
     }
 
-    // -------------------------------------------------------------------------
+    // =========================================================================
     // Step 1: Compute refinement indicators based on |∇θ|
-    // -------------------------------------------------------------------------
+    // =========================================================================
     Logger::info("      Computing refinement indicators...");
     dealii::Vector<float> indicators(triangulation_.n_active_cells());
 
@@ -34,7 +34,7 @@ void PhaseFieldProblem<dim>::refine_mesh()
         theta_solution_,
         indicators);
 
-    // Scale by cell diameter
+    // Scale by cell diameter (Eq. 99)
     unsigned int cell_idx = 0;
     for (const auto& cell : theta_dof_handler_.active_cell_iterators())
     {
@@ -42,12 +42,12 @@ void PhaseFieldProblem<dim>::refine_mesh()
         ++cell_idx;
     }
 
-    // -------------------------------------------------------------------------
-    // Step 2: Mark cells (fixed fraction strategy)
-    // -------------------------------------------------------------------------
+    // =========================================================================
+    // Step 2: Mark cells (no coarsening for stability)
+    // =========================================================================
     Logger::info("      Marking cells...");
     dealii::GridRefinement::refine_and_coarsen_fixed_fraction(
-        triangulation_, indicators, 0.3, 0.03);
+        triangulation_, indicators, 0.3, 0.0);  // No coarsening
 
     // Enforce min/max refinement levels
     for (const auto& cell : triangulation_.active_cell_iterators())
@@ -56,27 +56,48 @@ void PhaseFieldProblem<dim>::refine_mesh()
             cell->clear_refine_flag();
         if (cell->level() <= static_cast<int>(params_.amr.min_level))
             cell->clear_coarsen_flag();
+        cell->clear_coarsen_flag();  // Always clear coarsen for stability
     }
 
-    // -------------------------------------------------------------------------
-    // Step 3: Prepare SolutionTransfer for all fields
-    // -------------------------------------------------------------------------
+    // Check if any refinement will happen
+    bool any_refinement = false;
+    for (const auto& cell : triangulation_.active_cell_iterators())
+    {
+        if (cell->refine_flag_set())
+        {
+            any_refinement = true;
+            break;
+        }
+    }
+
+    if (!any_refinement)
+    {
+        Logger::info("      No refinement needed");
+        return;
+    }
+
+    // =========================================================================
+    // Step 3: Create SolutionTransfer for each scalar field
+    // =========================================================================
     Logger::info("      Preparing solution transfer...");
 
-    dealii::SolutionTransfer<dim> theta_transfer(theta_dof_handler_);
-    dealii::SolutionTransfer<dim> theta_old_transfer(theta_dof_handler_);
-    dealii::SolutionTransfer<dim> psi_transfer(psi_dof_handler_);
-    dealii::SolutionTransfer<dim> mx_transfer(mx_dof_handler_);
-    dealii::SolutionTransfer<dim> my_transfer(my_dof_handler_);
-    dealii::SolutionTransfer<dim> mx_old_transfer(mx_dof_handler_);
-    dealii::SolutionTransfer<dim> my_old_transfer(my_dof_handler_);
-    dealii::SolutionTransfer<dim> phi_transfer(phi_dof_handler_);
-    dealii::SolutionTransfer<dim> ux_transfer(ux_dof_handler_);
-    dealii::SolutionTransfer<dim> uy_transfer(uy_dof_handler_);
-    dealii::SolutionTransfer<dim> ux_old_transfer(ux_dof_handler_);
-    dealii::SolutionTransfer<dim> uy_old_transfer(uy_dof_handler_);
-    dealii::SolutionTransfer<dim> p_transfer(p_dof_handler_);
+    dealii::SolutionTransfer<dim, dealii::Vector<double>> theta_transfer(theta_dof_handler_);
+    dealii::SolutionTransfer<dim, dealii::Vector<double>> theta_old_transfer(theta_dof_handler_);
+    dealii::SolutionTransfer<dim, dealii::Vector<double>> psi_transfer(psi_dof_handler_);
+    dealii::SolutionTransfer<dim, dealii::Vector<double>> mx_transfer(mx_dof_handler_);
+    dealii::SolutionTransfer<dim, dealii::Vector<double>> my_transfer(my_dof_handler_);
+    dealii::SolutionTransfer<dim, dealii::Vector<double>> mx_old_transfer(mx_dof_handler_);
+    dealii::SolutionTransfer<dim, dealii::Vector<double>> my_old_transfer(my_dof_handler_);
+    dealii::SolutionTransfer<dim, dealii::Vector<double>> phi_transfer(phi_dof_handler_);
+    dealii::SolutionTransfer<dim, dealii::Vector<double>> ux_transfer(ux_dof_handler_);
+    dealii::SolutionTransfer<dim, dealii::Vector<double>> uy_transfer(uy_dof_handler_);
+    dealii::SolutionTransfer<dim, dealii::Vector<double>> ux_old_transfer(ux_dof_handler_);
+    dealii::SolutionTransfer<dim, dealii::Vector<double>> uy_old_transfer(uy_dof_handler_);
+    dealii::SolutionTransfer<dim, dealii::Vector<double>> p_transfer(p_dof_handler_);
 
+    // =========================================================================
+    // Step 4: Prepare for coarsening and refinement
+    // =========================================================================
     triangulation_.prepare_coarsening_and_refinement();
 
     theta_transfer.prepare_for_coarsening_and_refinement(theta_solution_);
@@ -93,68 +114,122 @@ void PhaseFieldProblem<dim>::refine_mesh()
     uy_old_transfer.prepare_for_coarsening_and_refinement(uy_old_solution_);
     p_transfer.prepare_for_coarsening_and_refinement(p_solution_);
 
-    // -------------------------------------------------------------------------
-    // Step 4: Execute refinement
-    // -------------------------------------------------------------------------
+    // =========================================================================
+    // Step 5: Execute refinement
+    // =========================================================================
     Logger::info("      Executing mesh refinement...");
     triangulation_.execute_coarsening_and_refinement();
 
     Logger::info("        New cell count: " + std::to_string(triangulation_.n_active_cells()));
 
-    // -------------------------------------------------------------------------
-    // Step 5: Redistribute DoFs and rebuild systems
-    // -------------------------------------------------------------------------
+    // =========================================================================
+    // Step 6: Setup systems on new mesh
+    // =========================================================================
     Logger::info("      Redistributing DoFs...");
     setup_dof_handlers();
     setup_constraints();
     setup_sparsity_patterns();
 
-    // -------------------------------------------------------------------------
-    // Step 6: Transfer solutions to new mesh (new API: single argument)
-    // -------------------------------------------------------------------------
+    // =========================================================================
+    // Step 7: Interpolate solutions (following working example pattern)
+    // =========================================================================
     Logger::info("      Transferring solutions...");
 
-    // Resize and interpolate
-    theta_solution_.reinit(theta_dof_handler_.n_dofs());
-    theta_old_solution_.reinit(theta_dof_handler_.n_dofs());
-    psi_solution_.reinit(psi_dof_handler_.n_dofs());
-    mx_solution_.reinit(mx_dof_handler_.n_dofs());
-    my_solution_.reinit(my_dof_handler_.n_dofs());
-    mx_old_solution_.reinit(mx_dof_handler_.n_dofs());
-    my_old_solution_.reinit(my_dof_handler_.n_dofs());
-    phi_solution_.reinit(phi_dof_handler_.n_dofs());
-    ux_solution_.reinit(ux_dof_handler_.n_dofs());
-    uy_solution_.reinit(uy_dof_handler_.n_dofs());
-    ux_old_solution_.reinit(ux_dof_handler_.n_dofs());
-    uy_old_solution_.reinit(uy_dof_handler_.n_dofs());
-    p_solution_.reinit(p_dof_handler_.n_dofs());
+    // θ
+    {
+        dealii::Vector<double> tmp(theta_dof_handler_.n_dofs());
+        theta_transfer.interpolate(tmp);
+        theta_solution_ = tmp;
+    }
+    {
+        dealii::Vector<double> tmp(theta_dof_handler_.n_dofs());
+        theta_old_transfer.interpolate(tmp);
+        theta_old_solution_ = tmp;
+    }
 
-    theta_transfer.interpolate(theta_solution_);
-    theta_old_transfer.interpolate(theta_old_solution_);
-    psi_transfer.interpolate(psi_solution_);
-    mx_transfer.interpolate(mx_solution_);
-    my_transfer.interpolate(my_solution_);
-    mx_old_transfer.interpolate(mx_old_solution_);
-    my_old_transfer.interpolate(my_old_solution_);
-    phi_transfer.interpolate(phi_solution_);
-    ux_transfer.interpolate(ux_solution_);
-    uy_transfer.interpolate(uy_solution_);
-    ux_old_transfer.interpolate(ux_old_solution_);
-    uy_old_transfer.interpolate(uy_old_solution_);
-    p_transfer.interpolate(p_solution_);
+    // ψ
+    {
+        dealii::Vector<double> tmp(psi_dof_handler_.n_dofs());
+        psi_transfer.interpolate(tmp);
+        psi_solution_ = tmp;
+    }
 
-    // Apply constraints
+    // m_x
+    {
+        dealii::Vector<double> tmp(mx_dof_handler_.n_dofs());
+        mx_transfer.interpolate(tmp);
+        mx_solution_ = tmp;
+    }
+    {
+        dealii::Vector<double> tmp(mx_dof_handler_.n_dofs());
+        mx_old_transfer.interpolate(tmp);
+        mx_old_solution_ = tmp;
+    }
+
+    // m_y
+    {
+        dealii::Vector<double> tmp(my_dof_handler_.n_dofs());
+        my_transfer.interpolate(tmp);
+        my_solution_ = tmp;
+    }
+    {
+        dealii::Vector<double> tmp(my_dof_handler_.n_dofs());
+        my_old_transfer.interpolate(tmp);
+        my_old_solution_ = tmp;
+    }
+
+    // φ
+    {
+        dealii::Vector<double> tmp(phi_dof_handler_.n_dofs());
+        phi_transfer.interpolate(tmp);
+        phi_solution_ = tmp;
+    }
+
+    // u_x
+    {
+        dealii::Vector<double> tmp(ux_dof_handler_.n_dofs());
+        ux_transfer.interpolate(tmp);
+        ux_solution_ = tmp;
+    }
+    {
+        dealii::Vector<double> tmp(ux_dof_handler_.n_dofs());
+        ux_old_transfer.interpolate(tmp);
+        ux_old_solution_ = tmp;
+    }
+
+    // u_y
+    {
+        dealii::Vector<double> tmp(uy_dof_handler_.n_dofs());
+        uy_transfer.interpolate(tmp);
+        uy_solution_ = tmp;
+    }
+    {
+        dealii::Vector<double> tmp(uy_dof_handler_.n_dofs());
+        uy_old_transfer.interpolate(tmp);
+        uy_old_solution_ = tmp;
+    }
+
+    // p
+    {
+        dealii::Vector<double> tmp(p_dof_handler_.n_dofs());
+        p_transfer.interpolate(tmp);
+        p_solution_ = tmp;
+    }
+
+    // =========================================================================
+    // Step 8: Apply constraints
+    // =========================================================================
     theta_constraints_.distribute(theta_solution_);
     theta_constraints_.distribute(theta_old_solution_);
     psi_constraints_.distribute(psi_solution_);
     mx_constraints_.distribute(mx_solution_);
-    my_constraints_.distribute(my_solution_);
     mx_constraints_.distribute(mx_old_solution_);
+    my_constraints_.distribute(my_solution_);
     my_constraints_.distribute(my_old_solution_);
     phi_constraints_.distribute(phi_solution_);
     ux_constraints_.distribute(ux_solution_);
-    uy_constraints_.distribute(uy_solution_);
     ux_constraints_.distribute(ux_old_solution_);
+    uy_constraints_.distribute(uy_solution_);
     uy_constraints_.distribute(uy_old_solution_);
     p_constraints_.distribute(p_solution_);
 
