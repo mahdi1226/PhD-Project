@@ -8,7 +8,9 @@
 
 #include "core/phase_field.h"
 #include "assembly/ch_assembler.h"
+#include "assembly/poisson_assembler.h"
 #include "solvers/ch_solver.h"
+#include "solvers/poisson_solver.h"
 #include "utilities/tools.h"
 #include "diagnostics/ch_mms.h"
 
@@ -30,11 +32,12 @@
 template <int dim>
 PhaseFieldProblem<dim>::PhaseFieldProblem(const Parameters& params)
     : params_(params)
-      , fe_phase_(params.fe.degree_phase)
-      , theta_dof_handler_(triangulation_)
-      , psi_dof_handler_(triangulation_)
-      , time_(0.0)
-      , timestep_number_(0)
+    , fe_phase_(params.fe.degree_phase)
+    , theta_dof_handler_(triangulation_)
+    , psi_dof_handler_(triangulation_)
+    , phi_dof_handler_(triangulation_)
+    , time_(0.0)
+    , timestep_number_(0)
 {
 }
 
@@ -67,9 +70,11 @@ void PhaseFieldProblem<dim>::run()
     std::cout << "--- Setup Phase ---\n";
     setup_mesh();
     setup_dof_handlers();
-    setup_constraints(); // Will apply MMS Dirichlet BCs if enabled
+    setup_constraints();  // Will apply MMS Dirichlet BCs if enabled
     setup_ch_system();
-    initialize_solutions(); // Will use MMS ICs if enabled
+    if (params_.magnetic.enabled)
+        setup_poisson_system();
+    initialize_solutions();  // Will use MMS ICs if enabled
 
     const double h_min = get_min_h();
     std::cout << "[Info] Mesh h_min = " << h_min << "\n";
@@ -80,6 +85,13 @@ void PhaseFieldProblem<dim>::run()
     std::cout << "  gamma   = " << params_.ch.gamma << "\n";
     std::cout << "  dt      = " << params_.time.dt << "\n";
     std::cout << "  t_final = " << params_.time.t_final << "\n";
+    if (params_.magnetic.enabled)
+    {
+        std::cout << "  Magnetic: ENABLED\n";
+        std::cout << "  χ₀ (susceptibility) = " << params_.magnetization.chi_0 << "\n";
+        std::cout << "  Dipole intensity    = " << params_.dipoles.intensity_max << "\n";
+        std::cout << "  Dipole ramp time    = " << params_.dipoles.ramp_time << "\n";
+    }
     if (mms_mode)
     {
         std::cout << "  MMS mode: ENABLED (Dirichlet BCs)\n";
@@ -96,10 +108,10 @@ void PhaseFieldProblem<dim>::run()
     // Time loop
     std::cout << "\n--- Time Integration ---\n";
     std::cout << std::setw(8) << "Step"
-        << std::setw(12) << "Time"
-        << std::setw(14) << "Mass"
-        << std::setw(12) << "θ_min"
-        << std::setw(12) << "θ_max" << "\n";
+              << std::setw(12) << "Time"
+              << std::setw(14) << "Mass"
+              << std::setw(12) << "θ_min"
+              << std::setw(12) << "θ_max" << "\n";
     std::cout << std::string(58, '-') << "\n";
 
     const double dt = params_.time.dt;
@@ -112,8 +124,8 @@ void PhaseFieldProblem<dim>::run()
             current_dt = params_.time.t_final - time_;
 
         // For MMS: update BCs before each step (they depend on time)
-        //if (mms_mode)
-           // update_mms_boundary_constraints();
+        if (mms_mode)
+            update_mms_boundary_constraints();
 
         do_time_step(current_dt);
 
@@ -135,10 +147,10 @@ void PhaseFieldProblem<dim>::run()
             }
 
             std::cout << std::setw(8) << timestep_number_
-                << std::setw(12) << std::fixed << std::setprecision(4) << time_
-                << std::setw(14) << std::scientific << std::setprecision(6) << mass
-                << std::setw(12) << std::fixed << std::setprecision(4) << theta_min
-                << std::setw(12) << theta_max << "\n";
+                      << std::setw(12) << std::fixed << std::setprecision(4) << time_
+                      << std::setw(14) << std::scientific << std::setprecision(6) << mass
+                      << std::setw(12) << std::fixed << std::setprecision(4) << theta_min
+                      << std::setw(12) << theta_max << "\n";
         }
     }
 
@@ -165,14 +177,13 @@ void PhaseFieldProblem<dim>::do_time_step(double dt)
     // Save old solution
     theta_old_solution_ = theta_solution_;
 
-    // Time at end of this step (for MMS source terms)
+    // Time at end of this step (for MMS source terms and BCs)
     const double time_new = time_ + dt;
 
+    // For MMS: update BCs at new time before assembly
     if (params_.mms.enabled)
     {
-
-
-        update_mms_boundary_constraints(time_new);
+        update_mms_boundary_constraints();
     }
 
     // Assemble CH system
@@ -180,11 +191,11 @@ void PhaseFieldProblem<dim>::do_time_step(double dt)
         theta_dof_handler_,
         psi_dof_handler_,
         theta_old_solution_,
-        ux_dummy_, // Zero velocity for standalone CH
+        ux_dummy_,  // Zero velocity for standalone CH
         uy_dummy_,
         params_,
         dt,
-        time_new, // Time for MMS source terms
+        time_new,  // Time for MMS source terms
         theta_to_ch_map_,
         psi_to_ch_map_,
         ch_matrix_,
@@ -193,7 +204,7 @@ void PhaseFieldProblem<dim>::do_time_step(double dt)
     // Apply combined constraints (critical for AMR!)
     ch_combined_constraints_.condense(ch_matrix_, ch_rhs_);
 
-    // Solve
+    // Solve CH
     solve_ch_system(
         ch_matrix_,
         ch_rhs_,
@@ -206,6 +217,13 @@ void PhaseFieldProblem<dim>::do_time_step(double dt)
     // Apply individual constraints for consistency
     theta_constraints_.distribute(theta_solution_);
     psi_constraints_.distribute(psi_solution_);
+
+    // Solve Poisson (if magnetic enabled)
+    // θ changed → μ(θ) changed → solve for new φ
+    if (params_.magnetic.enabled)
+    {
+        solve_poisson();
+    }
 
     // Update time
     time_ += dt;
@@ -224,10 +242,16 @@ void PhaseFieldProblem<dim>::output_results(unsigned int step) const
     data_out.add_data_vector(theta_solution_, "theta");
     data_out.add_data_vector(psi_solution_, "psi");
 
+    // Add φ if magnetic enabled (same mesh/FE as θ)
+    if (params_.magnetic.enabled)
+    {
+        data_out.add_data_vector(phi_solution_, "phi");
+    }
+
     data_out.build_patches(params_.fe.degree_phase);
 
     std::string filename = params_.output.folder + "/solution_" +
-        dealii::Utilities::int_to_string(step, 4) + ".vtu";
+                           dealii::Utilities::int_to_string(step, 4) + ".vtu";
 
     std::ofstream output(filename);
     data_out.write_vtu(output);
@@ -241,7 +265,7 @@ double PhaseFieldProblem<dim>::compute_mass() const
 {
     dealii::QGauss<dim> quadrature(params_.fe.degree_phase + 1);
     dealii::FEValues<dim> fe_values(fe_phase_, quadrature,
-                                    dealii::update_values | dealii::update_JxW_values);
+        dealii::update_values | dealii::update_JxW_values);
 
     std::vector<double> theta_values(quadrature.size());
     double mass = 0.0;
@@ -297,7 +321,7 @@ void PhaseFieldProblem<dim>::compute_mms_errors() const
 // each time step. This is more expensive but necessary for MMS verification.
 // ============================================================================
 template <int dim>
-void PhaseFieldProblem<dim>::update_mms_boundary_constraints(double time)
+void PhaseFieldProblem<dim>::update_mms_boundary_constraints()
 {
     // Clear and rebuild individual constraints
     theta_constraints_.clear();
@@ -313,7 +337,7 @@ void PhaseFieldProblem<dim>::update_mms_boundary_constraints(double time)
         psi_dof_handler_,
         theta_constraints_,
         psi_constraints_,
-        time);
+        time_);
 
     theta_constraints_.close();
     psi_constraints_.close();
@@ -323,7 +347,7 @@ void PhaseFieldProblem<dim>::update_mms_boundary_constraints(double time)
 
     const unsigned int n_theta = theta_dof_handler_.n_dofs();
     const unsigned int n_psi = psi_dof_handler_.n_dofs();
-    //const unsigned int n_total = n_theta + n_psi;
+    const unsigned int n_total = n_theta + n_psi;
 
     // Map θ constraints to coupled system
     for (unsigned int i = 0; i < n_theta; ++i)
@@ -382,6 +406,58 @@ void PhaseFieldProblem<dim>::update_mms_boundary_constraints(double time)
     }
 
     ch_combined_constraints_.close();
+}
+
+// ============================================================================
+// solve_poisson() - Solve magnetostatic Poisson equation
+//
+// After CH step updates θ, we solve -∇·(μ(θ)∇φ) = 0 with dipole BCs.
+// ============================================================================
+template <int dim>
+void PhaseFieldProblem<dim>::solve_poisson()
+{
+    // Update BCs for current time (dipole field may be ramping)
+    update_poisson_constraints(time_);
+
+    // Assemble system
+    assemble_poisson_system<dim>(
+        phi_dof_handler_,
+        theta_dof_handler_,
+        theta_solution_,
+        params_,
+        phi_matrix_,
+        phi_rhs_,
+        phi_constraints_);
+
+    // Solve
+    solve_poisson_system(
+        phi_matrix_,
+        phi_rhs_,
+        phi_solution_,
+        phi_constraints_);
+}
+
+// ============================================================================
+// update_poisson_constraints() - Update Dirichlet BCs for current time
+//
+// Dipole field ramps up over time, so BCs change.
+// ============================================================================
+template <int dim>
+void PhaseFieldProblem<dim>::update_poisson_constraints(double time)
+{
+    phi_constraints_.clear();
+
+    // Hanging node constraints
+    dealii::DoFTools::make_hanging_node_constraints(phi_dof_handler_, phi_constraints_);
+
+    // Dirichlet BCs from dipole field
+    apply_poisson_dirichlet_bcs<dim>(
+        phi_dof_handler_,
+        params_,
+        time,
+        phi_constraints_);
+
+    phi_constraints_.close();
 }
 
 // ============================================================================

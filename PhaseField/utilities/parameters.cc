@@ -50,6 +50,16 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
         else if (arg == "--mms_t_init" && i + 1 < argc)
             params.mms.t_init = std::stod(argv[++i]);
 
+        // Magnetic
+        else if (arg == "--magnetic")
+            params.magnetic.enabled = true;
+        else if (arg == "--chi_m" && i + 1 < argc)
+            params.magnetization.chi_0 = std::stod(argv[++i]);
+        else if (arg == "--dipole_intensity" && i + 1 < argc)
+            params.dipoles.intensity_max = std::stod(argv[++i]);
+        else if (arg == "--dipole_ramp" && i + 1 < argc)
+            params.dipoles.ramp_time = std::stod(argv[++i]);
+
         // Output
         else if (arg == "--output_dir" && i + 1 < argc)
             params.output.folder = argv[++i];
@@ -63,17 +73,24 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
         // Help
         else if (arg == "--help" || arg == "-h")
         {
-            std::cout << "Cahn-Hilliard Standalone Test\n\n";
+            std::cout << "Phase Field Ferrofluid Solver\n\n";
             std::cout << "Usage: ./ferrofluid [options]\n\n";
             std::cout << "Options:\n";
             std::cout << "  --refinement <n>    Mesh refinement (default: 5)\n";
-            std::cout << "  --mms               Enable MMS verification mode\n";
-            std::cout << "  --mms_t_init <val>  MMS initial time (default: 0.1)\n";
             std::cout << "  --dt <val>          Time step (default: 5e-4)\n";
             std::cout << "  --t-final <val>     Final time (default: 2.0)\n";
             std::cout << "  --epsilon <val>     Interface thickness (default: 0.01)\n";
             std::cout << "  --gamma <val>       Mobility (default: 0.0002)\n";
             std::cout << "  --ic_type <n>       0=droplet, 1=flat, 2=perturbed\n";
+            std::cout << "\nMMS Verification:\n";
+            std::cout << "  --mms               Enable MMS verification mode\n";
+            std::cout << "  --mms_t_init <val>  MMS initial time (default: 0.1)\n";
+            std::cout << "\nMagnetic Field:\n";
+            std::cout << "  --magnetic          Enable magnetostatic Poisson solve\n";
+            std::cout << "  --chi_m <val>       Magnetic susceptibility (default: 0.5)\n";
+            std::cout << "  --dipole_intensity <val>  Dipole intensity (default: 6000)\n";
+            std::cout << "  --dipole_ramp <val>       Ramp time (default: 1.6)\n";
+            std::cout << "\nOutput:\n";
             std::cout << "  --output_dir <path> Output directory\n";
             std::cout << "  --output_frequency <n> Output every N steps\n";
             std::cout << "  --verbose / --quiet Verbosity control\n";
@@ -93,15 +110,17 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
         std::cout << "[Parameters]\n";
         std::cout << "  Domain: [" << params.domain.x_min << "," << params.domain.x_max
                   << "] x [" << params.domain.y_min << "," << params.domain.y_max << "]\n";
-        std::cout << "  IC type: " << params.ic.type << "\n";
-        if (params.mms.enabled)
-            std::cout << "  MMS: ENABLED (t_init=" << params.mms.t_init << ")\n";
         std::cout << "  Refinement: " << params.domain.initial_refinement << "\n";
         std::cout << "  CH: epsilon=" << params.ch.epsilon
                   << ", gamma=" << params.ch.gamma << "\n";
         std::cout << "  Time: dt=" << params.time.dt
                   << ", t_final=" << params.time.t_final << "\n";
-        std::cout << "  IC type: " << params.ic.type << "\n";
+        if (params.mms.enabled)
+            std::cout << "  MMS: ENABLED (t_init=" << params.mms.t_init << ")\n";
+        else
+            std::cout << "  IC type: " << params.ic.type << "\n";
+        if (params.magnetic.enabled)
+            std::cout << "  Magnetic: ENABLED (χ₀=" << params.magnetization.chi_0 << ")\n";
     }
 
     return params;
