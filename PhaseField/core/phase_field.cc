@@ -9,8 +9,10 @@
 #include "core/phase_field.h"
 #include "assembly/ch_assembler.h"
 #include "assembly/poisson_assembler.h"
+#include "assembly/ns_assembler.h"
 #include "solvers/ch_solver.h"
 #include "solvers/poisson_solver.h"
+#include "solvers/ns_solver.h"
 #include "utilities/tools.h"
 #include "diagnostics/ch_mms.h"
 
@@ -33,10 +35,14 @@
 template <int dim>
 PhaseFieldProblem<dim>::PhaseFieldProblem(const Parameters& params)
     : params_(params)
-    , fe_phase_(params.fe.degree_phase)
+    , fe_Q2_(params.fe.degree_velocity)   // Q2 for velocity, phase fields
+    , fe_Q1_(params.fe.degree_pressure)   // Q1 for pressure
     , theta_dof_handler_(triangulation_)
     , psi_dof_handler_(triangulation_)
     , phi_dof_handler_(triangulation_)
+    , ux_dof_handler_(triangulation_)
+    , uy_dof_handler_(triangulation_)
+    , p_dof_handler_(triangulation_)
     , time_(0.0)
     , timestep_number_(0)
 {
@@ -52,7 +58,9 @@ void PhaseFieldProblem<dim>::run()
 
     std::cout << "============================================================\n";
     if (mms_mode)
-        std::cout << "  Cahn-Hilliard Solver - MMS VERIFICATION MODE\n";
+        std::cout << "  Ferrofluid Solver - MMS VERIFICATION MODE\n";
+    else if (params_.ns.enabled)
+        std::cout << "  Ferrofluid Solver (CH + Poisson + NS)\n";
     else
         std::cout << "  Cahn-Hilliard Solver (Standalone Test)\n";
     std::cout << "  Reference: Nochetto et al. CMAME 309 (2016)\n";
@@ -75,6 +83,8 @@ void PhaseFieldProblem<dim>::run()
     setup_ch_system();
     if (params_.magnetic.enabled)
         setup_poisson_system();
+    if (params_.ns.enabled)
+        setup_ns_system();
     initialize_solutions();  // Will use MMS ICs if enabled
 
     const double h_min = get_min_h();
@@ -92,6 +102,16 @@ void PhaseFieldProblem<dim>::run()
         std::cout << "  χ₀ (susceptibility) = " << params_.magnetization.chi_0 << "\n";
         std::cout << "  Dipole intensity    = " << params_.dipoles.intensity_max << "\n";
         std::cout << "  Dipole ramp time    = " << params_.dipoles.ramp_time << "\n";
+    }
+    if (params_.ns.enabled)
+    {
+        std::cout << "  Navier-Stokes: ENABLED\n";
+        std::cout << "  ν_water = " << params_.ns.nu_water << "\n";
+        std::cout << "  ν_ferro = " << params_.ns.nu_ferro << "\n";
+        if (params_.gravity.enabled)
+        {
+            std::cout << "  Gravity: ENABLED (g = " << params_.gravity.magnitude << ")\n";
+        }
     }
     if (mms_mode)
     {
@@ -171,13 +191,23 @@ void PhaseFieldProblem<dim>::run()
 }
 
 // ============================================================================
-// do_time_step() - Single time step
+// do_time_step() - Single time step (staggered approach)
+//
+// Staggered scheme:
+//   1. Solve CH → new θ, ψ
+//   2. Solve Poisson → new φ (if magnetic)
+//   3. Solve NS → new u, p (if NS enabled)
 // ============================================================================
 template <int dim>
 void PhaseFieldProblem<dim>::do_time_step(double dt)
 {
-    // Save old solution
+    // Save old solutions
     theta_old_solution_ = theta_solution_;
+    if (params_.ns.enabled)
+    {
+        ux_old_solution_ = ux_solution_;
+        uy_old_solution_ = uy_solution_;
+    }
 
     // Time at end of this step (for MMS source terms and BCs)
     const double time_new = time_ + dt;
@@ -188,25 +218,29 @@ void PhaseFieldProblem<dim>::do_time_step(double dt)
         update_mms_boundary_constraints(time_new);
     }
 
-    // Assemble CH system
+    // ========================================================================
+    // Step 1: Solve Cahn-Hilliard
+    // ========================================================================
+    // Use actual velocity if NS enabled, otherwise zero
+    const dealii::Vector<double>& ux_for_ch = params_.ns.enabled ? ux_solution_ : ux_old_solution_;
+    const dealii::Vector<double>& uy_for_ch = params_.ns.enabled ? uy_solution_ : uy_old_solution_;
+
     assemble_ch_system<dim>(
         theta_dof_handler_,
         psi_dof_handler_,
         theta_old_solution_,
-        ux_dummy_,  // Zero velocity for standalone CH
-        uy_dummy_,
+        ux_for_ch,
+        uy_for_ch,
         params_,
         dt,
-        time_new,  // Time for MMS source terms
+        time_new,
         theta_to_ch_map_,
         psi_to_ch_map_,
         ch_matrix_,
         ch_rhs_);
 
-    // Apply combined constraints (critical for AMR!)
     ch_combined_constraints_.condense(ch_matrix_, ch_rhs_);
 
-    // Solve CH
     solve_ch_system(
         ch_matrix_,
         ch_rhs_,
@@ -216,15 +250,23 @@ void PhaseFieldProblem<dim>::do_time_step(double dt)
         theta_solution_,
         psi_solution_);
 
-    // Apply individual constraints for consistency
     theta_constraints_.distribute(theta_solution_);
     psi_constraints_.distribute(psi_solution_);
 
-    // Solve Poisson (if magnetic enabled)
-    // θ changed → μ(θ) changed → solve for new φ
+    // ========================================================================
+    // Step 2: Solve Poisson (if magnetic enabled)
+    // ========================================================================
     if (params_.magnetic.enabled)
     {
         solve_poisson();
+    }
+
+    // ========================================================================
+    // Step 3: Solve Navier-Stokes (if enabled)
+    // ========================================================================
+    if (params_.ns.enabled)
+    {
+        solve_ns();
     }
 
     // Update time
@@ -255,7 +297,27 @@ void PhaseFieldProblem<dim>::output_results(unsigned int step) const
         std::cout << "[Poisson] φ range: [" << phi_min << ", " << phi_max << "]\n";
     }
 
-    data_out.build_patches(params_.fe.degree_phase);
+    // Add velocity and pressure if NS enabled (same mesh/FE as θ for ux, uy)
+    if (params_.ns.enabled)
+    {
+        data_out.add_data_vector(ux_solution_, "ux");
+        data_out.add_data_vector(uy_solution_, "uy");
+
+        // Pressure needs separate DataOut (different FE)
+        // For now, we'll add it to a separate file or skip
+
+        // Diagnostic: print velocity magnitude range
+        double u_max = 0.0;
+        for (unsigned int i = 0; i < ux_solution_.size(); ++i)
+        {
+            double u_mag = std::sqrt(ux_solution_[i]*ux_solution_[i] +
+                                      uy_solution_[i]*uy_solution_[i]);
+            u_max = std::max(u_max, u_mag);
+        }
+        std::cout << "[NS] |u|_max = " << u_max << "\n";
+    }
+
+    data_out.build_patches(params_.fe.degree_velocity);
 
     std::string filename = params_.output.folder + "/solution_" +
                            dealii::Utilities::int_to_string(step, 4) + ".vtu";
@@ -270,8 +332,8 @@ void PhaseFieldProblem<dim>::output_results(unsigned int step) const
 template <int dim>
 double PhaseFieldProblem<dim>::compute_mass() const
 {
-    dealii::QGauss<dim> quadrature(params_.fe.degree_phase + 1);
-    dealii::FEValues<dim> fe_values(fe_phase_, quadrature,
+    dealii::QGauss<dim> quadrature(params_.fe.degree_velocity + 1);
+    dealii::FEValues<dim> fe_values(fe_Q2_, quadrature,
         dealii::update_values | dealii::update_JxW_values);
 
     std::vector<double> theta_values(quadrature.size());
@@ -464,6 +526,74 @@ void PhaseFieldProblem<dim>::update_poisson_constraints(double time)
         phi_constraints_);
 
     phi_constraints_.close();
+}
+
+// ============================================================================
+// solve_ns() - Solve Navier-Stokes system
+//
+// Uses current θ, ψ, φ to compute forces and solve for u, p.
+// ============================================================================
+template <int dim>
+void PhaseFieldProblem<dim>::solve_ns()
+{
+    // Assemble NS system
+    assemble_ns_system<dim>(
+        ux_dof_handler_,
+        uy_dof_handler_,
+        p_dof_handler_,
+        theta_dof_handler_,
+        psi_dof_handler_,
+        params_.magnetic.enabled ? &phi_dof_handler_ : nullptr,
+        ux_old_solution_,
+        uy_old_solution_,
+        theta_solution_,
+        psi_solution_,
+        params_.magnetic.enabled ? &phi_solution_ : nullptr,
+        params_,
+        params_.time.dt,
+        time_,
+        ux_to_ns_map_,
+        uy_to_ns_map_,
+        p_to_ns_map_,
+        ns_matrix_,
+        ns_rhs_);
+
+    // Apply constraints
+    ns_combined_constraints_.condense(ns_matrix_, ns_rhs_);
+
+    // Solve
+    solve_ns_system(
+        ns_matrix_,
+        ns_rhs_,
+        ns_solution_,
+        ns_combined_constraints_);
+
+    // Extract solutions
+    extract_ns_solutions(
+        ns_solution_,
+        ux_to_ns_map_,
+        uy_to_ns_map_,
+        p_to_ns_map_,
+        ux_solution_,
+        uy_solution_,
+        p_solution_);
+
+    // Apply individual constraints for consistency
+    ux_constraints_.distribute(ux_solution_);
+    uy_constraints_.distribute(uy_solution_);
+    p_constraints_.distribute(p_solution_);
+}
+
+// ============================================================================
+// update_ns_constraints() - Update NS boundary conditions
+//
+// For MMS or time-varying BCs. Currently no-slip is static.
+// ============================================================================
+template <int dim>
+void PhaseFieldProblem<dim>::update_ns_constraints()
+{
+    // Currently no-slip BCs are static (u = 0 on all boundaries)
+    // This method exists for future MMS or time-varying BC support
 }
 
 // ============================================================================

@@ -60,6 +60,20 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
         else if (arg == "--dipole_ramp" && i + 1 < argc)
             params.dipoles.ramp_time = std::stod(argv[++i]);
 
+        // Navier-Stokes
+        else if (arg == "--ns")
+            params.ns.enabled = true;
+        else if (arg == "--nu_water" && i + 1 < argc)
+            params.ns.nu_water = std::stod(argv[++i]);
+        else if (arg == "--nu_ferro" && i + 1 < argc)
+            params.ns.nu_ferro = std::stod(argv[++i]);
+        else if (arg == "--gravity")
+            params.gravity.enabled = true;
+        else if (arg == "--no-gravity")
+            params.gravity.enabled = false;
+        else if (arg == "--g_mag" && i + 1 < argc)
+            params.gravity.magnitude = std::stod(argv[++i]);
+
         // Output
         else if (arg == "--output_dir" && i + 1 < argc)
             params.output.folder = argv[++i];
@@ -90,6 +104,12 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             std::cout << "  --chi_m <val>       Magnetic susceptibility (default: 0.5)\n";
             std::cout << "  --dipole_intensity <val>  Dipole intensity (default: 6000)\n";
             std::cout << "  --dipole_ramp <val>       Ramp time (default: 1.6)\n";
+            std::cout << "\nNavier-Stokes:\n";
+            std::cout << "  --ns                Enable Navier-Stokes solve\n";
+            std::cout << "  --nu_water <val>    Water viscosity (default: 1.0)\n";
+            std::cout << "  --nu_ferro <val>    Ferrofluid viscosity (default: 2.0)\n";
+            std::cout << "  --gravity / --no-gravity  Enable/disable gravity\n";
+            std::cout << "  --g_mag <val>       Gravity magnitude (default: 30000)\n";
             std::cout << "\nOutput:\n";
             std::cout << "  --output_dir <path> Output directory\n";
             std::cout << "  --output_frequency <n> Output every N steps\n";
@@ -121,6 +141,9 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             std::cout << "  IC type: " << params.ic.type << "\n";
         if (params.magnetic.enabled)
             std::cout << "  Magnetic: ENABLED (χ₀=" << params.magnetization.chi_0 << ")\n";
+        if (params.ns.enabled)
+            std::cout << "  Navier-Stokes: ENABLED (ν_w=" << params.ns.nu_water
+                      << ", ν_f=" << params.ns.nu_ferro << ")\n";
     }
 
     return params;

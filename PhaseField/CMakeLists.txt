@@ -28,10 +28,13 @@ set(SOURCES
         core/phase_field_setup.cc
         assembly/ch_assembler.cc
         assembly/poisson_assembler.cc
+        assembly/ns_assembler.cc
         solvers/ch_solver.cc
         solvers/poisson_solver.cc
+        solvers/ns_solver.cc
         setup/ch_setup.cc
         setup/poisson_setup.cc
+        setup/ns_setup.cc
         diagnostics/ch_mms.cc
         utilities/parameters.cc
 )

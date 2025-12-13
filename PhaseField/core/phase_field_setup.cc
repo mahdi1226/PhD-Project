@@ -1,7 +1,7 @@
 // ============================================================================
 // core/phase_field_setup.cc - Setup Methods for Phase Field Problem
 //
-// Setup for CH + Poisson systems.
+// Setup for CH + Poisson + NS systems.
 //
 // Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
 // ============================================================================
@@ -10,6 +10,7 @@
 #include "diagnostics/ch_mms.h"
 #include "setup/ch_setup.h"
 #include "setup/poisson_setup.h"
+#include "setup/ns_setup.h"
 #include "assembly/poisson_assembler.h"
 
 #include <deal.II/grid/grid_generator.h>
@@ -76,40 +77,84 @@ void PhaseFieldProblem<dim>::setup_mesh()
 template <int dim>
 void PhaseFieldProblem<dim>::setup_dof_handlers()
 {
-    // Distribute DoFs for θ
-    theta_dof_handler_.distribute_dofs(fe_phase_);
-    const unsigned int n_theta = theta_dof_handler_.n_dofs();
+    // ========================================================================
+    // CH fields (θ, ψ) - Q2 elements
+    // ========================================================================
+    theta_dof_handler_.distribute_dofs(fe_Q2_);
+    psi_dof_handler_.distribute_dofs(fe_Q2_);
 
-    // Distribute DoFs for ψ (same FE, same mesh)
-    psi_dof_handler_.distribute_dofs(fe_phase_);
+    const unsigned int n_theta = theta_dof_handler_.n_dofs();
     const unsigned int n_psi = psi_dof_handler_.n_dofs();
 
-    // Resize solution vectors
     theta_solution_.reinit(n_theta);
     theta_old_solution_.reinit(n_theta);
     psi_solution_.reinit(n_psi);
 
-    // Dummy velocity (zero)
-    ux_dummy_.reinit(n_theta);  // Same size as θ for simplicity
-    uy_dummy_.reinit(n_theta);
-    ux_dummy_ = 0;
-    uy_dummy_ = 0;
-
-    // Poisson (if magnetic enabled)
+    // ========================================================================
+    // Poisson (φ) - Q2 elements (if magnetic enabled)
+    // ========================================================================
     if (params_.magnetic.enabled)
     {
-        phi_dof_handler_.distribute_dofs(fe_phase_);  // Same FE as θ
+        phi_dof_handler_.distribute_dofs(fe_Q2_);
         phi_solution_.reinit(phi_dof_handler_.n_dofs());
     }
 
-    if (params_.output.verbose)
+    // ========================================================================
+    // NS fields (ux, uy, p) - Q2 velocity, Q1 pressure (Taylor-Hood)
+    // ========================================================================
+    if (params_.ns.enabled)
     {
-        std::cout << "[Setup] DoFs: θ = " << n_theta
-                  << ", ψ = " << n_psi
-                  << ", total CH = " << (n_theta + n_psi);
-        if (params_.magnetic.enabled)
-            std::cout << ", φ = " << phi_dof_handler_.n_dofs();
-        std::cout << "\n";
+        ux_dof_handler_.distribute_dofs(fe_Q2_);
+        uy_dof_handler_.distribute_dofs(fe_Q2_);
+        p_dof_handler_.distribute_dofs(fe_Q1_);
+
+        const unsigned int n_ux = ux_dof_handler_.n_dofs();
+        const unsigned int n_uy = uy_dof_handler_.n_dofs();
+        const unsigned int n_p = p_dof_handler_.n_dofs();
+
+        ux_solution_.reinit(n_ux);
+        ux_old_solution_.reinit(n_ux);
+        uy_solution_.reinit(n_uy);
+        uy_old_solution_.reinit(n_uy);
+        p_solution_.reinit(n_p);
+
+        // Initialize velocity to zero
+        ux_solution_ = 0;
+        ux_old_solution_ = 0;
+        uy_solution_ = 0;
+        uy_old_solution_ = 0;
+        p_solution_ = 0;
+
+        if (params_.output.verbose)
+        {
+            std::cout << "[Setup] DoFs: θ = " << n_theta
+                      << ", ψ = " << n_psi
+                      << ", total CH = " << (n_theta + n_psi);
+            if (params_.magnetic.enabled)
+                std::cout << ", φ = " << phi_dof_handler_.n_dofs();
+            std::cout << ", ux = " << n_ux
+                      << ", uy = " << n_uy
+                      << ", p = " << n_p
+                      << ", total NS = " << (n_ux + n_uy + n_p) << "\n";
+        }
+    }
+    else
+    {
+        // Create dummy velocity vectors for CH assembly (zero velocity)
+        ux_old_solution_.reinit(n_theta);
+        uy_old_solution_.reinit(n_theta);
+        ux_old_solution_ = 0;
+        uy_old_solution_ = 0;
+
+        if (params_.output.verbose)
+        {
+            std::cout << "[Setup] DoFs: θ = " << n_theta
+                      << ", ψ = " << n_psi
+                      << ", total CH = " << (n_theta + n_psi);
+            if (params_.magnetic.enabled)
+                std::cout << ", φ = " << phi_dof_handler_.n_dofs();
+            std::cout << "\n";
+        }
     }
 }
 
@@ -208,6 +253,75 @@ void PhaseFieldProblem<dim>::setup_poisson_system()
     // Initialize matrix and RHS
     phi_matrix_.reinit(phi_sparsity_);
     phi_rhs_.reinit(phi_dof_handler_.n_dofs());
+}
+
+// ============================================================================
+// setup_ns_system()
+//
+// Sets up the Navier-Stokes system for (ux, uy, p).
+// Uses Taylor-Hood elements: Q2 velocity, Q1 pressure.
+// ============================================================================
+template <int dim>
+void PhaseFieldProblem<dim>::setup_ns_system()
+{
+    // ========================================================================
+    // Individual field constraints (hanging nodes + no-slip BCs)
+    // ========================================================================
+    ux_constraints_.clear();
+    uy_constraints_.clear();
+    p_constraints_.clear();
+
+    dealii::DoFTools::make_hanging_node_constraints(ux_dof_handler_, ux_constraints_);
+    dealii::DoFTools::make_hanging_node_constraints(uy_dof_handler_, uy_constraints_);
+    dealii::DoFTools::make_hanging_node_constraints(p_dof_handler_, p_constraints_);
+
+    // No-slip BCs: u = 0 on all boundaries (boundary IDs 0, 1, 2, 3)
+    for (unsigned int boundary_id = 0; boundary_id <= 3; ++boundary_id)
+    {
+        dealii::VectorTools::interpolate_boundary_values(
+            ux_dof_handler_,
+            boundary_id,
+            dealii::Functions::ZeroFunction<dim>(),
+            ux_constraints_);
+
+        dealii::VectorTools::interpolate_boundary_values(
+            uy_dof_handler_,
+            boundary_id,
+            dealii::Functions::ZeroFunction<dim>(),
+            uy_constraints_);
+    }
+
+    // No pressure BC (pressure is determined up to a constant)
+    // Could fix one pressure DoF if needed for uniqueness
+
+    ux_constraints_.close();
+    uy_constraints_.close();
+    p_constraints_.close();
+
+    // ========================================================================
+    // Build coupled NS system
+    // ========================================================================
+    setup_ns_coupled_system<dim>(
+        ux_dof_handler_,
+        uy_dof_handler_,
+        p_dof_handler_,
+        ux_constraints_,
+        uy_constraints_,
+        p_constraints_,
+        ux_to_ns_map_,
+        uy_to_ns_map_,
+        p_to_ns_map_,
+        ns_combined_constraints_,
+        ns_sparsity_,
+        params_.output.verbose);
+
+    // Initialize matrix and vectors
+    const unsigned int n_ns = ux_dof_handler_.n_dofs() +
+                               uy_dof_handler_.n_dofs() +
+                               p_dof_handler_.n_dofs();
+    ns_matrix_.reinit(ns_sparsity_);
+    ns_rhs_.reinit(n_ns);
+    ns_solution_.reinit(n_ns);
 }
 
 // ============================================================================

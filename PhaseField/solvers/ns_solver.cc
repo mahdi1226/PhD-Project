@@ -1,54 +1,46 @@
 // ============================================================================
-// solvers/ns_solver.cc - Navier-Stokes Solver
+// solvers/ns_solver.cc - Navier-Stokes Linear Solver Implementation
 //
 // Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
 // ============================================================================
 
-#include "ns_solver.h"
-#include "output/logger.h"
+#include "solvers/ns_solver.h"
 
 #include <deal.II/lac/sparse_direct.h>
 
-template <int dim>
-NSSolver<dim>::NSSolver(PhaseFieldProblem<dim>& problem)
-    : problem_(problem)
+void solve_ns_system(
+    const dealii::SparseMatrix<double>& matrix,
+    const dealii::Vector<double>& rhs,
+    dealii::Vector<double>& solution,
+    const dealii::AffineConstraints<double>& constraints)
 {
-    Logger::info("      NSSolver constructed");
-}
-
-template <int dim>
-void NSSolver<dim>::solve()
-{
-    const unsigned int n_u = problem_.ux_dof_handler_.n_dofs();
-    const unsigned int n_p = problem_.p_dof_handler_.n_dofs();
-    const unsigned int n_total = 2 * n_u + n_p;
-
-    dealii::Vector<double> solution(n_total);
-
+    // Use UMFPACK direct solver (robust for saddle point systems)
     dealii::SparseDirectUMFPACK solver;
-    solver.initialize(problem_.ns_matrix_);
-    solver.vmult(solution, problem_.ns_rhs_);
+    solver.initialize(matrix);
+    solver.vmult(solution, rhs);
 
-    // Extract u_x [0, n_u)
-    for (unsigned int i = 0; i < n_u; ++i)
-        problem_.ux_solution_[i] = solution[i];
-
-    // Extract u_y [n_u, 2*n_u)
-    for (unsigned int i = 0; i < n_u; ++i)
-        problem_.uy_solution_[i] = solution[n_u + i];
-
-    // Extract p [2*n_u, 2*n_u + n_p)
-    for (unsigned int i = 0; i < n_p; ++i)
-        problem_.p_solution_[i] = solution[2 * n_u + i];
-
-    problem_.ux_constraints_.distribute(problem_.ux_solution_);
-    problem_.uy_constraints_.distribute(problem_.uy_solution_);
-    problem_.p_constraints_.distribute(problem_.p_solution_);
-
-    // Remove pressure nullspace (mean-zero constraint)
-    const double p_mean = problem_.p_solution_.mean_value();
-    problem_.p_solution_.add(-p_mean);
+    // Apply constraints (distribute Dirichlet values)
+    constraints.distribute(solution);
 }
 
-template class NSSolver<2>;
-// template class NSSolver<3>;
+void extract_ns_solutions(
+    const dealii::Vector<double>& ns_solution,
+    const std::vector<dealii::types::global_dof_index>& ux_to_ns_map,
+    const std::vector<dealii::types::global_dof_index>& uy_to_ns_map,
+    const std::vector<dealii::types::global_dof_index>& p_to_ns_map,
+    dealii::Vector<double>& ux_solution,
+    dealii::Vector<double>& uy_solution,
+    dealii::Vector<double>& p_solution)
+{
+    // Extract ux
+    for (unsigned int i = 0; i < ux_to_ns_map.size(); ++i)
+        ux_solution[i] = ns_solution[ux_to_ns_map[i]];
+
+    // Extract uy
+    for (unsigned int i = 0; i < uy_to_ns_map.size(); ++i)
+        uy_solution[i] = ns_solution[uy_to_ns_map[i]];
+
+    // Extract p
+    for (unsigned int i = 0; i < p_to_ns_map.size(); ++i)
+        p_solution[i] = ns_solution[p_to_ns_map[i]];
+}
