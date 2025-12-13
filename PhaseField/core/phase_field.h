@@ -74,7 +74,7 @@ private:
     // MMS verification (in phase_field.cc)
     // ========================================================================
     void compute_mms_errors() const;
-    void update_mms_boundary_constraints();
+    void update_mms_boundary_constraints(double time);
 
     // ========================================================================
     // Data members

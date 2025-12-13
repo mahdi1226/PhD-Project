@@ -25,6 +25,7 @@
 #include <filesystem>
 #include <cmath>
 #include <limits>
+#include <algorithm>
 
 // ============================================================================
 // Constructor
@@ -103,6 +104,11 @@ void PhaseFieldProblem<dim>::run()
     }
 
     // Initial output
+    if (params_.magnetic.enabled)
+    {
+        // Solve Poisson once at t=0 to populate φ for initial output
+        solve_poisson();
+    }
     output_results(0);
 
     // Time loop
@@ -122,10 +128,6 @@ void PhaseFieldProblem<dim>::run()
         double current_dt = dt;
         if (time_ + current_dt > params_.time.t_final)
             current_dt = params_.time.t_final - time_;
-
-        // For MMS: update BCs before each step (they depend on time)
-        if (mms_mode)
-            update_mms_boundary_constraints();
 
         do_time_step(current_dt);
 
@@ -183,7 +185,7 @@ void PhaseFieldProblem<dim>::do_time_step(double dt)
     // For MMS: update BCs at new time before assembly
     if (params_.mms.enabled)
     {
-        update_mms_boundary_constraints();
+        update_mms_boundary_constraints(time_new);
     }
 
     // Assemble CH system
@@ -246,6 +248,11 @@ void PhaseFieldProblem<dim>::output_results(unsigned int step) const
     if (params_.magnetic.enabled)
     {
         data_out.add_data_vector(phi_solution_, "phi");
+
+        // Diagnostic: print φ range
+        double phi_min = *std::min_element(phi_solution_.begin(), phi_solution_.end());
+        double phi_max = *std::max_element(phi_solution_.begin(), phi_solution_.end());
+        std::cout << "[Poisson] φ range: [" << phi_min << ", " << phi_max << "]\n";
     }
 
     data_out.build_patches(params_.fe.degree_phase);
@@ -321,7 +328,7 @@ void PhaseFieldProblem<dim>::compute_mms_errors() const
 // each time step. This is more expensive but necessary for MMS verification.
 // ============================================================================
 template <int dim>
-void PhaseFieldProblem<dim>::update_mms_boundary_constraints()
+void PhaseFieldProblem<dim>::update_mms_boundary_constraints(double time)
 {
     // Clear and rebuild individual constraints
     theta_constraints_.clear();
@@ -331,13 +338,13 @@ void PhaseFieldProblem<dim>::update_mms_boundary_constraints()
     dealii::DoFTools::make_hanging_node_constraints(theta_dof_handler_, theta_constraints_);
     dealii::DoFTools::make_hanging_node_constraints(psi_dof_handler_, psi_constraints_);
 
-    // MMS Dirichlet BCs at current time
+    // MMS Dirichlet BCs at specified time
     apply_ch_mms_boundary_constraints<dim>(
         theta_dof_handler_,
         psi_dof_handler_,
         theta_constraints_,
         psi_constraints_,
-        time_);
+        time);
 
     theta_constraints_.close();
     psi_constraints_.close();
@@ -347,7 +354,6 @@ void PhaseFieldProblem<dim>::update_mms_boundary_constraints()
 
     const unsigned int n_theta = theta_dof_handler_.n_dofs();
     const unsigned int n_psi = psi_dof_handler_.n_dofs();
-    const unsigned int n_total = n_theta + n_psi;
 
     // Map θ constraints to coupled system
     for (unsigned int i = 0; i < n_theta; ++i)
