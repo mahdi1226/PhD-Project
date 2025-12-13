@@ -1,7 +1,8 @@
 // ============================================================================
-// core/phase_field.h - PhaseFieldProblem Class Definition
+// core/phase_field.h - Phase Field Problem (CH-only for now)
 //
-// FIXED VERSION: Added index maps and combined constraints for coupled systems
+// Standalone Cahn-Hilliard solver. No NS/Poisson/Magnetization dependencies.
+// These will be added incrementally after CH is verified.
 //
 // Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
 // ============================================================================
@@ -18,167 +19,106 @@
 
 #include "utilities/parameters.h"
 
-// Forward declarations
-template <int dim> class CHAssembler;
-template <int dim> class CHSolver;
-template <int dim> class NSAssembler;
-template <int dim> class NSSolver;
-template <int dim> class MagnetizationAssembler;
-template <int dim> class MagnetizationSolver;
-template <int dim> class PoissonAssembler;
-template <int dim> class PoissonSolver;
-template <int dim> class VTKWriter;
+#include <vector>
 
 /**
- * @brief Main problem class for two-phase ferrofluid simulation
+ * @brief Cahn-Hilliard phase field solver
+ *
+ * Currently implements only the Cahn-Hilliard subsystem.
+ * With u = 0 (no flow), this reduces to pure Allen-Cahn/Cahn-Hilliard diffusion.
+ *
+ * Data layout:
+ *   - Separate DoFHandlers for θ and ψ (AMR-compatible)
+ *   - Coupled system with index maps
+ *   - Combined constraints for hanging nodes
  */
 template <int dim>
 class PhaseFieldProblem
 {
 public:
-    PhaseFieldProblem(const Parameters& params);
+    explicit PhaseFieldProblem(const Parameters& params);
+
+    /// Main entry point
     void run();
 
 private:
-    // =========================================================================
-    // Friend declarations for assemblers/solvers (direct member access)
-    // =========================================================================
-    friend class CHAssembler<dim>;
-    friend class CHSolver<dim>;
-    friend class NSAssembler<dim>;
-    friend class NSSolver<dim>;
-    friend class MagnetizationAssembler<dim>;
-    friend class MagnetizationSolver<dim>;
-    friend class PoissonAssembler<dim>;
-    friend class PoissonSolver<dim>;
-    friend class VTKWriter<dim>;
-
-    // =========================================================================
-    // Setup methods
-    // =========================================================================
+    // ========================================================================
+    // Setup methods (in phase_field_setup.cc)
+    // ========================================================================
     void setup_mesh();
     void setup_dof_handlers();
     void setup_constraints();
-    void setup_sparsity_patterns();
+    void setup_ch_system();
     void initialize_solutions();
 
-    // =========================================================================
-    // Time stepping
-    // =========================================================================
-    void do_time_step();
-    void update_old_solutions();
-    void output_results(unsigned int step);
-    void refine_mesh();
-    std::string generate_run_folder();
+    // ========================================================================
+    // Time stepping (in phase_field.cc)
+    // ========================================================================
+    void do_time_step(double dt);
 
-    // =========================================================================
+    // ========================================================================
+    // Output
+    // ========================================================================
+    void output_results(unsigned int step) const;
+
+    // ========================================================================
+    // Utilities
+    // ========================================================================
+    double compute_mass() const;
+    double get_min_h() const;
+
+    // ========================================================================
+    // MMS verification (in phase_field.cc)
+    // ========================================================================
+    void compute_mms_errors() const;
+    void update_mms_boundary_constraints(double time);
+    // ========================================================================
+    // Data members
+    // ========================================================================
+
     // Parameters
-    // =========================================================================
     const Parameters& params_;
 
-    // =========================================================================
-    // Mesh and finite elements
-    // =========================================================================
+    // Mesh
     dealii::Triangulation<dim> triangulation_;
-    dealii::FE_Q<dim> fe_Q2_;  // Q2 for velocity, θ, ψ, m, φ
-    dealii::FE_Q<dim> fe_Q1_;  // Q1 for pressure
 
-    // =========================================================================
-    // DoF handlers (one per scalar field)
-    // =========================================================================
-    dealii::DoFHandler<dim> theta_dof_handler_;  // Phase field θ
-    dealii::DoFHandler<dim> psi_dof_handler_;    // Chemical potential ψ
-    dealii::DoFHandler<dim> mx_dof_handler_;     // Magnetization x
-    dealii::DoFHandler<dim> my_dof_handler_;     // Magnetization y
-    dealii::DoFHandler<dim> phi_dof_handler_;    // Magnetic potential φ
-    dealii::DoFHandler<dim> ux_dof_handler_;     // Velocity x
-    dealii::DoFHandler<dim> uy_dof_handler_;     // Velocity y
-    dealii::DoFHandler<dim> p_dof_handler_;      // Pressure
+    // Finite elements
+    dealii::FE_Q<dim> fe_phase_;  // Q2 for θ, ψ
 
-    // =========================================================================
-    // Constraints (per field)
-    // =========================================================================
+    // DoF handlers (separate for AMR compatibility)
+    dealii::DoFHandler<dim> theta_dof_handler_;
+    dealii::DoFHandler<dim> psi_dof_handler_;
+
+    // Individual field constraints (hanging nodes + BCs)
     dealii::AffineConstraints<double> theta_constraints_;
     dealii::AffineConstraints<double> psi_constraints_;
-    dealii::AffineConstraints<double> mx_constraints_;
-    dealii::AffineConstraints<double> my_constraints_;
-    dealii::AffineConstraints<double> phi_constraints_;
-    dealii::AffineConstraints<double> ux_constraints_;
-    dealii::AffineConstraints<double> uy_constraints_;
-    dealii::AffineConstraints<double> p_constraints_;
 
-    // =========================================================================
-    // INDEX MAPS: scalar DoF -> coupled system index
-    // =========================================================================
+    // Combined constraints for coupled CH system (critical for AMR!)
+    dealii::AffineConstraints<double> ch_combined_constraints_;
+
+    // Index maps: field DoF index → coupled system index
+    // θ occupies [0, n_theta), ψ occupies [n_theta, n_theta + n_psi)
     std::vector<dealii::types::global_dof_index> theta_to_ch_map_;
     std::vector<dealii::types::global_dof_index> psi_to_ch_map_;
-    std::vector<dealii::types::global_dof_index> ux_to_ns_map_;
-    std::vector<dealii::types::global_dof_index> uy_to_ns_map_;
-    std::vector<dealii::types::global_dof_index> p_to_ns_map_;
 
-    // =========================================================================
-    // COMBINED CONSTRAINTS for coupled systems
-    // =========================================================================
-    dealii::AffineConstraints<double> ch_combined_constraints_;
-    dealii::AffineConstraints<double> ns_combined_constraints_;
-
-    // =========================================================================
-    // Solution vectors
-    // =========================================================================
-    dealii::Vector<double> theta_solution_, theta_old_solution_;
-    dealii::Vector<double> psi_solution_;
-    dealii::Vector<double> mx_solution_, mx_old_solution_;
-    dealii::Vector<double> my_solution_, my_old_solution_;
-    dealii::Vector<double> phi_solution_;
-    dealii::Vector<double> ux_solution_, ux_old_solution_;
-    dealii::Vector<double> uy_solution_, uy_old_solution_;
-    dealii::Vector<double> p_solution_;
-
-    // =========================================================================
-    // Linear systems - CH: [θ | ψ] coupled
-    // =========================================================================
+    // Coupled CH system
     dealii::SparsityPattern ch_sparsity_;
     dealii::SparseMatrix<double> ch_matrix_;
     dealii::Vector<double> ch_rhs_;
 
-    // =========================================================================
-    // Linear systems - NS: [u_x | u_y | p] coupled
-    // =========================================================================
-    dealii::SparsityPattern ns_sparsity_;
-    dealii::SparseMatrix<double> ns_matrix_;
-    dealii::Vector<double> ns_rhs_;
+    // Solution vectors
+    dealii::Vector<double> theta_solution_;
+    dealii::Vector<double> theta_old_solution_;
+    dealii::Vector<double> psi_solution_;
 
-    // =========================================================================
-    // Linear systems - Magnetization (lumped mass)
-    // =========================================================================
-    dealii::SparsityPattern mag_sparsity_;
-    dealii::SparseMatrix<double> mag_matrix_;
-    dealii::Vector<double> mag_rhs_x_, mag_rhs_y_;
+    // Dummy velocity (zero for standalone CH test)
+    // Will be replaced with actual velocity when NS is added
+    dealii::Vector<double> ux_dummy_;
+    dealii::Vector<double> uy_dummy_;
 
-    // =========================================================================
-    // Linear systems - Poisson
-    // =========================================================================
-    dealii::SparsityPattern poisson_sparsity_;
-    dealii::SparseMatrix<double> poisson_matrix_;
-    dealii::Vector<double> poisson_rhs_;
-
-    // =========================================================================
-    // Assemblers and Solvers (owned via unique_ptr)
-    // =========================================================================
-    std::unique_ptr<CHAssembler<dim>> ch_assembler_;
-    std::unique_ptr<CHSolver<dim>> ch_solver_;
-    std::unique_ptr<NSAssembler<dim>> ns_assembler_;
-    std::unique_ptr<NSSolver<dim>> ns_solver_;
-    std::unique_ptr<MagnetizationAssembler<dim>> mag_assembler_;
-    std::unique_ptr<MagnetizationSolver<dim>> mag_solver_;
-    std::unique_ptr<PoissonAssembler<dim>> poisson_assembler_;
-    std::unique_ptr<PoissonSolver<dim>> poisson_solver_;
-    std::unique_ptr<VTKWriter<dim>> vtk_writer_;
-
-    // =========================================================================
-    // Output folder
-    // =========================================================================
-    std::string output_folder_;
+    // Time state
+    double time_;
+    unsigned int timestep_number_;
 };
 
 #endif // PHASE_FIELD_H
