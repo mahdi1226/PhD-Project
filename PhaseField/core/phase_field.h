@@ -1,8 +1,8 @@
 // ============================================================================
-// core/phase_field.h - Phase Field Problem (CH-only for now)
+// core/phase_field.h - Phase Field Problem (CH + Poisson)
 //
-// Standalone Cahn-Hilliard solver. No NS/Poisson/Magnetization dependencies.
-// These will be added incrementally after CH is verified.
+// Cahn-Hilliard solver with optional magnetostatic Poisson.
+// NS and Magnetization will be added incrementally.
 //
 // Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
 // ============================================================================
@@ -22,15 +22,15 @@
 #include <vector>
 
 /**
- * @brief Cahn-Hilliard phase field solver
+ * @brief Cahn-Hilliard + Poisson phase field solver
  *
- * Currently implements only the Cahn-Hilliard subsystem.
- * With u = 0 (no flow), this reduces to pure Allen-Cahn/Cahn-Hilliard diffusion.
+ * Implements CH + magnetostatic Poisson subsystems.
+ * With u = 0 (no flow), this reduces to pure diffusion + magnetic field.
  *
  * Data layout:
- *   - Separate DoFHandlers for θ and ψ (AMR-compatible)
- *   - Coupled system with index maps
- *   - Combined constraints for hanging nodes
+ *   - Separate DoFHandlers for θ, ψ, φ (AMR-compatible)
+ *   - Coupled CH system with index maps
+ *   - Single-field Poisson system
  */
 template <int dim>
 class PhaseFieldProblem
@@ -49,12 +49,15 @@ private:
     void setup_dof_handlers();
     void setup_constraints();
     void setup_ch_system();
+    void setup_poisson_system();
     void initialize_solutions();
 
     // ========================================================================
     // Time stepping (in phase_field.cc)
     // ========================================================================
     void do_time_step(double dt);
+    void solve_poisson();
+    void update_poisson_constraints(double time);
 
     // ========================================================================
     // Output
@@ -71,7 +74,8 @@ private:
     // MMS verification (in phase_field.cc)
     // ========================================================================
     void compute_mms_errors() const;
-    void update_mms_boundary_constraints(double time);
+    void update_mms_boundary_constraints();
+
     // ========================================================================
     // Data members
     // ========================================================================
@@ -115,6 +119,16 @@ private:
     // Will be replaced with actual velocity when NS is added
     dealii::Vector<double> ux_dummy_;
     dealii::Vector<double> uy_dummy_;
+
+    // ========================================================================
+    // Poisson system (magnetic potential φ)
+    // ========================================================================
+    dealii::DoFHandler<dim> phi_dof_handler_;
+    dealii::AffineConstraints<double> phi_constraints_;
+    dealii::SparsityPattern phi_sparsity_;
+    dealii::SparseMatrix<double> phi_matrix_;
+    dealii::Vector<double> phi_rhs_;
+    dealii::Vector<double> phi_solution_;
 
     // Time state
     double time_;

@@ -1,149 +1,190 @@
 // ============================================================================
-// assembly/poisson_assembler.cc - Poisson (Magnetostatics) Assembler
+// assembly/poisson_assembler.cc - Magnetostatic Poisson Assembly Implementation
 //
 // Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
-// Equation 42d, p.505
 // ============================================================================
 
-#include "poisson_assembler.h"
-#include "output/logger.h"
-#include "physics/applied_field.h"
+#include "assembly/poisson_assembler.h"
 
-#include <deal.II/fe/fe_values.h>
 #include <deal.II/base/quadrature_lib.h>
+#include <deal.II/fe/fe_values.h>
+#include <deal.II/dofs/dof_tools.h>
 #include <deal.II/lac/full_matrix.h>
+#include <deal.II/numerics/vector_tools.h>
 
+#include <iostream>
+
+// ============================================================================
+// DipolePotentialFunction - Wrapper for deal.II boundary interpolation
+// ============================================================================
 template <int dim>
-PoissonAssembler<dim>::PoissonAssembler(PhaseFieldProblem<dim>& problem)
-    : problem_(problem)
+class DipolePotentialFunction : public dealii::Function<dim>
 {
-    Logger::info("      PoissonAssembler constructed");
+public:
+    DipolePotentialFunction(const Parameters& params, double time)
+        : dealii::Function<dim>(1)
+        , params_(params)
+        , time_(time)
+    {}
+
+    virtual double value(const dealii::Point<dim>& p,
+                         const unsigned int component = 0) const override
+    {
+        (void)component;
+        return compute_dipole_potential<dim>(p, params_, time_);
+    }
+
+private:
+    const Parameters& params_;
+    double time_;
+};
+
+// ============================================================================
+// Apply Dirichlet BCs for Poisson from dipole field
+// ============================================================================
+template <int dim>
+void apply_poisson_dirichlet_bcs(
+    const dealii::DoFHandler<dim>& phi_dof_handler,
+    const Parameters& params,
+    double current_time,
+    dealii::AffineConstraints<double>& phi_constraints)
+{
+    // Note: phi_constraints should already have hanging node constraints
+    // We add Dirichlet BCs on top
+
+    DipolePotentialFunction<dim> dipole_potential(params, current_time);
+
+    // Apply to all boundary IDs (0, 1, 2, 3 for rectangular domain)
+    for (unsigned int boundary_id = 0; boundary_id <= 3; ++boundary_id)
+    {
+        dealii::VectorTools::interpolate_boundary_values(
+            phi_dof_handler,
+            boundary_id,
+            dipole_potential,
+            phi_constraints);
+    }
 }
 
 // ============================================================================
-// assemble()
-//
-// Discrete scheme (Eq. 42d, p.505):
-//   (∇Φ^k, ∇X) = (h_a^k - M^k, ∇X)
-//
-// LHS: Laplacian stiffness matrix  ∫_Ω ∇φ · ∇χ dx
-// RHS: Source term                 ∫_Ω (h_a - m) · ∇χ dx
-//
-// Pure Neumann problem → pin first DoF to zero
+// Assemble the magnetostatic Poisson system
 // ============================================================================
 template <int dim>
-void PoissonAssembler<dim>::assemble(double current_time)
+void assemble_poisson_system(
+    const dealii::DoFHandler<dim>& phi_dof_handler,
+    const dealii::DoFHandler<dim>& theta_dof_handler,
+    const dealii::Vector<double>& theta_solution,
+    const Parameters& params,
+    dealii::SparseMatrix<double>& phi_matrix,
+    dealii::Vector<double>& phi_rhs,
+    const dealii::AffineConstraints<double>& phi_constraints)
 {
-    // Create applied field calculator
-    AppliedField<dim> h_a(problem_.params_.dipoles.positions,
-                          problem_.params_.dipoles.direction,
-                          problem_.params_.dipoles.intensity_max,
-                          problem_.params_.dipoles.ramp_time);
+    phi_matrix = 0;
+    phi_rhs = 0;
 
-    problem_.poisson_matrix_ = 0;
-    problem_.poisson_rhs_    = 0;
+    const auto& phi_fe = phi_dof_handler.get_fe();
+    const auto& theta_fe = theta_dof_handler.get_fe();
+    const unsigned int dofs_per_cell = phi_fe.n_dofs_per_cell();
 
-    const auto& fe = problem_.fe_Q2_;
-    const dealii::QGauss<dim> quadrature(fe.degree + 1);
+    // Quadrature
+    dealii::QGauss<dim> quadrature(params.fe.degree_potential + 2);
+    const unsigned int n_q_points = quadrature.size();
 
-    dealii::FEValues<dim> fe_values(fe, quadrature,
-                                     dealii::update_values |
-                                     dealii::update_gradients |
-                                     dealii::update_quadrature_points |
-                                     dealii::update_JxW_values);
+    dealii::FEValues<dim> phi_fe_values(phi_fe, quadrature,
+        dealii::update_values | dealii::update_gradients |
+        dealii::update_quadrature_points | dealii::update_JxW_values);
 
-    const unsigned int dofs_per_cell = fe.n_dofs_per_cell();
-    const unsigned int n_q_points    = quadrature.size();
+    dealii::FEValues<dim> theta_fe_values(theta_fe, quadrature,
+        dealii::update_values);
 
     dealii::FullMatrix<double> local_matrix(dofs_per_cell, dofs_per_cell);
-    dealii::Vector<double>     local_rhs(dofs_per_cell);
+    dealii::Vector<double> local_rhs(dofs_per_cell);
+    std::vector<dealii::types::global_dof_index> local_dof_indices(dofs_per_cell);
 
-    std::vector<dealii::types::global_dof_index> phi_dofs(dofs_per_cell);
-    std::vector<dealii::types::global_dof_index> mx_dofs(dofs_per_cell);
-    std::vector<dealii::types::global_dof_index> my_dofs(dofs_per_cell);
+    // Storage for θ values at quadrature points
+    std::vector<double> theta_values(n_q_points);
 
-    std::vector<double> mx_vals(n_q_points);
-    std::vector<double> my_vals(n_q_points);
+    // Parameters
+    const double kappa_0 = params.magnetization.chi_0;  // Susceptibility κ₀
+    const double epsilon = params.ch.epsilon;           // Interface thickness
 
-    for (const auto& cell : problem_.phi_dof_handler_.active_cell_iterators())
+    // Diagnostic tracking
+    double max_mu = 0.0, min_mu = 1e10;
+
+    // Iterate over cells (both DoFHandlers share the same mesh)
+    auto phi_cell = phi_dof_handler.begin_active();
+    auto theta_cell = theta_dof_handler.begin_active();
+
+    for (; phi_cell != phi_dof_handler.end(); ++phi_cell, ++theta_cell)
     {
-        fe_values.reinit(cell);
+        phi_fe_values.reinit(phi_cell);
+        theta_fe_values.reinit(theta_cell);
+
         local_matrix = 0;
-        local_rhs    = 0;
+        local_rhs = 0;  // RHS is zero (no interior source)
 
-        cell->get_dof_indices(phi_dofs);
-
-        // Get m values at quadrature points
-        typename dealii::DoFHandler<dim>::active_cell_iterator
-            mx_cell(&problem_.triangulation_, cell->level(), cell->index(),
-                    &problem_.mx_dof_handler_);
-        mx_cell->get_dof_indices(mx_dofs);
-
-        typename dealii::DoFHandler<dim>::active_cell_iterator
-            my_cell(&problem_.triangulation_, cell->level(), cell->index(),
-                    &problem_.my_dof_handler_);
-        my_cell->get_dof_indices(my_dofs);
+        // Get phase field values at quadrature points
+        theta_fe_values.get_function_values(theta_solution, theta_values);
 
         for (unsigned int q = 0; q < n_q_points; ++q)
         {
-            mx_vals[q] = 0;
-            my_vals[q] = 0;
-            for (unsigned int i = 0; i < dofs_per_cell; ++i)
-            {
-                const double phi = fe_values.shape_value(i, q);
-                mx_vals[q] += problem_.mx_solution_[mx_dofs[i]] * phi;
-                my_vals[q] += problem_.my_solution_[my_dofs[i]] * phi;
-            }
-        }
+            const double JxW = phi_fe_values.JxW(q);
 
-        // Quadrature loop
-        for (unsigned int q = 0; q < n_q_points; ++q)
-        {
-            const double JxW = fe_values.JxW(q);
-            const auto& x_q = fe_values.quadrature_point(q);
+            // Compute permeability using sigmoid interpolation [Eq. 17]
+            const double theta = theta_values[q];
+            const double mu = compute_permeability(theta, epsilon, kappa_0);
 
-            // Compute h_a at quadrature point
-            dealii::Tensor<1, dim> h_a_q = h_a.compute_field(x_q, current_time);
-
-            // Magnetization at quadrature point
-            dealii::Tensor<1, dim> m_q;
-            m_q[0] = mx_vals[q];
-            if constexpr (dim >= 2) m_q[1] = my_vals[q];
-
-            // Source: h_a - m
-            dealii::Tensor<1, dim> source = h_a_q - m_q;
+            max_mu = std::max(max_mu, mu);
+            min_mu = std::min(min_mu, mu);
 
             for (unsigned int i = 0; i < dofs_per_cell; ++i)
             {
-                const auto grad_phi_i = fe_values.shape_grad(i, q);
-
-                // RHS: (h_a - m) · ∇χ
-                local_rhs(i) += (source * grad_phi_i) * JxW;
+                const auto& grad_psi_i = phi_fe_values.shape_grad(i, q);
 
                 for (unsigned int j = 0; j < dofs_per_cell; ++j)
                 {
-                    const auto grad_phi_j = fe_values.shape_grad(j, q);
+                    const auto& grad_psi_j = phi_fe_values.shape_grad(j, q);
 
-                    // LHS: ∇φ · ∇χ
-                    local_matrix(i, j) += (grad_phi_i * grad_phi_j) * JxW;
+                    // (μ(θ)∇φ, ∇ψ)
+                    local_matrix(i, j) += mu * (grad_psi_i * grad_psi_j) * JxW;
                 }
+                // RHS is zero (BCs provide the field)
             }
         }
 
-        // Distribute to global
-        for (unsigned int i = 0; i < dofs_per_cell; ++i)
-        {
-            problem_.poisson_rhs_(phi_dofs[i]) += local_rhs(i);
-            for (unsigned int j = 0; j < dofs_per_cell; ++j)
-                problem_.poisson_matrix_.add(phi_dofs[i], phi_dofs[j], local_matrix(i, j));
-        }
+        phi_cell->get_dof_indices(local_dof_indices);
+
+        // Distribute with constraints (applies Dirichlet BCs)
+        phi_constraints.distribute_local_to_global(
+            local_matrix, local_rhs, local_dof_indices,
+            phi_matrix, phi_rhs);
     }
 
-    // Pin first DoF to handle pure Neumann (φ determined up to constant)
-    const double large = 1e10;
-    problem_.poisson_matrix_.set(0, 0, problem_.poisson_matrix_(0, 0) + large);
-    problem_.poisson_rhs_(0) = 0;
+    // Debug output
+    if (params.output.verbose)
+    {
+        static unsigned int call_count = 0;
+        if (call_count % 100 == 0)  // Print every 100 calls
+        {
+            std::cout << "[Poisson] μ range: [" << min_mu << ", " << max_mu << "]\n";
+        }
+        ++call_count;
+    }
 }
 
-template class PoissonAssembler<2>;
-//template class PoissonAssembler<3>;
+// ============================================================================
+// Explicit instantiations
+// ============================================================================
+template void apply_poisson_dirichlet_bcs<2>(
+    const dealii::DoFHandler<2>&,
+    const Parameters&,
+    double,
+    dealii::AffineConstraints<double>&);
+
+template void assemble_poisson_system<2>(
+    const dealii::DoFHandler<2>&,
+    const dealii::DoFHandler<2>&,
+    const dealii::Vector<double>&,
+    const Parameters&,
+    dealii::SparseMatrix<double>&,
+    dealii::Vector<double>&,
+    const dealii::AffineConstraints<double>&);

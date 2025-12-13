@@ -1,8 +1,7 @@
 // ============================================================================
 // core/phase_field_setup.cc - Setup Methods for Phase Field Problem
 //
-// Extracted and cleaned from OLD nsch_problem_setup.cc
-// Only CH-related setup - no NS/Poisson/Magnetization
+// Setup for CH + Poisson systems.
 //
 // Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
 // ============================================================================
@@ -10,6 +9,8 @@
 #include "core/phase_field.h"
 #include "diagnostics/ch_mms.h"
 #include "setup/ch_setup.h"
+#include "setup/poisson_setup.h"
+#include "assembly/poisson_assembler.h"
 
 #include <deal.II/grid/grid_generator.h>
 #include <deal.II/grid/grid_tools.h>
@@ -94,11 +95,21 @@ void PhaseFieldProblem<dim>::setup_dof_handlers()
     ux_dummy_ = 0;
     uy_dummy_ = 0;
 
+    // Poisson (if magnetic enabled)
+    if (params_.magnetic.enabled)
+    {
+        phi_dof_handler_.distribute_dofs(fe_phase_);  // Same FE as θ
+        phi_solution_.reinit(phi_dof_handler_.n_dofs());
+    }
+
     if (params_.output.verbose)
     {
         std::cout << "[Setup] DoFs: θ = " << n_theta
                   << ", ψ = " << n_psi
-                  << ", total CH = " << (n_theta + n_psi) << "\n";
+                  << ", total CH = " << (n_theta + n_psi);
+        if (params_.magnetic.enabled)
+            std::cout << ", φ = " << phi_dof_handler_.n_dofs();
+        std::cout << "\n";
     }
 }
 
@@ -164,6 +175,39 @@ void PhaseFieldProblem<dim>::setup_ch_system()
     const unsigned int n_total = theta_dof_handler_.n_dofs() + psi_dof_handler_.n_dofs();
     ch_matrix_.reinit(ch_sparsity_);
     ch_rhs_.reinit(n_total);
+}
+
+// ============================================================================
+// setup_poisson_system()
+//
+// Sets up the magnetostatic Poisson system for φ.
+// ============================================================================
+template <int dim>
+void PhaseFieldProblem<dim>::setup_poisson_system()
+{
+    // Initialize constraints (hanging nodes + Dirichlet BCs)
+    phi_constraints_.clear();
+    dealii::DoFTools::make_hanging_node_constraints(phi_dof_handler_, phi_constraints_);
+
+    // Apply dipole Dirichlet BCs at initial time
+    apply_poisson_dirichlet_bcs<dim>(
+        phi_dof_handler_,
+        params_,
+        0.0,  // Initial time
+        phi_constraints_);
+
+    phi_constraints_.close();
+
+    // Build sparsity pattern
+    build_poisson_sparsity<dim>(
+        phi_dof_handler_,
+        phi_constraints_,
+        phi_sparsity_,
+        params_.output.verbose);
+
+    // Initialize matrix and RHS
+    phi_matrix_.reinit(phi_sparsity_);
+    phi_rhs_.reinit(phi_dof_handler_.n_dofs());
 }
 
 // ============================================================================

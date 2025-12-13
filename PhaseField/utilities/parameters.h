@@ -115,6 +115,14 @@ struct Parameters
     } gravity;
 
     // ========================================================================
+    // Magnetic field parameters (Poisson solve enable)
+    // ========================================================================
+    struct Magnetic
+    {
+        bool enabled = false;  // Enable magnetostatic Poisson solve
+    } magnetic;
+
+    // ========================================================================
     // AMR parameters
     // ========================================================================
     struct AMR

@@ -27,8 +27,11 @@ set(SOURCES
         core/phase_field.cc
         core/phase_field_setup.cc
         assembly/ch_assembler.cc
+        assembly/poisson_assembler.cc
         solvers/ch_solver.cc
+        solvers/poisson_solver.cc
         setup/ch_setup.cc
+        setup/poisson_setup.cc
         diagnostics/ch_mms.cc
         utilities/parameters.cc
 )
