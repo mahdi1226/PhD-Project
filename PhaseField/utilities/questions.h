@@ -45,25 +45,10 @@ inline std::vector<QuestionEntry> get_all_questions()
         },
 
         // ====================================================================
-        // Q2: ∇φ_s derivation - BUG FOUND!
+        // Q2: Convection term sign in CH equation
         // ====================================================================
         {
             2,
-            "BUG_FOUND",
-            "physics/applied_field.cc", 99,
-            "Gradient ∇_x φ_s = -d/|r|² - 2(d·r)r/|r|⁴ (2D)",
-            "Derived from φ_s = d·r/|r|² (Eq.97) with r = x_s - x, so ∇_x r = -I",
-            "Is our derived gradient ∇_x φ_s correct?",
-            "BUG CONFIRMED: Second term has WRONG SIGN. "
-            "Correct: ∇_x φ_s = -d/|r|² + 2(d·r)r/|r|⁴. "
-            "Code has minus, should be plus. Fix applied_field.cc line 100."
-        },
-
-        // ====================================================================
-        // Q3: Convection term sign in CH equation
-        // ====================================================================
-        {
-            3,
             "OPEN",
             "assembly/ch_assembler.cc", 28,
             "Convection term sign is +(U·θ_old, ∇Λ) on RHS",
@@ -74,10 +59,10 @@ inline std::vector<QuestionEntry> get_all_questions()
         },
 
         // ====================================================================
-        // Q4: AMR constraint handling for coupled systems
+        // Q3: AMR constraint handling for coupled systems
         // ====================================================================
         {
-            4,
+            3,
             "OPEN",
             "assembly/ch_assembler.cc", 135,
             "Direct matrix addition without distribute_local_to_global for coupled system",
@@ -88,10 +73,10 @@ inline std::vector<QuestionEntry> get_all_questions()
         },
 
         // ====================================================================
-        // Q5: Poisson BC treatment for pure Neumann
+        // Q4: Poisson BC treatment for pure Neumann
         // ====================================================================
         {
-            5,
+            4,
             "OPEN",
             "assembly/poisson_assembler.cc", 140,
             "Pin first DoF to zero for pure Neumann problem",
@@ -102,10 +87,10 @@ inline std::vector<QuestionEntry> get_all_questions()
         },
 
         // ====================================================================
-        // Q6: Magnetization equilibrium assumption
+        // Q5: Magnetization equilibrium assumption
         // ====================================================================
         {
-            6,
+            5,
             "OPEN",
             "assembly/magnetization_assembler.cc", 25,
             "Equilibrium m = χ_θ h_a uses applied field only, not total field h = h_a + ∇φ",
@@ -117,10 +102,10 @@ inline std::vector<QuestionEntry> get_all_questions()
         },
 
         // ====================================================================
-        // Q7: Kelvin force trilinear form
+        // Q6: Kelvin force trilinear form
         // ====================================================================
         {
-            7,
+            6,
             "OPEN",
             "assembly/ns_assembler.cc", 145,
             "Kelvin force simplified to μ₀(m·∇)h instead of full trilinear form B_h^m",
@@ -130,20 +115,6 @@ inline std::vector<QuestionEntry> get_all_questions()
             ""
         },
 
-        // ====================================================================
-        // Q8: Dipole y-position (RESOLVED)
-        // ====================================================================
-        {
-            8,
-            "RESOLVED",
-            "utilities/parameters.h", 108,
-            "Dipole y-position = -1.5",
-            "Paper p.522 states dipoles at y = -1.5. "
-            "OLD code had y = -15.0 which was a misread.",
-            "What is correct dipole y-position?",
-            "RESOLVED: Correct value is y = -1.5 per paper p.522. "
-            "OLD code value of -15.0 was wrong."
-        },
     };
 }
 

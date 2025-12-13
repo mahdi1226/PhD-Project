@@ -59,10 +59,10 @@ struct Parameters
     // ========================================================================
     struct CH
     {
-        double epsilon = 0.01;        // Interface thickness
-        double gamma = 0.0002;        // Mobility
-        double lambda = 0.05;         // Capillary coefficient
-        double eta = 0.005;           // Stabilization (eta <= epsilon)
+        double epsilon = 0.01; // Interface thickness
+        double gamma = 0.0002; // Mobility
+        double lambda = 0.05; // Capillary coefficient
+        double eta = 0.005; // Stabilization (eta <= epsilon)
     } ch;
 
     // ========================================================================
@@ -70,8 +70,8 @@ struct Parameters
     // ========================================================================
     struct Magnetization
     {
-        double chi_0 = 0.5;           // Susceptibility (chi_0 <= 4)
-        double T_relax = 0.0;         // Relaxation time
+        double chi_0 = 0.5; // Susceptibility (chi_0 <= 4)
+        double T_relax = 0.0; // Relaxation time
     } magnetization;
 
     // ========================================================================
@@ -79,6 +79,7 @@ struct Parameters
     // ========================================================================
     struct NS
     {
+        bool enabled = false; // Enable Navier-Stokes solve
         double nu_water = 1.0;
         double nu_ferro = 2.0;
         double mu_0 = 1.0;
@@ -93,11 +94,11 @@ struct Parameters
     struct Dipoles
     {
         std::vector<dealii::Point<2>> positions = {
-            dealii::Point<2>(-0.5, -1.5),
-            dealii::Point<2>(0.0, -1.5),
+            dealii::Point<2>(-0.5, -15),
+            dealii::Point<2>(0.0, -15),
             dealii::Point<2>(0.5, -1.5),
-            dealii::Point<2>(1.0, -1.5),
-            dealii::Point<2>(1.5, -1.5)
+            dealii::Point<2>(1.0, -15),
+            dealii::Point<2>(1.5, -15)
         };
         dealii::Tensor<1, 2> direction = dealii::Tensor<1, 2>({0.0, 1.0});
         double intensity_max = 6000.0;
@@ -119,7 +120,7 @@ struct Parameters
     // ========================================================================
     struct Magnetic
     {
-        bool enabled = false;  // Enable magnetostatic Poisson solve
+        bool enabled = false; // Enable magnetostatic Poisson solve
     } magnetic;
 
     // ========================================================================
@@ -141,7 +142,7 @@ struct Parameters
     // ========================================================================
     struct IC
     {
-        int type = 1;                 // 0=droplet, 1=flat, 2=perturbed
+        int type = 1; // 0=droplet, 1=flat, 2=perturbed
         double pool_depth = 0.2;
         double perturbation = 0.01;
         int perturbation_modes = 5;
@@ -173,10 +174,10 @@ struct Parameters
     struct MMS
     {
         bool enabled = false;
-        double t_init = 0.1;          // Initial time for MMS (avoid t=0)
-        double alpha = 1.0;           // Reserved for coupled MMS
-        double beta = 1.0;            // Reserved for coupled MMS
-        double delta = 1.0;           // Reserved for coupled MMS
+        double t_init = 0.1; // Initial time for MMS (avoid t=0)
+        double alpha = 1.0; // Reserved for coupled MMS
+        double beta = 1.0; // Reserved for coupled MMS
+        double delta = 1.0; // Reserved for coupled MMS
     } mms;
 
     // ========================================================================
