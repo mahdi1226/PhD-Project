@@ -1,117 +1,142 @@
 // ============================================================================
-// physics/initial_conditions.cc - Initial Conditions Implementation
+// physics/initial_conditions.h - Initial Conditions
 //
 // Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
 // Section 6.2, p.522
 // ============================================================================
+#ifndef INITIAL_CONDITIONS_H
+#define INITIAL_CONDITIONS_H
 
-#include "initial_conditions.h"
-#include "output/logger.h"
+#include <deal.II/base/function.h>
+#include <deal.II/base/point.h>
 #include <cmath>
 
-// ============================================================================
-// InitialTheta
-//
-// θ₀(x,y) = tanh((y - pool_depth) / (ε√2))
-//
-// This is the equilibrium profile for Cahn-Hilliard.
-// Pool depth = 0.2 (p.522)
-// ε = 0.01 (p.522)
-// ============================================================================
+/**
+ * @brief Initial condition for phase field θ
+ *
+ * Configuration (Section 6.2, p.522):
+ *   "ferrofluid pool of 0.2 units of depth"
+ *
+ * θ₀(x,y) = tanh((y - pool_depth) / (ε√2))
+ *
+ * This gives:
+ *   θ ≈ -1 (non-magnetic) for y > pool_depth
+ *   θ ≈ +1 (ferrofluid) for y < pool_depth
+ *
+ * Parameters:
+ *   pool_depth = 0.2 (p.522)
+ *   ε = 0.01 (p.522)
+ */
 template <int dim>
-InitialTheta<dim>::InitialTheta(double pool_depth, double epsilon)
-    : dealii::Function<dim>(1)
-    , pool_depth_(pool_depth)
-    , epsilon_(epsilon)
+class InitialTheta : public dealii::Function<dim>
 {
-    Logger::info("InitialTheta: pool_depth = " + std::to_string(pool_depth_) +
-                 ", ε = " + std::to_string(epsilon_));
-}
+public:
+    InitialTheta(double pool_depth, double epsilon)
+        : dealii::Function<dim>(1)
+        , pool_depth_(pool_depth)
+        , epsilon_(epsilon)
+    {}
 
+    virtual double value(const dealii::Point<dim>& p,
+                         const unsigned int component = 0) const override
+    {
+        (void)component;
+        const double y = p[1];
+        const double interface_width = epsilon_ * std::sqrt(2.0);
+        return std::tanh((y - pool_depth_) / interface_width);
+    }
+
+private:
+    double pool_depth_;
+    double epsilon_;
+};
+
+/**
+ * @brief Initial condition for chemical potential ψ
+ *
+ * From equilibrium (Eq. 14b with ∂θ/∂t = 0):
+ *   ψ = εΔθ - (1/ε)f(θ)
+ *
+ * For smooth tanh profile, approximately:
+ *   ψ₀ ≈ -(1/ε)(θ³ - θ)
+ */
 template <int dim>
-double InitialTheta<dim>::value(const dealii::Point<dim>& p,
-                                 const unsigned int /*component*/) const
+class InitialPsi : public dealii::Function<dim>
 {
-    // θ₀ = tanh((y - pool_depth) / (ε√2))
-    // Note: tanh profile is equilibrium solution for CH
-    const double y = p[1];
-    const double interface_width = epsilon_ * std::sqrt(2.0);
-    return std::tanh((y - pool_depth_) / interface_width);
-}
+public:
+    InitialPsi(double pool_depth, double epsilon)
+        : dealii::Function<dim>(1)
+        , pool_depth_(pool_depth)
+        , epsilon_(epsilon)
+    {}
 
-// ============================================================================
-// InitialPsi
-//
-// ψ₀ ≈ -(1/ε)(θ₀³ - θ₀) from equilibrium
-// ============================================================================
+    virtual double value(const dealii::Point<dim>& p,
+                         const unsigned int component = 0) const override
+    {
+        (void)component;
+        const double y = p[1];
+        const double interface_width = epsilon_ * std::sqrt(2.0);
+        const double theta = std::tanh((y - pool_depth_) / interface_width);
+
+        // ψ₀ = -(1/ε)(θ³ - θ) from equilibrium
+        const double f_theta = theta * theta * theta - theta;
+        return -f_theta / epsilon_;
+    }
+
+private:
+    double pool_depth_;
+    double epsilon_;
+};
+
+/**
+ * @brief Initial condition for velocity u
+ *
+ * u₀ = 0 (fluid at rest)
+ * Paper states (p.522): "ferrofluid pool ... at rest at t = 0"
+ */
 template <int dim>
-InitialPsi<dim>::InitialPsi(double pool_depth, double epsilon)
-    : dealii::Function<dim>(1)
-    , pool_depth_(pool_depth)
-    , epsilon_(epsilon)
+class InitialVelocity : public dealii::Function<dim>
 {
-    Logger::info("InitialPsi: pool_depth = " + std::to_string(pool_depth_) +
-                 ", ε = " + std::to_string(epsilon_));
-}
+public:
+    InitialVelocity() : dealii::Function<dim>(dim) {}
 
+    virtual double value(const dealii::Point<dim>& p,
+                         const unsigned int component = 0) const override
+    {
+        (void)p;
+        (void)component;
+        return 0.0;
+    }
+
+    virtual void vector_value(const dealii::Point<dim>& p,
+                              dealii::Vector<double>& values) const override
+    {
+        (void)p;
+        for (unsigned int d = 0; d < dim; ++d)
+            values(d) = 0.0;
+    }
+};
+
+/**
+ * @brief Initial condition for magnetization m
+ *
+ * In quasi-static model: m₀ = χ_θ h_a(0)
+ * At t = 0, dipole intensity α_s(0) = 0, so h_a(0) = 0.
+ * Therefore: m₀ = 0
+ */
 template <int dim>
-double InitialPsi<dim>::value(const dealii::Point<dim>& p,
-                               const unsigned int /*component*/) const
+class InitialMagnetization : public dealii::Function<dim>
 {
-    // First compute θ₀
-    const double y = p[1];
-    const double interface_width = epsilon_ * std::sqrt(2.0);
-    const double theta = std::tanh((y - pool_depth_) / interface_width);
-    
-    // ψ₀ = -(1/ε)(θ³ - θ) from equilibrium f(θ) = θ³ - θ
-    const double f_theta = theta * theta * theta - theta;
-    return -f_theta / epsilon_;
-}
+public:
+    InitialMagnetization() : dealii::Function<dim>(dim) {}
 
-// ============================================================================
-// InitialVelocity
-//
-// u₀ = 0 (fluid at rest)
-// ============================================================================
-template <int dim>
-InitialVelocity<dim>::InitialVelocity()
-    : dealii::Function<dim>(1)
-{
-    Logger::info("InitialVelocity: u₀ = 0");
-}
+    virtual double value(const dealii::Point<dim>& p,
+                         const unsigned int component = 0) const override
+    {
+        (void)p;
+        (void)component;
+        return 0.0;
+    }
+};
 
-template <int dim>
-double InitialVelocity<dim>::value(const dealii::Point<dim>& /*p*/,
-                                    const unsigned int /*component*/) const
-{
-    return 0.0;
-}
-
-// ============================================================================
-// InitialMagnetization
-//
-// m₀ = 0 (since h_a(0) = 0 when α_s(0) = 0)
-// ============================================================================
-template <int dim>
-InitialMagnetization<dim>::InitialMagnetization()
-    : dealii::Function<dim>(1)
-{
-    Logger::info("InitialMagnetization: m₀ = 0");
-}
-
-template <int dim>
-double InitialMagnetization<dim>::value(const dealii::Point<dim>& /*p*/,
-                                         const unsigned int /*component*/) const
-{
-    return 0.0;
-}
-
-// Explicit instantiations
-template class InitialTheta<2>;
-template class InitialTheta<3>;
-template class InitialPsi<2>;
-template class InitialPsi<3>;
-template class InitialVelocity<2>;
-template class InitialVelocity<3>;
-template class InitialMagnetization<2>;
-template class InitialMagnetization<3>;
+#endif // INITIAL_CONDITIONS_H
