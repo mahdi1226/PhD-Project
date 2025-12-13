@@ -1,55 +1,39 @@
 // ============================================================================
-// solvers/ch_solver.cc - Cahn-Hilliard Solver
+// solvers/ch_solver.cc - Cahn-Hilliard System Solver Implementation
 //
-// FIXED VERSION: Uses combined constraints properly
+// Extracted from OLD nsch_problem_solver.cc lines 298-335
 //
-// Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
+// Uses UMFPACK direct solver for the coupled θ-ψ system.
 // ============================================================================
 
 #include "ch_solver.h"
-#include "output/logger.h"
 
 #include <deal.II/lac/sparse_direct.h>
 
-template <int dim>
-CHSolver<dim>::CHSolver(PhaseFieldProblem<dim>& problem)
-    : problem_(problem)
+void solve_ch_system(
+    const dealii::SparseMatrix<double>&  matrix,
+    const dealii::Vector<double>&        rhs,
+    const dealii::AffineConstraints<double>& constraints,
+    const std::vector<dealii::types::global_dof_index>& theta_to_ch_map,
+    const std::vector<dealii::types::global_dof_index>& psi_to_ch_map,
+    dealii::Vector<double>&              theta_solution,
+    dealii::Vector<double>&              psi_solution)
 {
-    Logger::info("      CHSolver constructed");
-}
+    // Solve coupled system
+    dealii::Vector<double> coupled_solution(rhs.size());
 
-template <int dim>
-void CHSolver<dim>::solve()
-{
-    const unsigned int n_theta = problem_.theta_dof_handler_.n_dofs();
-    const unsigned int n_psi = problem_.psi_dof_handler_.n_dofs();
-    const unsigned int n_total = n_theta + n_psi;
-
-    // Solution vector for coupled system
-    dealii::Vector<double> solution(n_total);
-
-    // Condense the system with combined constraints BEFORE solving
-    problem_.ch_combined_constraints_.condense(problem_.ch_matrix_, problem_.ch_rhs_);
-
-    // Solve using UMFPACK
     dealii::SparseDirectUMFPACK solver;
-    solver.initialize(problem_.ch_matrix_);
-    solver.vmult(solution, problem_.ch_rhs_);
+    solver.initialize(matrix);
+    solver.vmult(coupled_solution, rhs);
 
-    // Distribute constraints to solution
-    problem_.ch_combined_constraints_.distribute(solution);
+    // Distribute constrained DoFs
+    constraints.distribute(coupled_solution);
 
-    // Extract θ and ψ from coupled solution using index maps
-    for (unsigned int i = 0; i < n_theta; ++i)
-        problem_.theta_solution_[i] = solution[problem_.theta_to_ch_map_[i]];
+    // Extract θ solution using index map
+    for (unsigned int i = 0; i < theta_solution.size(); ++i)
+        theta_solution[i] = coupled_solution[theta_to_ch_map[i]];
 
-    for (unsigned int i = 0; i < n_psi; ++i)
-        problem_.psi_solution_[i] = solution[problem_.psi_to_ch_map_[i]];
-
-    // Apply individual constraints
-    problem_.theta_constraints_.distribute(problem_.theta_solution_);
-    problem_.psi_constraints_.distribute(problem_.psi_solution_);
+    // Extract ψ solution using index map
+    for (unsigned int i = 0; i < psi_solution.size(); ++i)
+        psi_solution[i] = coupled_solution[psi_to_ch_map[i]];
 }
-
-template class CHSolver<2>;
-// template class CHSolver<3>;

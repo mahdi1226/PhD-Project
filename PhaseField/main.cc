@@ -1,51 +1,43 @@
 // ============================================================================
-// main.cc - Entry Point for Two-Phase Ferrofluid Solver
+// main.cc - Entry Point for Cahn-Hilliard Standalone Test
+//
+// This is a standalone test for the CH subsystem before integrating NS/Poisson.
+// With u = 0, this tests pure diffuse interface dynamics.
 //
 // Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
 // ============================================================================
 
 #include "core/phase_field.h"
 #include "utilities/parameters.h"
-#include "utilities/questions.h"
-#include "output/logger.h"
 
 #include <iostream>
-
-void print_help(const char* prog)
-{
-    std::cout << "\nTwo-Phase Ferrofluid Solver\n";
-    std::cout << "Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016)\n\n";
-    std::cout << "Usage: " << prog << " [options]\n\n";
-    std::cout << "  --help, -h       Show this help\n";
-    std::cout << "  --questions, -q  Print open questions\n\n";
-}
+#include <exception>
 
 int main(int argc, char* argv[])
 {
-    for (int i = 1; i < argc; ++i)
-    {
-        std::string arg = argv[i];
-        if (arg == "--help" || arg == "-h") { print_help(argv[0]); return 0; }
-        if (arg == "--questions" || arg == "-q") { print_questions(); return 0; }
-    }
-    
     try
     {
+        // Suppress deal.II console output
+        dealii::deallog.depth_console(0);
+
+        // Parse parameters
         Parameters params = Parameters::parse_command_line(argc, argv);
-        
-        Logger::info("========================================");
-        Logger::info("Two-Phase Ferrofluid Solver");
-        Logger::info("========================================");
-        
+
+        // Create and run problem
         PhaseFieldProblem<2> problem(params);
         problem.run();
-        
-        Logger::success("Simulation completed!");
+
+        std::cout << "\n[Success] CH standalone test completed.\n";
         return 0;
     }
     catch (std::exception& e)
     {
-        std::cerr << "ERROR: " << e.what() << std::endl;
+        std::cerr << "\n[Error] " << e.what() << "\n";
+        return 1;
+    }
+    catch (...)
+    {
+        std::cerr << "\n[Error] Unknown exception!\n";
         return 1;
     }
 }

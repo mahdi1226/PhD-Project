@@ -1,208 +1,310 @@
 // ============================================================================
-// assembly/ch_assembler.cc - Cahn-Hilliard System Assembler
+// assembly/ch_assembler.cc - Cahn-Hilliard System Assembler Implementation
 //
-// FIXED VERSION: Uses index maps for coupled system assembly
+// Extracted from OLD nsch_problem_solver.cc lines 336-450
 //
 // Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
-// Equations 42a-b, p.505
+// Equations 14a-14b, p.499
 //
-// Discrete scheme:
-//   (42a): (δΘ^k/τ, Φ) - (U^{k-1}Θ^{k-1}, ∇Φ) + γ(∇Ψ^k, ∇Φ) = 0
-//   (42b): (Ψ^k, Λ) - ε(∇Θ^k, ∇Λ) - (1/ε)(f(Θ^{k-1}), Λ) = 0
+// Weak form derivation:
+//   Eq 14a: θ_t + div(uθ) - γΔψ = 0
+//     → (θ_t, φ) + (div(uθ), φ) + γ(∇ψ, ∇φ) = 0        [IBP on Laplacian]
+//     → (1/τ)(θ - θ_old, φ) - (uθ, ∇φ) + γ(∇ψ, ∇φ) = 0  [IBP on div, BDF1]
 //
-// Newton linearization of f(θ):
-//   f(θ^k) ≈ f(θ^{k-1}) + f'(θ^{k-1})(θ^k - θ^{k-1})
+//   Eq 14b: ψ + (1/ε)f(θ) - εΔθ = 0
+//     → (ψ, χ) + (1/ε)(f(θ), χ) + ε(∇θ, ∇χ) = 0        [IBP on Laplacian]
+//     Linearization: f(θ) ≈ f(θ_old) + f'(θ_old)(θ - θ_old)
+//
+// MMS MODE: When params.mms.enabled is true, adds source terms S_θ and S_ψ
+// to RHS for manufactured solution verification.
 // ============================================================================
 
 #include "ch_assembler.h"
-#include "output/logger.h"
-#include "physics/material_properties.h"
+#include "utilities/parameters.h"
+#include "diagnostics/ch_mms.h"
 
-#include <deal.II/fe/fe_values.h>
 #include <deal.II/base/quadrature_lib.h>
+#include <deal.II/fe/fe_values.h>
 #include <deal.II/lac/full_matrix.h>
 
-template <int dim>
-CHAssembler<dim>::CHAssembler(PhaseFieldProblem<dim>& problem)
-    : problem_(problem)
+// ============================================================================
+// Double-well potential (Eq. 2, p.498)
+//   F(θ) = (1/4)(θ² - 1)²
+//   f(θ) = F'(θ) = θ³ - θ
+//   f'(θ) = F''(θ) = 3θ² - 1
+// ============================================================================
+inline double f_double_well(double theta)
 {
-    Logger::info("      CHAssembler constructed");
+    return theta * theta * theta - theta;
 }
 
-template <int dim>
-void CHAssembler<dim>::assemble(double dt, double current_time)
+inline double f_prime_double_well(double theta)
 {
-    (void)current_time;
+    return 3.0 * theta * theta - 1.0;
+}
 
-    const double inv_tau = 1.0 / dt;
-    const double gamma   = problem_.params_.ch.gamma;    // Mobility
-    const double epsilon = problem_.params_.ch.epsilon;  // Interface thickness
+// ============================================================================
+// Main assembly function
+// ============================================================================
+template <int dim>
+void assemble_ch_system(
+    const dealii::DoFHandler<dim>& theta_dof_handler,
+    const dealii::DoFHandler<dim>& psi_dof_handler,
+    const dealii::Vector<double>&  theta_old,
+    const dealii::Vector<double>&  ux_solution,
+    const dealii::Vector<double>&  uy_solution,
+    const Parameters&              params,
+    double                         dt,
+    double                         current_time,
+    const std::vector<dealii::types::global_dof_index>& theta_to_ch_map,
+    const std::vector<dealii::types::global_dof_index>& psi_to_ch_map,
+    dealii::SparseMatrix<double>&  matrix,
+    dealii::Vector<double>&        rhs)
+{
+    // Zero output
+    matrix = 0;
+    rhs = 0;
 
-    // Clear matrix and RHS
-    problem_.ch_matrix_ = 0;
-    problem_.ch_rhs_    = 0;
+    // Get FE from DoFHandler (both θ and ψ use same FE)
+    const auto& fe = theta_dof_handler.get_fe();
+    const unsigned int dofs_per_cell = fe.n_dofs_per_cell();
 
-    // Setup FE values
-    const dealii::QGauss<dim> quadrature(problem_.fe_Q2_.degree + 1);
-
-    dealii::FEValues<dim> fe_values(problem_.fe_Q2_, quadrature,
-                                     dealii::update_values |
-                                     dealii::update_gradients |
-                                     dealii::update_quadrature_points |
-                                     dealii::update_JxW_values);
-
-    const unsigned int dofs_per_cell = problem_.fe_Q2_.n_dofs_per_cell();
+    // Quadrature
+    const unsigned int quad_degree = params.fe.degree_phase + 2;
+    dealii::QGauss<dim> quadrature(quad_degree);
     const unsigned int n_q_points = quadrature.size();
 
-    // Local matrices for 2x2 block structure [θ | ψ]
-    dealii::FullMatrix<double> local_theta_theta(dofs_per_cell, dofs_per_cell);
-    dealii::FullMatrix<double> local_theta_psi(dofs_per_cell, dofs_per_cell);
-    dealii::FullMatrix<double> local_psi_theta(dofs_per_cell, dofs_per_cell);
-    dealii::FullMatrix<double> local_psi_psi(dofs_per_cell, dofs_per_cell);
+    // FEValues for each field
+    dealii::FEValues<dim> theta_fe_values(fe, quadrature,
+        dealii::update_values | dealii::update_gradients |
+        dealii::update_quadrature_points | dealii::update_JxW_values);
 
-    dealii::Vector<double> local_rhs_theta(dofs_per_cell);
-    dealii::Vector<double> local_rhs_psi(dofs_per_cell);
+    dealii::FEValues<dim> psi_fe_values(fe, quadrature,
+        dealii::update_values | dealii::update_gradients);
+
+    // For velocity (if provided, same FE degree as phase)
+    // We need separate FEValues only if velocity uses different mesh/FE
+    // Here we assume same mesh, so we can evaluate velocity at same quadrature points
+    dealii::FEValues<dim> ux_fe_values(fe, quadrature, dealii::update_values);
+    dealii::FEValues<dim> uy_fe_values(fe, quadrature, dealii::update_values);
+
+    // Local matrices for 2x2 block structure
+    dealii::FullMatrix<double> local_matrix_tt(dofs_per_cell, dofs_per_cell);  // θ-θ
+    dealii::FullMatrix<double> local_matrix_tp(dofs_per_cell, dofs_per_cell);  // θ-ψ
+    dealii::FullMatrix<double> local_matrix_pt(dofs_per_cell, dofs_per_cell);  // ψ-θ
+    dealii::FullMatrix<double> local_matrix_pp(dofs_per_cell, dofs_per_cell);  // ψ-ψ
+    dealii::Vector<double> local_rhs_t(dofs_per_cell);
+    dealii::Vector<double> local_rhs_p(dofs_per_cell);
 
     // DoF indices
-    std::vector<dealii::types::global_dof_index> theta_dofs(dofs_per_cell);
-    std::vector<dealii::types::global_dof_index> psi_dofs(dofs_per_cell);
+    std::vector<dealii::types::global_dof_index> theta_local_dofs(dofs_per_cell);
+    std::vector<dealii::types::global_dof_index> psi_local_dofs(dofs_per_cell);
 
-    // Field values at quadrature points
-    std::vector<double> theta_old_vals(n_q_points);
-    std::vector<dealii::Tensor<1, dim>> grad_theta_old(n_q_points);
-    std::vector<double> ux_vals(n_q_points), uy_vals(n_q_points);
+    // Solution values at quadrature points
+    std::vector<double> theta_old_values(n_q_points);
+    std::vector<double> ux_values(n_q_points);
+    std::vector<double> uy_values(n_q_points);
 
-    // Iterate over cells
-    auto theta_cell = problem_.theta_dof_handler_.begin_active();
-    auto psi_cell = problem_.psi_dof_handler_.begin_active();
-    auto ux_cell = problem_.ux_dof_handler_.begin_active();
-    auto uy_cell = problem_.uy_dof_handler_.begin_active();
+    // Physical parameters
+    const double epsilon = params.ch.epsilon;
+    const double gamma = params.ch.gamma;
 
-    for (; theta_cell != problem_.theta_dof_handler_.end();
-         ++theta_cell, ++psi_cell, ++ux_cell, ++uy_cell)
+    // Check if velocity is provided (non-empty AND non-zero norm)
+    const bool have_velocity = (ux_solution.size() > 0) &&
+                               (uy_solution.size() > 0) &&
+                               (ux_solution.l2_norm() + uy_solution.l2_norm() > 1e-14);
+
+    // MMS source terms (only if MMS mode enabled)
+    const bool mms_mode = params.mms.enabled;
+    CHSourceTheta<dim> source_theta(gamma);
+    CHSourcePsi<dim> source_psi(epsilon);
+    if (mms_mode)
     {
-        fe_values.reinit(theta_cell);
+        source_theta.set_time(current_time);
+        source_psi.set_time(current_time);
+    }
 
-        // Reset local matrices
-        local_theta_theta = 0; local_theta_psi = 0;
-        local_psi_theta = 0; local_psi_psi = 0;
-        local_rhs_theta = 0; local_rhs_psi = 0;
+    // Iterate over cells - all DoFHandlers share the same triangulation
+    auto theta_cell = theta_dof_handler.begin_active();
+    auto psi_cell = psi_dof_handler.begin_active();
 
-        // Get DoF indices
-        theta_cell->get_dof_indices(theta_dofs);
-        psi_cell->get_dof_indices(psi_dofs);
+    for (; theta_cell != theta_dof_handler.end(); ++theta_cell, ++psi_cell)
+    {
+        theta_fe_values.reinit(theta_cell);
+        psi_fe_values.reinit(psi_cell);
 
-        // Get field values
-        fe_values.get_function_values(problem_.theta_old_solution_, theta_old_vals);
-        fe_values.get_function_gradients(problem_.theta_old_solution_, grad_theta_old);
-        fe_values.get_function_values(problem_.ux_solution_, ux_vals);
-        fe_values.get_function_values(problem_.uy_solution_, uy_vals);
+        // Get corresponding velocity cells (same mesh)
+        if (have_velocity)
+        {
+            // Create cell accessors for velocity DoFHandlers
+            // They share the same triangulation, so same level/index
+            typename dealii::DoFHandler<dim>::active_cell_iterator
+                ux_cell(&theta_dof_handler.get_triangulation(),
+                        theta_cell->level(), theta_cell->index(),
+                        &theta_dof_handler);  // Using theta_dof for now (same FE)
+            ux_fe_values.reinit(ux_cell);
+            uy_fe_values.reinit(ux_cell);
+
+            ux_fe_values.get_function_values(ux_solution, ux_values);
+            uy_fe_values.get_function_values(uy_solution, uy_values);
+        }
+        else
+        {
+            // Zero velocity
+            std::fill(ux_values.begin(), ux_values.end(), 0.0);
+            std::fill(uy_values.begin(), uy_values.end(), 0.0);
+        }
+
+        // Reset local contributions
+        local_matrix_tt = 0;
+        local_matrix_tp = 0;
+        local_matrix_pt = 0;
+        local_matrix_pp = 0;
+        local_rhs_t = 0;
+        local_rhs_p = 0;
+
+        // Get old solution values
+        theta_fe_values.get_function_values(theta_old, theta_old_values);
 
         // Quadrature loop
         for (unsigned int q = 0; q < n_q_points; ++q)
         {
-            const double JxW = fe_values.JxW(q);
-
-            const double theta_old = theta_old_vals[q];
-            const auto& grad_theta = grad_theta_old[q];
+            const double JxW = theta_fe_values.JxW(q);
+            const double theta_old_q = theta_old_values[q];
 
             // Velocity at quadrature point
             dealii::Tensor<1, dim> u;
-            u[0] = ux_vals[q];
-            u[1] = uy_vals[q];
+            u[0] = ux_values[q];
+            if constexpr (dim >= 2)
+                u[1] = uy_values[q];
 
-            // Double-well potential and its derivative [Eq. 2-3]
-            // f(θ) = θ³ - θ,  f'(θ) = 3θ² - 1
-            const double f_old = MaterialProperties::double_well_derivative(theta_old);
-            const double fp_old = 3.0 * theta_old * theta_old - 1.0;
+            // Double-well derivatives at θ_old
+            const double f_old = f_double_well(theta_old_q);
+            const double fp_old = f_prime_double_well(theta_old_q);
 
+            // Shape function loop
             for (unsigned int i = 0; i < dofs_per_cell; ++i)
             {
-                const double phi_i = fe_values.shape_value(i, q);
-                const auto grad_phi_i = fe_values.shape_grad(i, q);
+                // θ shape functions
+                const double phi_i = theta_fe_values.shape_value(i, q);
+                const dealii::Tensor<1, dim> grad_phi_i = theta_fe_values.shape_grad(i, q);
+
+                // ψ shape functions (same FE, but conceptually separate)
+                const double chi_i = psi_fe_values.shape_value(i, q);
+                const dealii::Tensor<1, dim> grad_chi_i = psi_fe_values.shape_grad(i, q);
 
                 for (unsigned int j = 0; j < dofs_per_cell; ++j)
                 {
-                    const double phi_j = fe_values.shape_value(j, q);
-                    const auto grad_phi_j = fe_values.shape_grad(j, q);
+                    const double phi_j = theta_fe_values.shape_value(j, q);
+                    const dealii::Tensor<1, dim> grad_phi_j = theta_fe_values.shape_grad(j, q);
+                    const double chi_j = psi_fe_values.shape_value(j, q);
+                    const dealii::Tensor<1, dim> grad_chi_j = psi_fe_values.shape_grad(j, q);
 
-                    // ==========================================================
-                    // Equation (42a): θ equation
-                    // (δΘ/τ, Φ) - (UΘ, ∇Φ) + γ(∇Ψ, ∇Φ) = 0
-                    // ==========================================================
+                    // ================================================================
+                    // θ equation (Eq. 14a): (1/τ)(θ,φ) - (uθ,∇φ) + γ(∇ψ,∇φ) = (1/τ)(θ_old,φ)
+                    // ================================================================
 
-                    // (1/τ)(θ, φ)  [θ-θ block]
-                    local_theta_theta(i, j) += inv_tau * phi_i * phi_j * JxW;
+                    // θ-θ block: (1/τ)(θ,φ) - (uθ,∇φ)
+                    // Mass: (1/τ)(θ,φ)
+                    local_matrix_tt(i, j) += (1.0 / dt) * phi_i * phi_j * JxW;
+                    // Advection (conservative): -(uθ,∇φ) = -θ(u·∇φ)
+                    local_matrix_tt(i, j) -= phi_j * (u * grad_phi_i) * JxW;
 
-                    // -(Uθ, ∇φ) → explicit, linearized: -θ(U·∇φ)  [θ-θ block]
-                    local_theta_theta(i, j) -= phi_j * (u * grad_phi_i) * JxW;
+                    // θ-ψ block: +γ(∇ψ,∇φ)
+                    local_matrix_tp(i, j) -= gamma * (grad_chi_j * grad_phi_i) * JxW;
 
-                    // +γ(∇ψ, ∇φ)  [θ-ψ block]
-                    local_theta_psi(i, j) += gamma * (grad_phi_j * grad_phi_i) * JxW;
+                    // ================================================================
+                    // ψ equation (Eq. 14b): (ψ,χ) + ε(∇θ,∇χ) + (1/ε)(f'θ,χ) = (1/ε)(f'θ_old - f, χ)
+                    // ================================================================
 
-                    // ==========================================================
-                    // Equation (42b): ψ equation (chemical potential)
-                    // (Ψ, Λ) - ε(∇Θ, ∇Λ) - (1/ε)(f(Θ), Λ) = 0
-                    //
-                    // With Newton linearization:
-                    // (ψ, χ) - ε(∇θ, ∇χ) - (1/ε)(f'(θ_old)θ, χ) = -(1/ε)(f(θ_old) - f'(θ_old)θ_old, χ)
-                    // ==========================================================
+                    // ψ-ψ block: (ψ,χ)
+                    local_matrix_pp(i, j) += chi_i * chi_j * JxW;
 
-                    // (ψ, χ)  [ψ-ψ block]
-                    local_psi_psi(i, j) += phi_i * phi_j * JxW;
-
-                    // -ε(∇θ, ∇χ)  [ψ-θ block]
-                    local_psi_theta(i, j) -= epsilon * (grad_phi_j * grad_phi_i) * JxW;
-
-                    // -(1/ε)(f'(θ_old)θ, χ)  [ψ-θ block, linearized potential]
-                    local_psi_theta(i, j) -= (1.0 / epsilon) * fp_old * phi_j * phi_i * JxW;
+                    // ψ-θ block: ε(∇θ,∇χ) + (1/ε)(f'(θ_old)θ,χ)
+                    local_matrix_pt(i, j) += epsilon * (grad_phi_j * grad_chi_i) * JxW;
+                    local_matrix_pt(i, j) += (1.0 / epsilon) * fp_old * phi_j * chi_i * JxW;
                 }
 
-                // ==============================================================
+                // ================================================================
                 // RHS contributions
-                // ==============================================================
+                // ================================================================
 
-                // Eq (42a) RHS: (1/τ)(θ_old, φ)
-                local_rhs_theta(i) += inv_tau * theta_old * phi_i * JxW;
+                // θ equation RHS: (1/τ)(θ_old,φ)
+                local_rhs_t(i) += (1.0 / dt) * theta_old_q * phi_i * JxW;
 
-                // Eq (42b) RHS: +(1/ε)(f(θ_old) - f'(θ_old)θ_old, χ)
-                // Note: f - f'θ = (θ³-θ) - (3θ²-1)θ = θ³ - θ - 3θ³ + θ = -2θ³
-                // So RHS = -(1/ε)(-2θ³) = (2/ε)θ³
-                local_rhs_psi(i) += (1.0 / epsilon) * (f_old - fp_old * theta_old) * phi_i * JxW;
+                // ψ equation RHS: (1/ε)(f'(θ_old)θ_old - f(θ_old), χ)
+                // = (1/ε)((3θ²-1)θ - (θ³-θ), χ)
+                // = (1/ε)(3θ³ - θ - θ³ + θ, χ)
+                // = (1/ε)(2θ³, χ)
+                // But let's keep the general form for clarity:
+                local_rhs_p(i) += (1.0 / epsilon) * (fp_old * theta_old_q - f_old) * chi_i * JxW;
+
+                // MMS source terms (if enabled)
+                if (mms_mode)
+                {
+                    const auto& q_point = theta_fe_values.quadrature_point(q);
+                    const double S_theta = source_theta.value(q_point);
+                    const double S_psi = source_psi.value(q_point);
+
+                    // Add source to θ equation: (S_θ, φ)
+                    local_rhs_t(i) += S_theta * phi_i * JxW;
+
+                    // Add source to ψ equation: (S_ψ, χ)
+                    local_rhs_p(i) += S_psi * chi_i * JxW;
+                }
             }
         }
 
-        // =====================================================================
-        // Distribute to global system using INDEX MAPS
-        // =====================================================================
+        // Get global DoF indices
+        theta_cell->get_dof_indices(theta_local_dofs);
+        psi_cell->get_dof_indices(psi_local_dofs);
+
+        // ================================================================
+        // Assemble into global coupled matrix using index maps
+        // ================================================================
         for (unsigned int i = 0; i < dofs_per_cell; ++i)
         {
-            const auto gi_theta = problem_.theta_to_ch_map_[theta_dofs[i]];
-            const auto gi_psi = problem_.psi_to_ch_map_[psi_dofs[i]];
+            const auto gi_t = theta_to_ch_map[theta_local_dofs[i]];
+            const auto gi_p = psi_to_ch_map[psi_local_dofs[i]];
 
-            problem_.ch_rhs_(gi_theta) += local_rhs_theta(i);
-            problem_.ch_rhs_(gi_psi) += local_rhs_psi(i);
+            // RHS
+            rhs(gi_t) += local_rhs_t(i);
+            rhs(gi_p) += local_rhs_p(i);
 
             for (unsigned int j = 0; j < dofs_per_cell; ++j)
             {
-                const auto gj_theta = problem_.theta_to_ch_map_[theta_dofs[j]];
-                const auto gj_psi = problem_.psi_to_ch_map_[psi_dofs[j]];
+                const auto gj_t = theta_to_ch_map[theta_local_dofs[j]];
+                const auto gj_p = psi_to_ch_map[psi_local_dofs[j]];
 
                 // θ-θ block
-                problem_.ch_matrix_.add(gi_theta, gj_theta, local_theta_theta(i, j));
+                matrix.add(gi_t, gj_t, local_matrix_tt(i, j));
 
                 // θ-ψ block
-                problem_.ch_matrix_.add(gi_theta, gj_psi, local_theta_psi(i, j));
+                matrix.add(gi_t, gj_p, local_matrix_tp(i, j));
 
                 // ψ-θ block
-                problem_.ch_matrix_.add(gi_psi, gj_theta, local_psi_theta(i, j));
+                matrix.add(gi_p, gj_t, local_matrix_pt(i, j));
 
                 // ψ-ψ block
-                problem_.ch_matrix_.add(gi_psi, gj_psi, local_psi_psi(i, j));
+                matrix.add(gi_p, gj_p, local_matrix_pp(i, j));
             }
         }
     }
 }
 
-template class CHAssembler<2>;
-// template class CHAssembler<3>;
+// ============================================================================
+// Explicit instantiation
+// ============================================================================
+template void assemble_ch_system<2>(
+    const dealii::DoFHandler<2>&,
+    const dealii::DoFHandler<2>&,
+    const dealii::Vector<double>&,
+    const dealii::Vector<double>&,
+    const dealii::Vector<double>&,
+    const Parameters&,
+    double,
+    double,
+    const std::vector<dealii::types::global_dof_index>&,
+    const std::vector<dealii::types::global_dof_index>&,
+    dealii::SparseMatrix<double>&,
+    dealii::Vector<double>&);

@@ -1,8 +1,6 @@
 // ============================================================================
 // solvers/ns_solver.cc - Navier-Stokes Solver
 //
-// FIXED VERSION: Uses combined constraints properly
-//
 // Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
 // ============================================================================
 
@@ -21,39 +19,35 @@ NSSolver<dim>::NSSolver(PhaseFieldProblem<dim>& problem)
 template <int dim>
 void NSSolver<dim>::solve()
 {
-    const unsigned int n_ux = problem_.ux_dof_handler_.n_dofs();
-    const unsigned int n_uy = problem_.uy_dof_handler_.n_dofs();
+    const unsigned int n_u = problem_.ux_dof_handler_.n_dofs();
     const unsigned int n_p = problem_.p_dof_handler_.n_dofs();
-    const unsigned int n_total = n_ux + n_uy + n_p;
+    const unsigned int n_total = 2 * n_u + n_p;
 
-    // Solution vector for coupled system
     dealii::Vector<double> solution(n_total);
 
-    // Condense the system with combined constraints BEFORE solving
-    problem_.ns_combined_constraints_.condense(problem_.ns_matrix_, problem_.ns_rhs_);
-
-    // Solve using UMFPACK
     dealii::SparseDirectUMFPACK solver;
     solver.initialize(problem_.ns_matrix_);
     solver.vmult(solution, problem_.ns_rhs_);
 
-    // Distribute constraints to solution
-    problem_.ns_combined_constraints_.distribute(solution);
+    // Extract u_x [0, n_u)
+    for (unsigned int i = 0; i < n_u; ++i)
+        problem_.ux_solution_[i] = solution[i];
 
-    // Extract u_x, u_y, p from coupled solution using index maps
-    for (unsigned int i = 0; i < n_ux; ++i)
-        problem_.ux_solution_[i] = solution[problem_.ux_to_ns_map_[i]];
+    // Extract u_y [n_u, 2*n_u)
+    for (unsigned int i = 0; i < n_u; ++i)
+        problem_.uy_solution_[i] = solution[n_u + i];
 
-    for (unsigned int i = 0; i < n_uy; ++i)
-        problem_.uy_solution_[i] = solution[problem_.uy_to_ns_map_[i]];
-
+    // Extract p [2*n_u, 2*n_u + n_p)
     for (unsigned int i = 0; i < n_p; ++i)
-        problem_.p_solution_[i] = solution[problem_.p_to_ns_map_[i]];
+        problem_.p_solution_[i] = solution[2 * n_u + i];
 
-    // Apply individual constraints
     problem_.ux_constraints_.distribute(problem_.ux_solution_);
     problem_.uy_constraints_.distribute(problem_.uy_solution_);
     problem_.p_constraints_.distribute(problem_.p_solution_);
+
+    // Remove pressure nullspace (mean-zero constraint)
+    const double p_mean = problem_.p_solution_.mean_value();
+    problem_.p_solution_.add(-p_mean);
 }
 
 template class NSSolver<2>;

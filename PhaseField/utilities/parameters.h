@@ -14,8 +14,6 @@
 
 /**
  * @brief All simulation parameters organized by subsystem
- *
- * Parameters from Section 6.2, p.520-522 with page references
  */
 struct Parameters
 {
@@ -24,70 +22,76 @@ struct Parameters
     // ========================================================================
     struct Domain
     {
-        double x_min = 0.0;           // p.520: Ω = [0,1] × [0,0.6]
-        double x_max = 1.0;           // p.520
-        double y_min = 0.0;           // p.520
-        double y_max = 0.6;           // p.520
-        unsigned int initial_refinement = 5;  // p.522: 6 levels for main results
+        double x_min = 0.0;
+        double x_max = 1.0;
+        double y_min = 0.0;
+        double y_max = 0.6;
+        unsigned int initial_refinement = 5;
     } domain;
-    
+
+    // ========================================================================
+    // Finite element parameters
+    // ========================================================================
+    struct FE
+    {
+        unsigned int degree_velocity = 2;
+        unsigned int degree_pressure = 1;
+        unsigned int degree_phase = 2;
+        unsigned int degree_potential = 2;
+        unsigned int degree_magnetization = 2;
+    } fe;
+
     // ========================================================================
     // Time stepping parameters
     // ========================================================================
     struct Time
     {
-        double dt = 5e-4;             // p.522: τ = 5×10⁻⁴ (K=4000 steps)
-        double t_final = 2.0;         // p.522: t_F = 2.0
+        double dt = 5e-4;
+        double t_final = 2.0;
+        double theta = 1.0;
+        bool adaptive = false;
+        double dt_min = 1e-8;
+        double dt_max = 1e-3;
     } time;
-    
+
     // ========================================================================
-    // Cahn-Hilliard parameters
+    // Cahn-Hilliard parameters (Eq. 14a-14b, p.499)
     // ========================================================================
     struct CH
     {
-        double epsilon = 0.01;        // p.522: ε = 0.01 (interface thickness)
-        double gamma = 0.0002;        // p.522: γ = 0.0002 (mobility)
-        double lambda = 0.05;         // p.522: λ = 0.05 (capillary coefficient)
-
-        // ASSUMPTION: η = 0.5ε (stabilization parameter)
-        // BASIS: Paper states η ≤ ε (Theorem 4.1, p.505; Proposition 5.1)
-        //        but does not specify exact value. We choose η = 0.5ε as conservative.
-        // QUESTION: What value of η was used in the paper's numerical experiments?
-        double eta = 0.005;           // η = 0.5 * ε = 0.5 * 0.01 = 0.005
+        double epsilon = 0.01;        // Interface thickness
+        double gamma = 0.0002;        // Mobility
+        double lambda = 0.05;         // Capillary coefficient
+        double eta = 0.005;           // Stabilization (eta <= epsilon)
     } ch;
 
     // ========================================================================
-    // Magnetization parameters
+    // Magnetization parameters (Eq. 14c, p.499)
     // ========================================================================
     struct Magnetization
     {
-        double chi_0 = 0.5;           // p.520: χ₀ = 0.5 (susceptibility)
-                                      // Constraint: χ₀ ≤ 4 (Proposition 3.1, p.502)
-        double T_relax = 0.0;         // Relaxation time T (not specified in paper)
-                                      // Range: 10⁻⁵–10⁻⁹ s (p.500)
-                                      // T = 0 means quasi-equilibrium m = χ_θ h
+        double chi_0 = 0.5;           // Susceptibility (chi_0 <= 4)
+        double T_relax = 0.0;         // Relaxation time
     } magnetization;
 
     // ========================================================================
-    // Navier-Stokes parameters
+    // Navier-Stokes parameters (Eq. 14e-14f, p.500)
     // ========================================================================
     struct NS
     {
-        double nu_water = 1.0;        // p.520: ν_w = 1.0 (water viscosity)
-        double nu_ferro = 2.0;        // p.520: ν_f = 2.0 (ferrofluid viscosity)
-        double mu_0 = 1.0;            // p.520: μ₀ = 1 (magnetic permeability)
-        double rho = 1.0;             // p.520: ρ = 1 (unitary density)
-        double r = 0.1;               // p.520: r = 0.1 (density ratio for gravity)
-        double grad_div = 1.0;        // Grad-div stabilization (not in paper)
+        double nu_water = 1.0;
+        double nu_ferro = 2.0;
+        double mu_0 = 1.0;
+        double rho = 1.0;
+        double r = 0.1;
+        double grad_div = 0.0;
     } ns;
 
     // ========================================================================
-    // Dipole parameters for applied field h_a
+    // Dipole parameters (Eq. 96-98, p.519)
     // ========================================================================
     struct Dipoles
     {
-        // Positions (p.522): (-0.5,-1.5), (0,-1.5), (0.5,-1.5), (1,-1.5), (1.5,-1.5)
-        // NOTE: y = -1.5, NOT -15
         std::vector<dealii::Point<2>> positions = {
             dealii::Point<2>(-0.5, -1.5),
             dealii::Point<2>(0.0, -1.5),
@@ -95,21 +99,19 @@ struct Parameters
             dealii::Point<2>(1.0, -1.5),
             dealii::Point<2>(1.5, -1.5)
         };
-
-        dealii::Tensor<1, 2> direction = dealii::Tensor<1, 2>({0.0, 1.0});  // d = (0,1)^T upward
-
-        double intensity_max = 6000.0;  // p.522: α_s max = 6000
-        double ramp_time = 1.6;         // p.522: ramp over t ∈ [0, 1.6]
+        dealii::Tensor<1, 2> direction = dealii::Tensor<1, 2>({0.0, 1.0});
+        double intensity_max = 6000.0;
+        double ramp_time = 1.6;
     } dipoles;
 
     // ========================================================================
-    // Gravity parameters (optional, Eq. 19)
+    // Gravity parameters
     // ========================================================================
     struct Gravity
     {
-        bool enabled = true;          // Gravity is optional supplement (p.501)
-        double magnitude = 30000.0;   // p.522, Eq.103: g ≈ 3×10⁴
-        dealii::Tensor<1, 2> direction = dealii::Tensor<1, 2>({0.0, -1.0});  // downward
+        bool enabled = true;
+        double magnitude = 30000.0;
+        dealii::Tensor<1, 2> direction = dealii::Tensor<1, 2>({0.0, -1.0});
     } gravity;
 
     // ========================================================================
@@ -117,10 +119,13 @@ struct Parameters
     // ========================================================================
     struct AMR
     {
-        bool enabled = true;          // p.522: mesh refined-coarsened every 5 steps
-        unsigned int min_level = 4;   // Minimum refinement level
-        unsigned int max_level = 7;   // Maximum refinement level (Fig. 3)
-        unsigned int interval = 5;    // p.522: "once every 5 time steps"
+        bool enabled = true;
+        unsigned int min_level = 4;
+        unsigned int max_level = 7;
+        unsigned int interval = 5;
+        double refine_fraction = 0.3;
+        double coarsen_fraction = 0.0;
+        int indicator_type = 0;
     } amr;
 
     // ========================================================================
@@ -128,17 +133,59 @@ struct Parameters
     // ========================================================================
     struct IC
     {
-        double pool_depth = 0.2;      // p.522: "ferrofluid pool of 0.2 units of depth"
+        int type = 1;                 // 0=droplet, 1=flat, 2=perturbed
+        double pool_depth = 0.2;
+        double perturbation = 0.01;
+        int perturbation_modes = 5;
     } ic;
+
+    // ========================================================================
+    // Coupling parameters
+    // ========================================================================
+    struct Coupling
+    {
+        bool use_picard = false;
+        unsigned int max_iterations = 5;
+        double tolerance = 1e-6;
+    } coupling;
 
     // ========================================================================
     // Output parameters
     // ========================================================================
     struct Output
     {
-        std::string folder = "../Results";  // Output in project root, not build folder
-        unsigned int frequency = 100;    // Output every N steps
+        std::string folder = "../Results";
+        unsigned int frequency = 100;
+        bool verbose = true;
     } output;
+
+    // ========================================================================
+    // MMS parameters (Method of Manufactured Solutions)
+    // ========================================================================
+    struct MMS
+    {
+        bool enabled = false;
+        double t_init = 0.1;          // Initial time for MMS (avoid t=0)
+        double alpha = 1.0;           // Reserved for coupled MMS
+        double beta = 1.0;            // Reserved for coupled MMS
+        double delta = 1.0;           // Reserved for coupled MMS
+    } mms;
+
+    // ========================================================================
+    // Runtime state
+    // ========================================================================
+    mutable double current_time = 0.0;
+
+    // ========================================================================
+    // Parameter validation
+    // ========================================================================
+    bool validate() const
+    {
+        bool valid = true;
+        if (magnetization.chi_0 > 4.0) valid = false;
+        if (ch.eta > ch.epsilon) valid = false;
+        return valid;
+    }
 
     // ========================================================================
     // Parse command line arguments
