@@ -1,7 +1,11 @@
 // ============================================================================
-// solvers/poisson_solver.h - Magnetostatic Poisson solver interface
+// solvers/poisson_solver.h - Magnetostatic Poisson solver (CORRECTED)
 //
-// Options: CG+SSOR (fast) or UMFPACK (robust)
+// Solves: (∇φ, ∇χ) = (h_a - m, ∇χ)  with Neumann BC
+//
+// Options: CG+SSOR (fast, SPD) or UMFPACK (robust)
+//
+// Note: Pure Neumann problem - the constant is fixed by pinning one DoF.
 //
 // Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
 // ============================================================================
@@ -15,17 +19,22 @@
 /**
  * @brief Solve the Poisson system for magnetic potential
  *
- * Uses CG+SSOR for SPD systems (fast), or UMFPACK for robustness.
+ * Solves: (∇φ, ∇χ) = (h_a - m, ∇χ)
  *
- * @param matrix       System matrix (μ(θ)∇φ, ∇ψ)
- * @param rhs          Right-hand side (typically zero)
+ * The system is SPD (after fixing the constant via constraints),
+ * so CG with SSOR preconditioner is efficient.
+ *
+ * @param matrix       System matrix (∇φ, ∇χ) - simple Laplacian stiffness
+ * @param rhs          Right-hand side (h_a - m, ∇χ)
  * @param solution     [OUT] Magnetic potential φ
- * @param constraints  Dirichlet BCs for applied field
+ * @param constraints  Constraints (hanging nodes + pinned DoF)
+ * @param verbose      Print solver info
  */
 void solve_poisson_system(
     const dealii::SparseMatrix<double>& matrix,
     const dealii::Vector<double>& rhs,
     dealii::Vector<double>& solution,
-    const dealii::AffineConstraints<double>& constraints);
+    const dealii::AffineConstraints<double>& constraints,
+    bool verbose = false);
 
 #endif // POISSON_SOLVER_H

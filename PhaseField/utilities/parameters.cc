@@ -1,14 +1,12 @@
 // ============================================================================
 // utilities/parameters.cc - Parameter Parsing Implementation
 //
-// Simplified version without Logger dependency for standalone testing.
+// Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
 // ============================================================================
 
-#include "parameters.h"
-
-#include <iostream>
-#include <cstdlib>
+#include "utilities/parameters.h"
 #include <cstring>
+#include <stdexcept>
 
 Parameters Parameters::parse_command_line(int argc, char* argv[])
 {
@@ -16,134 +14,223 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
 
     for (int i = 1; i < argc; ++i)
     {
-        std::string arg = argv[i];
-
-        // Domain
-        if (arg == "--refinement" && i + 1 < argc)
+        // Domain parameters
+        if (std::strcmp(argv[i], "--refinement") == 0 ||
+            std::strcmp(argv[i], "-r") == 0)
+        {
             params.domain.initial_refinement = std::stoul(argv[++i]);
+            params.mesh.initial_refinement = params.domain.initial_refinement;
+        }
+        else if (std::strcmp(argv[i], "--x_min") == 0)
+            params.domain.x_min = std::stod(argv[++i]);
+        else if (std::strcmp(argv[i], "--x_max") == 0)
+            params.domain.x_max = std::stod(argv[++i]);
+        else if (std::strcmp(argv[i], "--y_min") == 0)
+            params.domain.y_min = std::stod(argv[++i]);
+        else if (std::strcmp(argv[i], "--y_max") == 0)
+            params.domain.y_max = std::stod(argv[++i]);
+        else if (std::strcmp(argv[i], "--layer_height") == 0)
+        {
+            params.domain.layer_height = std::stod(argv[++i]);
+            params.ic.pool_depth = params.domain.layer_height;
+        }
 
-        // Time
-        else if (arg == "--dt" && i + 1 < argc)
-            params.time.dt = std::stod(argv[++i]);
-        else if ((arg == "--t_final" || arg == "--t-final") && i + 1 < argc)
-            params.time.t_final = std::stod(argv[++i]);
-
-        // CH
-        else if (arg == "--epsilon" && i + 1 < argc)
-            params.ch.epsilon = std::stod(argv[++i]);
-        else if (arg == "--gamma" && i + 1 < argc)
-            params.ch.gamma = std::stod(argv[++i]);
-        else if (arg == "--eta" && i + 1 < argc)
-            params.ch.eta = std::stod(argv[++i]);
-
-        // IC
-        else if (arg == "--ic_type" && i + 1 < argc)
+        // Initial condition parameters
+        else if (std::strcmp(argv[i], "--ic_type") == 0)
             params.ic.type = std::stoi(argv[++i]);
-        else if (arg == "--pool_depth" && i + 1 < argc)
+        else if (std::strcmp(argv[i], "--pool_depth") == 0)
             params.ic.pool_depth = std::stod(argv[++i]);
-        else if (arg == "--perturbation" && i + 1 < argc)
+        else if (std::strcmp(argv[i], "--perturbation") == 0)
             params.ic.perturbation = std::stod(argv[++i]);
+        else if (std::strcmp(argv[i], "--perturbation_modes") == 0)
+            params.ic.perturbation_modes = std::stoi(argv[++i]);
 
-        // MMS
-        else if (arg == "--mms" || arg == "--mms_enabled")
+        // MMS parameters
+        else if (std::strcmp(argv[i], "--mms") == 0)
             params.mms.enabled = true;
-        else if (arg == "--mms_t_init" && i + 1 < argc)
+        else if (std::strcmp(argv[i], "--mms_t_init") == 0 ||
+                 std::strcmp(argv[i], "--t_init") == 0)
             params.mms.t_init = std::stod(argv[++i]);
 
-        // Magnetic
-        else if (arg == "--magnetic")
-            params.magnetic.enabled = true;
-        else if (arg == "--chi_m" && i + 1 < argc)
-            params.magnetization.chi_0 = std::stod(argv[++i]);
-        else if (arg == "--dipole_intensity" && i + 1 < argc)
-            params.dipoles.intensity_max = std::stod(argv[++i]);
-        else if (arg == "--dipole_ramp" && i + 1 < argc)
-            params.dipoles.ramp_time = std::stod(argv[++i]);
+        // Cahn-Hilliard parameters
+        else if (std::strcmp(argv[i], "--epsilon") == 0)
+        {
+            params.ch.epsilon = std::stod(argv[++i]);
+            params.ch.eta = params.ch.epsilon;  // Default: η = ε
+        }
+        else if (std::strcmp(argv[i], "--lambda") == 0)
+            params.ch.lambda = std::stod(argv[++i]);
+        else if (std::strcmp(argv[i], "--mobility") == 0 ||
+                 std::strcmp(argv[i], "--gamma") == 0)
+            params.ch.gamma = std::stod(argv[++i]);
+        else if (std::strcmp(argv[i], "--eta") == 0)
+            params.ch.eta = std::stod(argv[++i]);
 
-        // Navier-Stokes
-        else if (arg == "--ns")
+        // Magnetization parameters
+        else if (std::strcmp(argv[i], "--chi_0") == 0)
+            params.magnetization.chi_0 = std::stod(argv[++i]);
+        else if (std::strcmp(argv[i], "--T_relax") == 0)
+            params.magnetization.T_relax = std::stod(argv[++i]);
+
+        // Navier-Stokes parameters
+        else if (std::strcmp(argv[i], "--ns") == 0)
             params.ns.enabled = true;
-        else if (arg == "--nu_water" && i + 1 < argc)
+        else if (std::strcmp(argv[i], "--nu_water") == 0)
             params.ns.nu_water = std::stod(argv[++i]);
-        else if (arg == "--nu_ferro" && i + 1 < argc)
+        else if (std::strcmp(argv[i], "--nu_ferro") == 0)
             params.ns.nu_ferro = std::stod(argv[++i]);
-        else if (arg == "--gravity")
-            params.gravity.enabled = true;
-        else if (arg == "--no-gravity")
+        else if (std::strcmp(argv[i], "--mu_0") == 0)
+            params.ns.mu_0 = std::stod(argv[++i]);
+        else if (std::strcmp(argv[i], "--density_ratio") == 0 ||
+                 std::strcmp(argv[i], "--r") == 0)
+        {
+            params.ns.r = std::stod(argv[++i]);
+            params.ns.density_ratio = params.ns.r;
+        }
+        else if (std::strcmp(argv[i], "--grad_div") == 0)
+            params.ns.grad_div = std::stod(argv[++i]);
+
+        // Gravity parameters
+        else if (std::strcmp(argv[i], "--no_gravity") == 0)
             params.gravity.enabled = false;
-        else if (arg == "--g_mag" && i + 1 < argc)
+        else if (std::strcmp(argv[i], "--g") == 0 ||
+                 std::strcmp(argv[i], "--gravity") == 0)
             params.gravity.magnitude = std::stod(argv[++i]);
 
-        // Output
-        else if (arg == "--output_dir" && i + 1 < argc)
+        // Dipole parameters
+        else if (std::strcmp(argv[i], "--dipole_intensity") == 0)
+            params.dipoles.intensity_max = std::stod(argv[++i]);
+        else if (std::strcmp(argv[i], "--dipole_ramp") == 0)
+            params.dipoles.ramp_time = std::stod(argv[++i]);
+        else if (std::strcmp(argv[i], "--dipole_y") == 0)
+        {
+            double y = std::stod(argv[++i]);
+            // Update all dipole y-positions
+            for (auto& pos : params.dipoles.positions)
+                pos[1] = y;
+        }
+
+        // Magnetic model options
+        else if (std::strcmp(argv[i], "--no_magnetic") == 0)
+            params.magnetic.enabled = false;
+        else if (std::strcmp(argv[i], "--simplified") == 0)
+            params.magnetic.use_simplified = true;
+
+        // Time parameters
+        else if (std::strcmp(argv[i], "--dt") == 0)
+            params.time.dt = std::stod(argv[++i]);
+        else if (std::strcmp(argv[i], "--t_final") == 0)
+            params.time.t_final = std::stod(argv[++i]);
+        else if (std::strcmp(argv[i], "--max_steps") == 0)
+            params.time.max_steps = std::stoul(argv[++i]);
+        else if (std::strcmp(argv[i], "--time_theta") == 0)
+            params.time.theta = std::stod(argv[++i]);
+
+        // Mesh/AMR parameters
+        else if (std::strcmp(argv[i], "--amr") == 0)
+            params.mesh.use_amr = true;
+        else if (std::strcmp(argv[i], "--no_amr") == 0)
+            params.mesh.use_amr = false;
+        else if (std::strcmp(argv[i], "--amr_min") == 0)
+            params.mesh.amr_min_level = std::stoul(argv[++i]);
+        else if (std::strcmp(argv[i], "--amr_max") == 0)
+            params.mesh.amr_max_level = std::stoul(argv[++i]);
+        else if (std::strcmp(argv[i], "--amr_interval") == 0)
+            params.mesh.amr_interval = std::stoul(argv[++i]);
+
+        // Output parameters
+        else if (std::strcmp(argv[i], "--output") == 0 ||
+                 std::strcmp(argv[i], "-o") == 0)
+        {
             params.output.folder = argv[++i];
-        else if (arg == "--output_frequency" && i + 1 < argc)
+            params.output.output_dir = params.output.folder;
+        }
+        else if (std::strcmp(argv[i], "--output_frequency") == 0 ||
+                 std::strcmp(argv[i], "--output_interval") == 0)
+        {
             params.output.frequency = std::stoul(argv[++i]);
-        else if (arg == "--verbose")
+            params.output.output_interval = params.output.frequency;
+        }
+        else if (std::strcmp(argv[i], "--verbose") == 0 ||
+                 std::strcmp(argv[i], "-v") == 0)
             params.output.verbose = true;
-        else if (arg == "--quiet")
-            params.output.verbose = false;
+
+        // Solver parameters
+        else if (std::strcmp(argv[i], "--direct") == 0)
+            params.solver.use_direct = true;
+        else if (std::strcmp(argv[i], "--tol") == 0)
+            params.solver.tolerance = std::stod(argv[++i]);
+        else if (std::strcmp(argv[i], "--max_iter") == 0)
+            params.solver.max_iterations = std::stoul(argv[++i]);
+
+        // Preset configurations
+        else if (std::strcmp(argv[i], "--rosensweig") == 0)
+            params.setup_rosensweig();
+        else if (std::strcmp(argv[i], "--hedgehog") == 0)
+            params.setup_hedgehog();
 
         // Help
-        else if (arg == "--help" || arg == "-h")
+        else if (std::strcmp(argv[i], "--help") == 0 ||
+                 std::strcmp(argv[i], "-h") == 0)
         {
-            std::cout << "Phase Field Ferrofluid Solver\n\n";
-            std::cout << "Usage: ./ferrofluid [options]\n\n";
-            std::cout << "Options:\n";
-            std::cout << "  --refinement <n>    Mesh refinement (default: 5)\n";
-            std::cout << "  --dt <val>          Time step (default: 5e-4)\n";
-            std::cout << "  --t-final <val>     Final time (default: 2.0)\n";
-            std::cout << "  --epsilon <val>     Interface thickness (default: 0.01)\n";
-            std::cout << "  --gamma <val>       Mobility (default: 0.0002)\n";
-            std::cout << "  --ic_type <n>       0=droplet, 1=flat, 2=perturbed\n";
-            std::cout << "\nMMS Verification:\n";
-            std::cout << "  --mms               Enable MMS verification mode\n";
-            std::cout << "  --mms_t_init <val>  MMS initial time (default: 0.1)\n";
-            std::cout << "\nMagnetic Field:\n";
-            std::cout << "  --magnetic          Enable magnetostatic Poisson solve\n";
-            std::cout << "  --chi_m <val>       Magnetic susceptibility (default: 0.5)\n";
-            std::cout << "  --dipole_intensity <val>  Dipole intensity (default: 6000)\n";
-            std::cout << "  --dipole_ramp <val>       Ramp time (default: 1.6)\n";
-            std::cout << "\nNavier-Stokes:\n";
-            std::cout << "  --ns                Enable Navier-Stokes solve\n";
-            std::cout << "  --nu_water <val>    Water viscosity (default: 1.0)\n";
-            std::cout << "  --nu_ferro <val>    Ferrofluid viscosity (default: 2.0)\n";
-            std::cout << "  --gravity / --no-gravity  Enable/disable gravity\n";
-            std::cout << "  --g_mag <val>       Gravity magnitude (default: 30000)\n";
-            std::cout << "\nOutput:\n";
-            std::cout << "  --output_dir <path> Output directory\n";
-            std::cout << "  --output_frequency <n> Output every N steps\n";
-            std::cout << "  --verbose / --quiet Verbosity control\n";
+            std::cout << "Usage: " << argv[0] << " [options]\n\n"
+                      << "Preset configurations:\n"
+                      << "  --rosensweig         Rosensweig instability (Section 6.2)\n"
+                      << "  --hedgehog           Hedgehog instability (Section 6.3)\n\n"
+                      << "Domain:\n"
+                      << "  --refinement N       Initial mesh refinement level\n"
+                      << "  --x_min, --x_max     Domain x-bounds\n"
+                      << "  --y_min, --y_max     Domain y-bounds\n"
+                      << "  --layer_height H     Ferrofluid pool depth\n\n"
+                      << "Cahn-Hilliard:\n"
+                      << "  --epsilon E          Interface thickness\n"
+                      << "  --lambda L           Capillary coefficient\n"
+                      << "  --mobility G         Mobility γ\n\n"
+                      << "Magnetic:\n"
+                      << "  --chi_0 C            Susceptibility (≤4)\n"
+                      << "  --dipole_intensity I Maximum dipole intensity\n"
+                      << "  --dipole_ramp T      Ramp time\n"
+                      << "  --dipole_y Y         Dipole y-position\n"
+                      << "  --simplified         Use h := h_a (skip Poisson)\n\n"
+                      << "Navier-Stokes:\n"
+                      << "  --ns                 Enable NS coupling\n"
+                      << "  --nu_water, --nu_ferro  Viscosities\n"
+                      << "  --g G                Gravity magnitude\n\n"
+                      << "Time:\n"
+                      << "  --dt DT              Time step\n"
+                      << "  --t_final T          Final time\n\n"
+                      << "Output:\n"
+                      << "  --output DIR         Output directory\n"
+                      << "  --output_frequency N Output every N steps\n"
+                      << "  --verbose            Verbose output\n";
             std::exit(0);
+        }
+        else
+        {
+            std::cerr << "Unknown option: " << argv[i] << "\n";
+            std::cerr << "Use --help for usage information.\n";
+            std::exit(1);
         }
     }
 
-    // Validation warnings
-    if (params.ch.eta > params.ch.epsilon)
-    {
-        std::cerr << "[Warning] eta > epsilon violates stability condition\n";
-    }
-
-    // Print summary
+    // Print configuration summary
     if (params.output.verbose)
     {
-        std::cout << "[Parameters]\n";
-        std::cout << "  Domain: [" << params.domain.x_min << "," << params.domain.x_max
-                  << "] x [" << params.domain.y_min << "," << params.domain.y_max << "]\n";
+        std::cout << "=== Configuration ===\n";
+        std::cout << "  Domain: [" << params.domain.x_min << ", " << params.domain.x_max
+                  << "] x [" << params.domain.y_min << ", " << params.domain.y_max << "]\n";
         std::cout << "  Refinement: " << params.domain.initial_refinement << "\n";
-        std::cout << "  CH: epsilon=" << params.ch.epsilon
-                  << ", gamma=" << params.ch.gamma << "\n";
-        std::cout << "  Time: dt=" << params.time.dt
-                  << ", t_final=" << params.time.t_final << "\n";
+        std::cout << "  ε = " << params.ch.epsilon << ", λ = " << params.ch.lambda
+                  << ", γ = " << params.ch.gamma << "\n";
+        std::cout << "  χ₀ = " << params.magnetization.chi_0 << "\n";
+        std::cout << "  dt = " << params.time.dt << ", t_final = " << params.time.t_final << "\n";
+
         if (params.mms.enabled)
             std::cout << "  MMS: ENABLED (t_init=" << params.mms.t_init << ")\n";
         else
             std::cout << "  IC type: " << params.ic.type << "\n";
-        if (params.magnetic.enabled)
-            std::cout << "  Magnetic: ENABLED (χ₀=" << params.magnetization.chi_0 << ")\n";
-        if (params.ns.enabled)
-            std::cout << "  Navier-Stokes: ENABLED (ν_w=" << params.ns.nu_water
-                      << ", ν_f=" << params.ns.nu_ferro << ")\n";
+
+        std::cout << "=====================\n";
     }
 
     return params;
