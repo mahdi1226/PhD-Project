@@ -481,6 +481,7 @@ void PhaseFieldProblem<dim>::update_mms_boundary_constraints(double time)
 //
 // After CH step updates θ, we solve -∇·(μ(θ)∇φ) = 0 with dipole BCs.
 // ============================================================================
+
 template <int dim>
 void PhaseFieldProblem<dim>::solve_poisson()
 {
@@ -493,6 +494,7 @@ void PhaseFieldProblem<dim>::solve_poisson()
         theta_dof_handler_,
         theta_solution_,
         params_,
+        time_,              // <-- ADD THIS
         phi_matrix_,
         phi_rhs_,
         phi_constraints_);
@@ -504,7 +506,6 @@ void PhaseFieldProblem<dim>::solve_poisson()
         phi_solution_,
         phi_constraints_);
 }
-
 // ============================================================================
 // update_poisson_constraints() - Update Dirichlet BCs for current time
 //

@@ -36,6 +36,7 @@ set(SOURCES
         setup/poisson_setup.cc
         setup/ns_setup.cc
         diagnostics/ch_mms.cc
+        diagnostics/diagnostics.cc
         utilities/parameters.cc
 )
 
