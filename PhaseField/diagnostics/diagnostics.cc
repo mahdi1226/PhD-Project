@@ -244,8 +244,9 @@ void compute_force_magnitudes(
     double& F_mag_L2,
     double& F_grav_L2)
 {
-    // Suppress unused parameter warning (we use theta_dof_handler for iteration)
+    // Suppress unused parameter warnings
     (void)psi_dof_handler;
+    (void)time;  // Reserved for time-dependent force computations
 
     const unsigned int degree = params.fe.degree_velocity;
     dealii::QGauss<dim> quadrature(degree + 1);

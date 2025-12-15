@@ -5,9 +5,12 @@
 //   [ A   B^T ] [ u ]   [ f ]
 //   [ B   0   ] [ p ] = [ 0 ]
 //
-// Options:
-//   - UMFPACK direct solver (robust, default)
-//   - GMRES with block preconditioner (future)
+// Solver: UMFPACK direct solver (robust for saddle point systems)
+//
+// Workflow:
+//   1. Assembler: condense(matrix, rhs) incorporates constraints
+//   2. Solver: vmult() solves the modified system
+//   3. Solver: distribute(solution) fixes constrained DoF values
 //
 // Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
 // ============================================================================
@@ -18,21 +21,28 @@
 #include <deal.II/lac/vector.h>
 #include <deal.II/lac/affine_constraints.h>
 
+#include <vector>
+
 /**
  * @brief Solve the Navier-Stokes linear system
  *
- * Uses UMFPACK direct solver for robustness.
+ * Uses UMFPACK direct solver for robustness with saddle-point systems.
  *
- * @param matrix       System matrix (saddle point)
- * @param rhs          Right-hand side
+ * IMPORTANT: The matrix and rhs should already have constraints applied
+ * via constraints.condense(matrix, rhs) in the assembler.
+ *
+ * @param matrix       System matrix (saddle point, already condensed)
+ * @param rhs          Right-hand side (already condensed)
  * @param solution     [OUT] Solution (ux, uy, p concatenated)
- * @param constraints  Dirichlet BCs (no-slip)
+ * @param constraints  Constraints for distribute() after solve
+ * @param verbose      Print solver statistics
  */
 void solve_ns_system(
     const dealii::SparseMatrix<double>& matrix,
     const dealii::Vector<double>& rhs,
     dealii::Vector<double>& solution,
-    const dealii::AffineConstraints<double>& constraints);
+    const dealii::AffineConstraints<double>& constraints,
+    bool verbose = false);
 
 /**
  * @brief Extract individual field solutions from coupled NS solution
