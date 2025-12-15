@@ -1,7 +1,7 @@
 // ============================================================================
 // core/phase_field_setup.cc - Setup Methods for Phase Field Problem
 //
-// Setup for CH + Poisson + NS systems.
+// Setup for CH + Poisson + Magnetization (DG) + NS systems.
 //
 // Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
 // ============================================================================
@@ -11,13 +11,14 @@
 #include "setup/ch_setup.h"
 #include "setup/poisson_setup.h"
 #include "setup/ns_setup.h"
-#include "assembly/poisson_assembler.h"
 
 #include <deal.II/grid/grid_generator.h>
 #include <deal.II/grid/grid_tools.h>
 #include <deal.II/dofs/dof_tools.h>
 #include <deal.II/lac/dynamic_sparsity_pattern.h>
 #include <deal.II/numerics/vector_tools.h>
+#include <deal.II/fe/fe_values.h>
+#include <deal.II/base/quadrature_lib.h>
 
 #include <cmath>
 #include <iostream>
@@ -27,16 +28,47 @@
 #endif
 
 // ============================================================================
+// Constructor
+// ============================================================================
+template <int dim>
+PhaseFieldProblem<dim>::PhaseFieldProblem(const Parameters& params)
+    : params_(params)
+    , fe_Q2_(params.fe.degree_velocity)   // Q2 for velocity, phase fields
+    , fe_Q1_(params.fe.degree_pressure)   // Q1 for pressure
+    , fe_DG_(0)                           // DG0 for magnetization
+    , theta_dof_handler_(triangulation_)
+    , psi_dof_handler_(triangulation_)
+    , phi_dof_handler_(triangulation_)
+    , mx_dof_handler_(triangulation_)
+    , my_dof_handler_(triangulation_)
+    , ux_dof_handler_(triangulation_)
+    , uy_dof_handler_(triangulation_)
+    , p_dof_handler_(triangulation_)
+    , time_(0.0)
+    , timestep_number_(0)
+{
+}
+
+// ============================================================================
 // setup_mesh()
+//
+// Creates rectangular domain with specified number of initial cells,
+// then applies global refinement.
 // ============================================================================
 template <int dim>
 void PhaseFieldProblem<dim>::setup_mesh()
 {
-    // Create rectangular domain
-    dealii::Point<dim> p1(params_.domain.x_min, params_.domain.y_min);
-    dealii::Point<dim> p2(params_.domain.x_max, params_.domain.y_max);
+    using namespace dealii;
 
-    dealii::GridGenerator::hyper_rectangle(triangulation_, p1, p2);
+    // Create rectangular domain with subdivisions
+    Point<dim> p1(params_.domain.x_min, params_.domain.y_min);
+    Point<dim> p2(params_.domain.x_max, params_.domain.y_max);
+
+    std::vector<unsigned int> subdivisions(dim);
+    subdivisions[0] = params_.domain.initial_cells_x;
+    subdivisions[1] = params_.domain.initial_cells_y;
+
+    GridGenerator::subdivided_hyper_rectangle(triangulation_, subdivisions, p1, p2);
 
     // Assign boundary IDs:
     //   0 = bottom (y = y_min)
@@ -66,8 +98,10 @@ void PhaseFieldProblem<dim>::setup_mesh()
 
     if (params_.output.verbose)
     {
-        std::cout << "[Setup] Mesh created: "
-                  << triangulation_.n_active_cells() << " cells\n";
+        std::cout << "[Setup] Base mesh: " << params_.domain.initial_cells_x
+                  << " × " << params_.domain.initial_cells_y << " cells\n";
+        std::cout << "[Setup] After " << params_.domain.initial_refinement
+                  << " refinements: " << triangulation_.n_active_cells() << " cells\n";
     }
 }
 
@@ -77,6 +111,8 @@ void PhaseFieldProblem<dim>::setup_mesh()
 template <int dim>
 void PhaseFieldProblem<dim>::setup_dof_handlers()
 {
+    using namespace dealii;
+
     // ========================================================================
     // CH fields (θ, ψ) - Q2 elements
     // ========================================================================
@@ -91,12 +127,43 @@ void PhaseFieldProblem<dim>::setup_dof_handlers()
     psi_solution_.reinit(n_psi);
 
     // ========================================================================
-    // Poisson (φ) - Q2 elements (if magnetic enabled)
+    // Poisson (φ) - Q2 elements
     // ========================================================================
     if (params_.magnetic.enabled)
     {
         phi_dof_handler_.distribute_dofs(fe_Q2_);
         phi_solution_.reinit(phi_dof_handler_.n_dofs());
+    }
+
+    // ========================================================================
+    // Magnetization (Mx, My) - DG elements (NEW!)
+    //
+    // CRITICAL: M must be DG for the energy identity B_h^m(H,H,M) = 0.
+    // Do NOT use CG or projected fields!
+    // ========================================================================
+    if (params_.magnetic.enabled)
+    {
+        mx_dof_handler_.distribute_dofs(fe_DG_);
+        my_dof_handler_.distribute_dofs(fe_DG_);
+
+        const unsigned int n_M = mx_dof_handler_.n_dofs();
+
+        mx_solution_.reinit(n_M);
+        my_solution_.reinit(n_M);
+        mx_old_solution_.reinit(n_M);
+        my_old_solution_.reinit(n_M);
+
+        // Initialize to zero (will be set properly in initialize_solutions)
+        mx_solution_ = 0;
+        my_solution_ = 0;
+        mx_old_solution_ = 0;
+        my_old_solution_ = 0;
+
+        if (params_.output.verbose)
+        {
+            std::cout << "[Setup] Magnetization DoFs: " << n_M << " (DG"
+                      << fe_DG_.degree << ")\n";
+        }
     }
 
     // ========================================================================
@@ -128,14 +195,13 @@ void PhaseFieldProblem<dim>::setup_dof_handlers()
         if (params_.output.verbose)
         {
             std::cout << "[Setup] DoFs: θ = " << n_theta
-                      << ", ψ = " << n_psi
-                      << ", total CH = " << (n_theta + n_psi);
+                      << ", ψ = " << n_psi;
             if (params_.magnetic.enabled)
-                std::cout << ", φ = " << phi_dof_handler_.n_dofs();
+                std::cout << ", φ = " << phi_dof_handler_.n_dofs()
+                          << ", M = " << mx_dof_handler_.n_dofs();
             std::cout << ", ux = " << n_ux
                       << ", uy = " << n_uy
-                      << ", p = " << n_p
-                      << ", total NS = " << (n_ux + n_uy + n_p) << "\n";
+                      << ", p = " << n_p << "\n";
         }
     }
     else
@@ -149,10 +215,10 @@ void PhaseFieldProblem<dim>::setup_dof_handlers()
         if (params_.output.verbose)
         {
             std::cout << "[Setup] DoFs: θ = " << n_theta
-                      << ", ψ = " << n_psi
-                      << ", total CH = " << (n_theta + n_psi);
+                      << ", ψ = " << n_psi;
             if (params_.magnetic.enabled)
-                std::cout << ", φ = " << phi_dof_handler_.n_dofs();
+                std::cout << ", φ = " << phi_dof_handler_.n_dofs()
+                          << ", M = " << mx_dof_handler_.n_dofs();
             std::cout << "\n";
         }
     }
@@ -167,15 +233,15 @@ void PhaseFieldProblem<dim>::setup_dof_handlers()
 template <int dim>
 void PhaseFieldProblem<dim>::setup_constraints()
 {
+    using namespace dealii;
+
     // θ constraints
     theta_constraints_.clear();
-    dealii::DoFTools::make_hanging_node_constraints(
-        theta_dof_handler_, theta_constraints_);
+    DoFTools::make_hanging_node_constraints(theta_dof_handler_, theta_constraints_);
 
     // ψ constraints
     psi_constraints_.clear();
-    dealii::DoFTools::make_hanging_node_constraints(
-        psi_dof_handler_, psi_constraints_);
+    DoFTools::make_hanging_node_constraints(psi_dof_handler_, psi_constraints_);
 
     // For MMS: add Dirichlet BCs at initial time
     if (params_.mms.enabled)
@@ -185,7 +251,7 @@ void PhaseFieldProblem<dim>::setup_constraints()
             psi_dof_handler_,
             theta_constraints_,
             psi_constraints_,
-            params_.mms.t_init);  // Initial time for MMS
+            params_.mms.t_init);
 
         // Set initial time
         const_cast<double&>(time_) = params_.mms.t_init;
@@ -198,13 +264,11 @@ void PhaseFieldProblem<dim>::setup_constraints()
 // ============================================================================
 // setup_ch_system()
 //
-// Creates coupled θ-ψ system by calling the free function in setup/.
-// This keeps the setup logic modular and reusable.
+// Creates coupled θ-ψ system using the setup free function.
 // ============================================================================
 template <int dim>
 void PhaseFieldProblem<dim>::setup_ch_system()
 {
-    // Call the free function to build index maps, constraints, and sparsity
     setup_ch_coupled_system<dim>(
         theta_dof_handler_,
         psi_dof_handler_,
@@ -216,83 +280,134 @@ void PhaseFieldProblem<dim>::setup_ch_system()
         ch_sparsity_,
         params_.output.verbose);
 
-    // Initialize matrix and RHS
-    const unsigned int n_total = theta_dof_handler_.n_dofs() + psi_dof_handler_.n_dofs();
+    // Initialize matrix and vectors
+    const unsigned int n_ch = theta_dof_handler_.n_dofs() +
+                               psi_dof_handler_.n_dofs();
     ch_matrix_.reinit(ch_sparsity_);
-    ch_rhs_.reinit(n_total);
+    ch_rhs_.reinit(n_ch);
+    ch_solution_.reinit(n_ch);
 }
 
 // ============================================================================
 // setup_poisson_system()
 //
-// Sets up the magnetostatic Poisson system for φ.
+// Poisson for magnetostatic potential: (∇φ, ∇χ) = (h_a - M, ∇χ)
+// Pure Neumann → pin DoF 0 to fix constant.
 // ============================================================================
 template <int dim>
 void PhaseFieldProblem<dim>::setup_poisson_system()
 {
-    // Initialize constraints (hanging nodes + Dirichlet BCs)
+    using namespace dealii;
+
+    // Constraints: hanging nodes + pin DoF 0
     phi_constraints_.clear();
-    dealii::DoFTools::make_hanging_node_constraints(phi_dof_handler_, phi_constraints_);
+    DoFTools::make_hanging_node_constraints(phi_dof_handler_, phi_constraints_);
 
-    // Apply dipole Dirichlet BCs at initial time
-    apply_poisson_dirichlet_bcs<dim>(
-        phi_dof_handler_,
-        params_,
-        0.0,  // Initial time
-        phi_constraints_);
-
+    // Pin DoF 0 to zero (fixes the constant for pure Neumann)
+    if (phi_dof_handler_.n_dofs() > 0 && !phi_constraints_.is_constrained(0))
+    {
+        phi_constraints_.add_line(0);
+        phi_constraints_.set_inhomogeneity(0, 0.0);
+    }
     phi_constraints_.close();
 
-    // Build sparsity pattern
-    build_poisson_sparsity<dim>(
-        phi_dof_handler_,
-        phi_constraints_,
-        phi_sparsity_,
-        params_.output.verbose);
+    // Sparsity pattern WITH constraints
+    DynamicSparsityPattern dsp(phi_dof_handler_.n_dofs());
+    DoFTools::make_sparsity_pattern(phi_dof_handler_, dsp,
+                                     phi_constraints_,
+                                     /*keep_constrained_dofs=*/false);
+    phi_sparsity_.copy_from(dsp);
 
-    // Initialize matrix and RHS
+    // Initialize matrix and vectors
     phi_matrix_.reinit(phi_sparsity_);
     phi_rhs_.reinit(phi_dof_handler_.n_dofs());
+
+    if (params_.output.verbose)
+    {
+        std::cout << "[Setup] Poisson sparsity: "
+                  << phi_sparsity_.n_nonzero_elements() << " nonzeros\n";
+    }
+}
+
+// ============================================================================
+// setup_magnetization_system() - NEW!
+//
+// DG transport for magnetization M = (Mx, My).
+// Paper Eq. 42d: ∂M/∂t + (u·∇)M = (1/τ_M)(χ(θ)H - M)
+//
+// CRITICAL: Must use DG elements and flux sparsity pattern!
+// ============================================================================
+template <int dim>
+void PhaseFieldProblem<dim>::setup_magnetization_system()
+{
+    using namespace dealii;
+
+    const unsigned int n_M = mx_dof_handler_.n_dofs();
+
+    // DG sparsity: includes face coupling (for upwind flux)
+    DynamicSparsityPattern dsp_M(n_M, n_M);
+    DoFTools::make_flux_sparsity_pattern(mx_dof_handler_, dsp_M);
+    mx_sparsity_.copy_from(dsp_M);
+    my_sparsity_.copy_from(dsp_M);  // Same pattern for My
+
+    // Initialize matrices and vectors
+    mx_matrix_.reinit(mx_sparsity_);
+    my_matrix_.reinit(my_sparsity_);
+    mx_rhs_.reinit(n_M);
+    my_rhs_.reinit(n_M);
+
+    if (params_.output.verbose)
+    {
+        std::cout << "[Setup] Magnetization sparsity: "
+                  << mx_sparsity_.n_nonzero_elements() << " nonzeros (DG flux)\n";
+    }
 }
 
 // ============================================================================
 // setup_ns_system()
 //
-// Sets up the Navier-Stokes system for (ux, uy, p).
-// Uses Taylor-Hood elements: Q2 velocity, Q1 pressure.
+// Taylor-Hood Q2-Q1 for velocity-pressure.
+// No-slip BCs on all boundaries.
 // ============================================================================
 template <int dim>
 void PhaseFieldProblem<dim>::setup_ns_system()
 {
+    using namespace dealii;
+
     // ========================================================================
-    // Individual field constraints (hanging nodes + no-slip BCs)
+    // Individual field constraints
     // ========================================================================
     ux_constraints_.clear();
     uy_constraints_.clear();
     p_constraints_.clear();
 
-    dealii::DoFTools::make_hanging_node_constraints(ux_dof_handler_, ux_constraints_);
-    dealii::DoFTools::make_hanging_node_constraints(uy_dof_handler_, uy_constraints_);
-    dealii::DoFTools::make_hanging_node_constraints(p_dof_handler_, p_constraints_);
+    DoFTools::make_hanging_node_constraints(ux_dof_handler_, ux_constraints_);
+    DoFTools::make_hanging_node_constraints(uy_dof_handler_, uy_constraints_);
+    DoFTools::make_hanging_node_constraints(p_dof_handler_, p_constraints_);
 
-    // No-slip BCs: u = 0 on all boundaries (boundary IDs 0, 1, 2, 3)
-    for (unsigned int boundary_id = 0; boundary_id <= 3; ++boundary_id)
+    // No-slip BCs: u = 0 on all boundaries
+    for (unsigned int boundary_id = 0; boundary_id < 4; ++boundary_id)
     {
-        dealii::VectorTools::interpolate_boundary_values(
+        VectorTools::interpolate_boundary_values(
             ux_dof_handler_,
             boundary_id,
-            dealii::Functions::ZeroFunction<dim>(),
+            Functions::ZeroFunction<dim>(),
             ux_constraints_);
-
-        dealii::VectorTools::interpolate_boundary_values(
+        VectorTools::interpolate_boundary_values(
             uy_dof_handler_,
             boundary_id,
-            dealii::Functions::ZeroFunction<dim>(),
+            Functions::ZeroFunction<dim>(),
             uy_constraints_);
     }
 
-    // No pressure BC (pressure is determined up to a constant)
-    // Could fix one pressure DoF if needed for uniqueness
+    // ========================================================================
+    // CRITICAL: Pin one pressure DoF to fix the constant!
+    // ========================================================================
+    if (p_dof_handler_.n_dofs() > 0 && !p_constraints_.is_constrained(0))
+    {
+        p_constraints_.add_line(0);
+        p_constraints_.set_inhomogeneity(0, 0.0);
+    }
 
     ux_constraints_.close();
     uy_constraints_.close();
@@ -327,16 +442,18 @@ void PhaseFieldProblem<dim>::setup_ns_system()
 // ============================================================================
 // initialize_solutions()
 //
-// IC types for physical runs (p.522):
-//   0 = Circular droplet (for testing)
-//   1 = Flat ferrofluid layer (Rosensweig baseline)
-//   2 = Perturbed layer (Rosensweig with perturbation)
+// IC types for physical runs:
+//   0 = Flat ferrofluid layer (DEFAULT)
+//   1 = Perturbed layer
+//   2 = Circular droplet (testing)
 //
 // For MMS: use exact solutions at t_init
 // ============================================================================
 template <int dim>
 void PhaseFieldProblem<dim>::initialize_solutions()
 {
+    using namespace dealii;
+
     // MMS mode: use exact solutions at t_init
     if (params_.mms.enabled)
     {
@@ -360,29 +477,87 @@ void PhaseFieldProblem<dim>::initialize_solutions()
     // Physical IC modes
     const double epsilon = params_.ch.epsilon;
     const int ic_type = params_.ic.type;
-    const double pool_depth = params_.ic.pool_depth;
-    const double y_max = params_.domain.y_max;
-    const double y_min = params_.domain.y_min;
+    const double interface_y = params_.ic.pool_depth;
 
-    // Interface position for layer IC
-    const double interface_y = y_min + pool_depth * (y_max - y_min);
-
-    // IC based on type
     if (ic_type == 0)
     {
-        // Circular droplet centered in domain
+        // ================================================================
+        // Flat ferrofluid layer
+        // θ = +1 below interface (ferrofluid)
+        // θ = -1 above interface (non-magnetic)
+        // ================================================================
+        class FlatLayerIC : public Function<dim>
+        {
+        public:
+            double interface_y_, eps_;
+            FlatLayerIC(double y, double e)
+                : Function<dim>(1), interface_y_(y), eps_(e) {}
+
+            double value(const Point<dim>& p, unsigned int = 0) const override
+            {
+                return -std::tanh((p[1] - interface_y_) / (std::sqrt(2.0) * eps_));
+            }
+        };
+
+        FlatLayerIC ic_func(interface_y, epsilon);
+        VectorTools::interpolate(theta_dof_handler_, ic_func, theta_solution_);
+
+        if (params_.output.verbose)
+            std::cout << "[Setup] Flat layer IC: interface at y = " << interface_y << "\n";
+    }
+    else if (ic_type == 1)
+    {
+        // ================================================================
+        // Perturbed layer
+        // ================================================================
+        const double perturbation = params_.ic.perturbation;
+        const int n_modes = params_.ic.perturbation_modes;
+        const double Lx = params_.domain.x_max - params_.domain.x_min;
+
+        class PerturbedLayerIC : public Function<dim>
+        {
+        public:
+            double interface_y_, eps_, amp_, Lx_, x_min_;
+            int n_modes_;
+
+            PerturbedLayerIC(double y, double e, double a, double L, double xm, int n)
+                : Function<dim>(1)
+                , interface_y_(y), eps_(e), amp_(a), Lx_(L), x_min_(xm), n_modes_(n) {}
+
+            double value(const Point<dim>& p, unsigned int = 0) const override
+            {
+                double pert = 0.0;
+                for (int k = 1; k <= n_modes_; ++k)
+                    pert += amp_ * std::cos(2.0 * M_PI * k * (p[0] - x_min_) / Lx_);
+                const double y_interface = interface_y_ + pert;
+                return -std::tanh((p[1] - y_interface) / (std::sqrt(2.0) * eps_));
+            }
+        };
+
+        PerturbedLayerIC ic_func(interface_y, epsilon, perturbation, Lx,
+                                  params_.domain.x_min, n_modes);
+        VectorTools::interpolate(theta_dof_handler_, ic_func, theta_solution_);
+
+        if (params_.output.verbose)
+            std::cout << "[Setup] Perturbed layer IC: interface at y = " << interface_y << "\n";
+    }
+    else if (ic_type == 2)
+    {
+        // ================================================================
+        // Circular droplet (testing only)
+        // ================================================================
         const double cx = 0.5 * (params_.domain.x_min + params_.domain.x_max);
         const double cy = 0.5 * (params_.domain.y_min + params_.domain.y_max);
         const double radius = 0.2;
 
-        class DropletIC : public dealii::Function<dim>
+        class DropletIC : public Function<dim>
         {
         public:
             double cx_, cy_, radius_, eps_;
             DropletIC(double cx, double cy, double r, double e)
-                : dealii::Function<dim>(1), cx_(cx), cy_(cy), radius_(r), eps_(e) {}
+                : Function<dim>(1), cx_(cx), cy_(cy), radius_(r), eps_(e) {}
 
-            double value(const dealii::Point<dim>& p, unsigned int = 0) const override
+            double value(const Point<dim>& p, unsigned int = 0) const override
             {
                 const double dist = std::sqrt((p[0]-cx_)*(p[0]-cx_) + (p[1]-cy_)*(p[1]-cy_));
                 return -std::tanh((dist - radius_) / (std::sqrt(2.0) * eps_));
@@ -390,60 +565,15 @@ void PhaseFieldProblem<dim>::initialize_solutions()
         };
 
         DropletIC ic_func(cx, cy, radius, epsilon);
-        dealii::VectorTools::interpolate(theta_dof_handler_, ic_func, theta_solution_);
+        VectorTools::interpolate(theta_dof_handler_, ic_func, theta_solution_);
+
+        if (params_.output.verbose)
+            std::cout << "[Setup] Circular droplet IC\n";
     }
-    else if (ic_type == 1)
+    else
     {
-        // Flat ferrofluid layer: θ = +1 below interface, θ = -1 above
-        class FlatLayerIC : public dealii::Function<dim>
-        {
-        public:
-            double interface_y_, eps_;
-            FlatLayerIC(double y, double e)
-                : dealii::Function<dim>(1), interface_y_(y), eps_(e) {}
-
-            double value(const dealii::Point<dim>& p, unsigned int = 0) const override
-            {
-                return -std::tanh((p[1] - interface_y_) / (std::sqrt(2.0) * eps_));
-            }
-        };
-
-        FlatLayerIC ic_func(interface_y, epsilon);
-        dealii::VectorTools::interpolate(theta_dof_handler_, ic_func, theta_solution_);
-    }
-    else if (ic_type == 2)
-    {
-        // Perturbed layer (Rosensweig)
-        const double perturbation = params_.ic.perturbation;
-        const int n_modes = params_.ic.perturbation_modes;
-        const double Lx = params_.domain.x_max - params_.domain.x_min;
-
-        class PerturbedLayerIC : public dealii::Function<dim>
-        {
-        public:
-            double interface_y_, eps_, amp_, Lx_, x_min_;
-            int n_modes_;
-
-            PerturbedLayerIC(double y, double e, double a, double L, double xm, int n)
-                : dealii::Function<dim>(1)
-                , interface_y_(y), eps_(e), amp_(a), Lx_(L), x_min_(xm), n_modes_(n) {}
-
-            double value(const dealii::Point<dim>& p, unsigned int = 0) const override
-            {
-                // Sum of cosine modes
-                double perturbation = 0.0;
-                for (int k = 1; k <= n_modes_; ++k)
-                {
-                    perturbation += amp_ * std::cos(2.0 * M_PI * k * (p[0] - x_min_) / Lx_);
-                }
-                const double y_interface = interface_y_ + perturbation;
-                return -std::tanh((p[1] - y_interface) / (std::sqrt(2.0) * eps_));
-            }
-        };
-
-        PerturbedLayerIC ic_func(interface_y, epsilon, perturbation, Lx,
-                                  params_.domain.x_min, n_modes);
-        dealii::VectorTools::interpolate(theta_dof_handler_, ic_func, theta_solution_);
+        std::cerr << "[Setup] Unknown IC type: " << ic_type << "\n";
+        std::exit(1);
     }
 
     // Copy to old solution
@@ -452,11 +582,38 @@ void PhaseFieldProblem<dim>::initialize_solutions()
     // Initialize ψ = 0 (will be computed in first solve)
     psi_solution_ = 0;
 
-    if (params_.output.verbose)
+    // ========================================================================
+    // Initialize magnetization M = χ(θ) H
+    //
+    // At t=0, we don't have H yet, so either:
+    //   (a) Set M = 0 and let it evolve
+    //   (b) Solve Poisson once to get H, then set M = χ(θ) H
+    //
+    // Option (b) is more physical but requires Poisson to be set up first.
+    // For simplicity, we use (a) here; M will quickly relax to equilibrium.
+    // ========================================================================
+    if (params_.magnetic.enabled)
     {
-        std::cout << "[Setup] IC type " << ic_type << " initialized\n";
-        std::cout << "[Setup] Initial mass = " << compute_mass() << "\n";
+        mx_solution_ = 0;
+        my_solution_ = 0;
+        mx_old_solution_ = 0;
+        my_old_solution_ = 0;
+
+        if (params_.output.verbose)
+            std::cout << "[Setup] Magnetization initialized to zero (will relax)\n";
     }
+
+    if (params_.output.verbose)
+        std::cout << "[Setup] Initial mass = " << compute_mass() << "\n";
+}
+
+// ============================================================================
+// get_min_h() - Minimum cell diameter
+// ============================================================================
+template <int dim>
+double PhaseFieldProblem<dim>::get_min_h() const
+{
+    return dealii::GridTools::minimal_cell_diameter(triangulation_);
 }
 
 // ============================================================================

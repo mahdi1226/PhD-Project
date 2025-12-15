@@ -45,9 +45,11 @@ void solve_poisson_system(
     // Good for SPD systems like Poisson with Neumann BC (after fixing constant)
     // ========================================================================
 
-    // Tolerance relative to RHS norm
-    const double tol = 1e-10 * rhs_norm;
-    dealii::SolverControl solver_control(1000, tol);
+    // Tolerance: 1e-8 relative to RHS norm is plenty accurate
+    // (1e-10 was too strict and caused false "no convergence" warnings)
+    const double tol = 1e-8 * rhs_norm;
+    const unsigned int max_iter = 2000;
+    dealii::SolverControl solver_control(max_iter, tol);
     dealii::SolverCG<dealii::Vector<double>> solver(solver_control);
 
     // SSOR preconditioner

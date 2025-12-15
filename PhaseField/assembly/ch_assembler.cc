@@ -1,22 +1,26 @@
 // ============================================================================
-// assembly/ch_assembler.cc - Cahn-Hilliard System Assembler Implementation
-//
-// Extracted from OLD nsch_problem_solver.cc lines 336-450
+// assembly/ch_assembler.cc - Cahn-Hilliard System Assembler (CORRECTED)
 //
 // Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
-// Equations 14a-14b, p.499
+// Equations 42a-42b (discrete scheme), p.505
 //
-// Weak form derivation:
-//   Eq 14a: θ_t + div(uθ) - γΔψ = 0
-//     → (θ_t, φ) + (div(uθ), φ) + γ(∇ψ, ∇φ) = 0        [IBP on Laplacian]
-//     → (1/τ)(θ - θ_old, φ) - (uθ, ∇φ) + γ(∇ψ, ∇φ) = 0  [IBP on div, BDF1]
+// CORRECTED to match paper:
+//   1. Advection uses LAGGED θ^{k-1} (on RHS), not implicit θ^k
+//   2. f(θ) is LAGGED f(θ^{k-1}) (on RHS), not Newton linearized
+//   3. Stabilization term (1/η)(δθ^k, Υ) is included
 //
-//   Eq 14b: ψ + (1/ε)f(θ) - εΔθ = 0
-//     → (ψ, χ) + (1/ε)(f(θ), χ) + ε(∇θ, ∇χ) = 0        [IBP on Laplacian]
-//     Linearization: f(θ) ≈ f(θ_old) + f'(θ_old)(θ - θ_old)
+// Paper's discrete scheme:
 //
-// MMS MODE: When params.mms.enabled is true, adds source terms S_θ and S_ψ
-// to RHS for manufactured solution verification.
+//   Eq 42a: (δθ^k/τ, Λ) - (U^k θ^{k-1}, ∇Λ) - γ(∇ψ^k, ∇Λ) = 0
+//
+//   Eq 42b: (ψ^k, Υ) + ε(∇θ^k, ∇Υ) + (1/ε)(f(θ^{k-1}), Υ) + (1/η)(δθ^k, Υ) = 0
+//
+// Rearranged for matrix form (θ^k, ψ^k on LHS):
+//
+//   Eq 42a: (1/τ)(θ^k, Λ) - γ(∇ψ^k, ∇Λ) = (1/τ)(θ^{k-1}, Λ) + (U^k θ^{k-1}, ∇Λ)
+//
+//   Eq 42b: (ψ^k, Υ) + ε(∇θ^k, ∇Υ) + (1/η)(θ^k, Υ) = -(1/ε)(f(θ^{k-1}), Υ) + (1/η)(θ^{k-1}, Υ)
+//
 // ============================================================================
 
 #include "ch_assembler.h"
@@ -27,24 +31,20 @@
 #include <deal.II/fe/fe_values.h>
 #include <deal.II/lac/full_matrix.h>
 
+#include <iostream>
+
 // ============================================================================
 // Double-well potential (Eq. 2, p.498)
 //   F(θ) = (1/4)(θ² - 1)²
 //   f(θ) = F'(θ) = θ³ - θ
-//   f'(θ) = F''(θ) = 3θ² - 1
 // ============================================================================
 inline double f_double_well(double theta)
 {
     return theta * theta * theta - theta;
 }
 
-inline double f_prime_double_well(double theta)
-{
-    return 3.0 * theta * theta - 1.0;
-}
-
 // ============================================================================
-// Main assembly function
+// Main assembly function (CORRECTED to match Paper Eq. 42a-42b)
 // ============================================================================
 template <int dim>
 void assemble_ch_system(
@@ -61,6 +61,8 @@ void assemble_ch_system(
     dealii::SparseMatrix<double>&  matrix,
     dealii::Vector<double>&        rhs)
 {
+
+
     // Zero output
     matrix = 0;
     rhs = 0;
@@ -82,9 +84,7 @@ void assemble_ch_system(
     dealii::FEValues<dim> psi_fe_values(fe, quadrature,
         dealii::update_values | dealii::update_gradients);
 
-    // For velocity (if provided, same FE degree as phase)
-    // We need separate FEValues only if velocity uses different mesh/FE
-    // Here we assume same mesh, so we can evaluate velocity at same quadrature points
+    // For velocity (same mesh assumed)
     dealii::FEValues<dim> ux_fe_values(fe, quadrature, dealii::update_values);
     dealii::FEValues<dim> uy_fe_values(fe, quadrature, dealii::update_values);
 
@@ -102,14 +102,28 @@ void assemble_ch_system(
 
     // Solution values at quadrature points
     std::vector<double> theta_old_values(n_q_points);
+    std::vector<dealii::Tensor<1, dim>> theta_old_gradients(n_q_points);
     std::vector<double> ux_values(n_q_points);
     std::vector<double> uy_values(n_q_points);
 
     // Physical parameters
     const double epsilon = params.ch.epsilon;
     const double gamma = params.ch.gamma;
+    const double eta = params.ch.eta;  // Stabilization parameter (η ~ ε)
 
-    // Check if velocity is provided (non-empty AND non-zero norm)
+    // Validate stabilization parameter
+    if (eta <= 0.0)
+    {
+        static bool warned = false;
+        if (!warned)
+        {
+            std::cerr << "[CH] WARNING: eta <= 0. Paper requires eta > 0 for stability.\n"
+                      << "  Recommended: eta ~ epsilon = " << epsilon << "\n";
+            warned = true;
+        }
+    }
+
+    // Check if velocity is provided
     const bool have_velocity = (ux_solution.size() > 0) &&
                                (uy_solution.size() > 0) &&
                                (ux_solution.l2_norm() + uy_solution.l2_norm() > 1e-14);
@@ -124,7 +138,7 @@ void assemble_ch_system(
         source_psi.set_time(current_time);
     }
 
-    // Iterate over cells - all DoFHandlers share the same triangulation
+    // Iterate over cells
     auto theta_cell = theta_dof_handler.begin_active();
     auto psi_cell = psi_dof_handler.begin_active();
 
@@ -133,15 +147,13 @@ void assemble_ch_system(
         theta_fe_values.reinit(theta_cell);
         psi_fe_values.reinit(psi_cell);
 
-        // Get corresponding velocity cells (same mesh)
+        // Get velocity values
         if (have_velocity)
         {
-            // Create cell accessors for velocity DoFHandlers
-            // They share the same triangulation, so same level/index
             typename dealii::DoFHandler<dim>::active_cell_iterator
                 ux_cell(&theta_dof_handler.get_triangulation(),
                         theta_cell->level(), theta_cell->index(),
-                        &theta_dof_handler);  // Using theta_dof for now (same FE)
+                        &theta_dof_handler);
             ux_fe_values.reinit(ux_cell);
             uy_fe_values.reinit(ux_cell);
 
@@ -150,7 +162,6 @@ void assemble_ch_system(
         }
         else
         {
-            // Zero velocity
             std::fill(ux_values.begin(), ux_values.end(), 0.0);
             std::fill(uy_values.begin(), uy_values.end(), 0.0);
         }
@@ -173,71 +184,78 @@ void assemble_ch_system(
             const double theta_old_q = theta_old_values[q];
 
             // Velocity at quadrature point
-            dealii::Tensor<1, dim> u;
-            u[0] = ux_values[q];
+            dealii::Tensor<1, dim> U;
+            U[0] = ux_values[q];
             if constexpr (dim >= 2)
-                u[1] = uy_values[q];
+                U[1] = uy_values[q];
 
-            // Double-well derivatives at θ_old
+            // Double-well derivative at θ^{k-1} (LAGGED, not linearized!)
             const double f_old = f_double_well(theta_old_q);
-            const double fp_old = f_prime_double_well(theta_old_q);
 
             // Shape function loop
             for (unsigned int i = 0; i < dofs_per_cell; ++i)
             {
-                // θ shape functions
-                const double phi_i = theta_fe_values.shape_value(i, q);
-                const dealii::Tensor<1, dim> grad_phi_i = theta_fe_values.shape_grad(i, q);
+                // θ test function Λ
+                const double Lambda_i = theta_fe_values.shape_value(i, q);
+                const dealii::Tensor<1, dim> grad_Lambda_i = theta_fe_values.shape_grad(i, q);
 
-                // ψ shape functions (same FE, but conceptually separate)
-                const double chi_i = psi_fe_values.shape_value(i, q);
-                const dealii::Tensor<1, dim> grad_chi_i = psi_fe_values.shape_grad(i, q);
+                // ψ test function Υ
+                const double Upsilon_i = psi_fe_values.shape_value(i, q);
+                const dealii::Tensor<1, dim> grad_Upsilon_i = psi_fe_values.shape_grad(i, q);
 
                 for (unsigned int j = 0; j < dofs_per_cell; ++j)
                 {
-                    const double phi_j = theta_fe_values.shape_value(j, q);
-                    const dealii::Tensor<1, dim> grad_phi_j = theta_fe_values.shape_grad(j, q);
-                    const double chi_j = psi_fe_values.shape_value(j, q);
-                    const dealii::Tensor<1, dim> grad_chi_j = psi_fe_values.shape_grad(j, q);
+                    // θ trial function
+                    const double theta_j = theta_fe_values.shape_value(j, q);
+                    const dealii::Tensor<1, dim> grad_theta_j = theta_fe_values.shape_grad(j, q);
 
-                    // ================================================================
-                    // θ equation (Eq. 14a): (1/τ)(θ,φ) - (uθ,∇φ) + γ(∇ψ,∇φ) = (1/τ)(θ_old,φ)
-                    // ================================================================
+                    // ψ trial function
+                    const double psi_j = psi_fe_values.shape_value(j, q);
+                    const dealii::Tensor<1, dim> grad_psi_j = psi_fe_values.shape_grad(j, q);
 
-                    // θ-θ block: (1/τ)(θ,φ) - (uθ,∇φ)
-                    // Mass: (1/τ)(θ,φ)
-                    local_matrix_tt(i, j) += (1.0 / dt) * phi_i * phi_j * JxW;
-                    // Advection (conservative): -(uθ,∇φ) = -θ(u·∇φ)
-                    local_matrix_tt(i, j) -= phi_j * (u * grad_phi_i) * JxW;
+                    // ============================================================
+                    // Eq 42a: (1/τ)(θ^k, Λ) - γ(∇ψ^k, ∇Λ) = RHS
+                    // ============================================================
 
-                    // θ-ψ block: +γ(∇ψ,∇φ)
-                    local_matrix_tp(i, j) -= gamma * (grad_chi_j * grad_phi_i) * JxW;
+                    // θ-θ block: (1/τ)(θ, Λ)
+                    local_matrix_tt(i, j) += (1.0 / dt) * theta_j * Lambda_i * JxW;
 
-                    // ================================================================
-                    // ψ equation (Eq. 14b): (ψ,χ) + ε(∇θ,∇χ) + (1/ε)(f'θ,χ) = (1/ε)(f'θ_old - f, χ)
-                    // ================================================================
+                    // θ-ψ block: -γ(∇ψ, ∇Λ)
+                    local_matrix_tp(i, j) -= gamma * (grad_psi_j * grad_Lambda_i) * JxW;
 
-                    // ψ-ψ block: (ψ,χ)
-                    local_matrix_pp(i, j) += chi_i * chi_j * JxW;
+                    // ============================================================
+                    // Eq 42b: (ψ^k, Υ) + ε(∇θ^k, ∇Υ) + (1/η)(θ^k, Υ) = RHS
+                    // ============================================================
 
-                    // ψ-θ block: ε(∇θ,∇χ) + (1/ε)(f'(θ_old)θ,χ)
-                    local_matrix_pt(i, j) += epsilon * (grad_phi_j * grad_chi_i) * JxW;
-                    local_matrix_pt(i, j) += (1.0 / epsilon) * fp_old * phi_j * chi_i * JxW;
+                    // ψ-ψ block: (ψ, Υ)
+                    local_matrix_pp(i, j) += psi_j * Upsilon_i * JxW;
+
+                    // ψ-θ block: ε(∇θ, ∇Υ) + (1/η)(θ, Υ)
+                    local_matrix_pt(i, j) += epsilon * (grad_theta_j * grad_Upsilon_i) * JxW;
+                    if (eta > 0.0)
+                    {
+                        local_matrix_pt(i, j) += (1.0 / eta) * theta_j * Upsilon_i * JxW;
+                    }
                 }
 
-                // ================================================================
+                // ============================================================
                 // RHS contributions
-                // ================================================================
+                // ============================================================
 
-                // θ equation RHS: (1/τ)(θ_old,φ)
-                local_rhs_t(i) += (1.0 / dt) * theta_old_q * phi_i * JxW;
+                // Eq 42a RHS: (1/τ)(θ^{k-1}, Λ) + (U^k θ^{k-1}, ∇Λ)
+                //
+                // Note: Paper has -(U^k θ^{k-1}, ∇Λ) on LHS, so +(U^k θ^{k-1}, ∇Λ) on RHS
+                local_rhs_t(i) += (1.0 / dt) * theta_old_q * Lambda_i * JxW;
+                local_rhs_t(i) += theta_old_q * (U * grad_Lambda_i) * JxW;
 
-                // ψ equation RHS: (1/ε)(f'(θ_old)θ_old - f(θ_old), χ)
-                // = (1/ε)((3θ²-1)θ - (θ³-θ), χ)
-                // = (1/ε)(3θ³ - θ - θ³ + θ, χ)
-                // = (1/ε)(2θ³, χ)
-                // But let's keep the general form for clarity:
-                local_rhs_p(i) += (1.0 / epsilon) * (fp_old * theta_old_q - f_old) * chi_i * JxW;
+                // Eq 42b RHS: -(1/ε)(f(θ^{k-1}), Υ) + (1/η)(θ^{k-1}, Υ)
+                //
+                // Note: Paper has +(1/ε)(f(θ^{k-1}), Υ) on LHS, so -(1/ε)(f(θ^{k-1}), Υ) on RHS
+                local_rhs_p(i) -= (1.0 / epsilon) * f_old * Upsilon_i * JxW;
+                if (eta > 0.0)
+                {
+                    local_rhs_p(i) += (1.0 / eta) * theta_old_q * Upsilon_i * JxW;
+                }
 
                 // MMS source terms (if enabled)
                 if (mms_mode)
@@ -246,11 +264,8 @@ void assemble_ch_system(
                     const double S_theta = source_theta.value(q_point);
                     const double S_psi = source_psi.value(q_point);
 
-                    // Add source to θ equation: (S_θ, φ)
-                    local_rhs_t(i) += S_theta * phi_i * JxW;
-
-                    // Add source to ψ equation: (S_ψ, χ)
-                    local_rhs_p(i) += S_psi * chi_i * JxW;
+                    local_rhs_t(i) += S_theta * Lambda_i * JxW;
+                    local_rhs_p(i) += S_psi * Upsilon_i * JxW;
                 }
             }
         }
@@ -259,9 +274,9 @@ void assemble_ch_system(
         theta_cell->get_dof_indices(theta_local_dofs);
         psi_cell->get_dof_indices(psi_local_dofs);
 
-        // ================================================================
+        // ============================================================
         // Assemble into global coupled matrix using index maps
-        // ================================================================
+        // ============================================================
         for (unsigned int i = 0; i < dofs_per_cell; ++i)
         {
             const auto gi_t = theta_to_ch_map[theta_local_dofs[i]];

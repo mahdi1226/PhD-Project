@@ -1,9 +1,12 @@
 // ============================================================================
-// setup/poisson_setup.cc - Magnetostatic Poisson System Setup (CORRECTED)
+// setup/poisson_setup.cc - Magnetostatic Poisson System Setup
 //
-// CORRECTED for pure Neumann problem.
+// Pure Neumann problem: -Δφ = ∇·(m - h_a), ∂φ/∂n = (h_a - m)·n
 //
-// Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
+// NOTE: Constraint setup (hanging nodes + nullspace fix) is in
+//       poisson_assembler.cc: setup_poisson_neumann_constraints()
+//
+// Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531, Eq. 42d
 // ============================================================================
 
 #include "setup/poisson_setup.h"
@@ -14,42 +17,7 @@
 #include <iostream>
 
 // ============================================================================
-// Setup constraints for pure Neumann Poisson problem
-// ============================================================================
-template <int dim>
-void setup_poisson_constraints(
-    const dealii::DoFHandler<dim>& phi_dof_handler,
-    dealii::AffineConstraints<double>& phi_constraints)
-{
-    phi_constraints.clear();
-
-    // Add hanging node constraints (for AMR)
-    dealii::DoFTools::make_hanging_node_constraints(phi_dof_handler, phi_constraints);
-
-    // For pure Neumann problem, solution is unique up to a constant.
-    // Fix the constant by pinning DoF 0 to zero.
-    //
-    // Alternative approaches:
-    // 1. Mean-zero constraint: harder to implement, requires Lagrange multiplier
-    // 2. Pin a corner DoF: may cause issues with hanging nodes
-    // 3. Pin DoF 0: simple and robust
-    //
-    // We use approach 3.
-    if (phi_dof_handler.n_dofs() > 0)
-    {
-        // Check if DoF 0 is already constrained (e.g., by hanging nodes)
-        if (!phi_constraints.is_constrained(0))
-        {
-            phi_constraints.add_line(0);
-            phi_constraints.set_inhomogeneity(0, 0.0);
-        }
-    }
-
-    phi_constraints.close();
-}
-
-// ============================================================================
-// Build sparsity pattern
+// Sparsity pattern (use constraints to eliminate constrained entries)
 // ============================================================================
 template <int dim>
 void build_poisson_sparsity(
@@ -58,32 +26,33 @@ void build_poisson_sparsity(
     dealii::SparsityPattern& phi_sparsity,
     bool verbose)
 {
-    const unsigned int n_dofs = phi_dof_handler.n_dofs();
+    using namespace dealii;
 
-    // Build sparsity pattern
-    dealii::DynamicSparsityPattern dsp(n_dofs, n_dofs);
-    dealii::DoFTools::make_sparsity_pattern(phi_dof_handler, dsp, phi_constraints, false);
+    DynamicSparsityPattern dsp(phi_dof_handler.n_dofs(), phi_dof_handler.n_dofs());
 
-    // Copy to final sparsity pattern
+    DoFTools::make_sparsity_pattern(phi_dof_handler, dsp, phi_constraints,
+                                    /*keep_constrained_dofs=*/false);
+
     phi_sparsity.copy_from(dsp);
 
     if (verbose)
     {
-        std::cout << "[Setup] Poisson DoFs: " << n_dofs
-                  << ", sparsity: " << phi_sparsity.n_nonzero_elements()
-                  << " nonzeros\n";
+        std::cout << "[PoissonSetup] DoFs: " << phi_dof_handler.n_dofs()
+                  << ", nnz: " << phi_sparsity.n_nonzero_elements() << std::endl;
     }
 }
 
 // ============================================================================
 // Explicit instantiations
 // ============================================================================
-template void setup_poisson_constraints<2>(
-    const dealii::DoFHandler<2>&,
-    dealii::AffineConstraints<double>&);
-
 template void build_poisson_sparsity<2>(
     const dealii::DoFHandler<2>&,
+    const dealii::AffineConstraints<double>&,
+    dealii::SparsityPattern&,
+    bool);
+
+template void build_poisson_sparsity<3>(
+    const dealii::DoFHandler<3>&,
     const dealii::AffineConstraints<double>&,
     dealii::SparsityPattern&,
     bool);
