@@ -8,14 +8,9 @@
 //   Strong form:      -Δφ = ∇·(M - h_a)         in Ω
 //                     ∂φ/∂n = (h_a - M)·n       on Γ (Neumann BC)
 //
-// The magnetic field is then: H = ∇φ
-//
-// NOTE: Pure Neumann problem - solution unique up to constant.
-//       We fix the constant by pinning DoF 0 to zero.
-//
-// IMPORTANT: M is on a DG DoFHandler (FE_DGP), separate from θ (CG).
-//            The assembler requires the M DoFHandler to properly extract
-//            magnetization values at quadrature points.
+// For QUASI-EQUILIBRIUM (M = χH = χ∇φ):
+//   ((1 + χ(θ))∇φ, ∇χ) = (h_a, ∇χ)
+//   (μ(θ)∇φ, ∇χ) = (h_a, ∇χ)  where μ(θ) = 1 + χ(θ)
 //
 // Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
 // ============================================================================
@@ -58,12 +53,10 @@ inline double compute_susceptibility(double theta, double epsilon, double chi_0)
 
 // ============================================================================
 // Phase-dependent magnetic permeability μ(θ) = 1 + χ_θ [Eq. 17]
-// DEPRECATED: The paper uses simple Laplacian, not μ-weighted.
-// Kept for backward compatibility only.
 // ============================================================================
-inline double compute_permeability(double theta, double epsilon, double kappa_0)
+inline double compute_permeability(double theta, double epsilon, double chi_0)
 {
-    return 1.0 + kappa_0 * sigmoid(theta / epsilon);
+    return 1.0 + compute_susceptibility(theta, epsilon, chi_0);
 }
 
 // ============================================================================
@@ -160,16 +153,6 @@ double compute_dipole_potential(
 
 /**
  * @brief Setup constraints for pure Neumann Poisson problem
- *
- * For pure Neumann, we need to fix the constant. We do this by
- * pinning the first unconstrained DoF to zero.
- *
- * NOTE: The Neumann BC ∂φ/∂n = (h_a - m)·n is a NATURAL BC, enforced
- *       implicitly by the weak form - not by constraints. This function
- *       only handles hanging nodes and the nullspace fix.
- *
- * @param phi_dof_handler   DoFHandler for magnetic potential φ
- * @param phi_constraints   [OUT] Constraints with pinned DoF
  */
 template <int dim>
 void setup_poisson_neumann_constraints(
@@ -177,26 +160,10 @@ void setup_poisson_neumann_constraints(
     dealii::AffineConstraints<double>& phi_constraints);
 
 /**
- * @brief Assemble the magnetostatic Poisson system (FULL MODEL)
+ * @brief Assemble the magnetostatic Poisson system (FULL MODEL with DG M)
  *
  * Paper Eq. 42d:
  *   (∇φ, ∇χ) = (h_a - M^k, ∇χ)  ∀χ ∈ X_h
- *
- * This is the FULL MODEL where M^k comes from the magnetization transport
- * equation. The resulting H^k = ∇φ^k includes the demagnetizing field.
- *
- * IMPORTANT: M is on a DG DoFHandler (FE_DGP), separate from φ and θ.
- *            This function creates appropriate FEValues for M.
- *
- * @param phi_dof_handler   DoFHandler for magnetic potential φ (CG)
- * @param M_dof_handler     DoFHandler for magnetization M (DG)
- * @param mx_solution       Magnetization x-component M_x^k
- * @param my_solution       Magnetization y-component M_y^k
- * @param params            Physical parameters
- * @param current_time      Current time (for dipole ramping)
- * @param phi_matrix        [OUT] Assembled system matrix
- * @param phi_rhs           [OUT] Assembled RHS
- * @param phi_constraints   Constraints (hanging nodes + pinned DoF)
  */
 template <int dim>
 void assemble_poisson_system(
@@ -211,20 +178,31 @@ void assemble_poisson_system(
     const dealii::AffineConstraints<double>& phi_constraints);
 
 /**
+ * @brief Assemble Poisson for QUASI-EQUILIBRIUM (M = χ(θ)H)
+ *
+ * For quasi-equilibrium, M = χ(θ)∇φ. The equation becomes:
+ *   (μ(θ)∇φ, ∇χ) = (h_a, ∇χ)  where μ(θ) = 1 + χ(θ)
+ *
+ * This is the CORRECT formulation for ferrofluid without DG transport.
+ */
+template <int dim>
+void assemble_poisson_system_quasi_equilibrium(
+    const dealii::DoFHandler<dim>& phi_dof_handler,
+    const dealii::DoFHandler<dim>& theta_dof_handler,
+    const dealii::Vector<double>& theta_solution,
+    const Parameters& params,
+    double current_time,
+    dealii::SparseMatrix<double>& phi_matrix,
+    dealii::Vector<double>& phi_rhs,
+    const dealii::AffineConstraints<double>& phi_constraints);
+
+/**
  * @brief Assemble the magnetostatic Poisson system (SIMPLIFIED MODEL)
  *
- * Simplified model (Section 5): M = 0, so RHS = (h_a, ∇χ)
+ * Simplified model (Section 5): M = 0, μ = 1
+ *   (∇φ, ∇χ) = (h_a, ∇χ)
  *
- * This is primarily for comparison/debugging. In the true simplified model
- * (Section 5), you wouldn't solve Poisson at all - you'd just set H = h_a.
- * But this function is useful for testing the demagnetizing field effect.
- *
- * @param phi_dof_handler   DoFHandler for magnetic potential φ (CG)
- * @param params            Physical parameters
- * @param current_time      Current time (for dipole ramping)
- * @param phi_matrix        [OUT] Assembled system matrix
- * @param phi_rhs           [OUT] Assembled RHS
- * @param phi_constraints   Constraints (hanging nodes + pinned DoF)
+ * Use this only for comparison/debugging, not for physical simulations!
  */
 template <int dim>
 void assemble_poisson_system_simplified(
@@ -237,15 +215,10 @@ void assemble_poisson_system_simplified(
 
 // ============================================================================
 // BACKWARD COMPATIBILITY WRAPPERS
-// These interfaces are valid for QUASI-EQUILIBRIUM model (M = χH).
-// For full DG transport model, use the 9-arg version with explicit M_dof_handler.
 // ============================================================================
 
 /**
  * @brief Old interface with optional M vectors
- *
- * For quasi-equilibrium: pass mx_solution = nullptr, my_solution = nullptr
- * The permeability μ(θ) is computed from θ.
  */
 template <int dim>
 void assemble_poisson_system(
@@ -263,8 +236,6 @@ void assemble_poisson_system(
 
 /**
  * @brief 7-argument interface (no time parameter)
- *
- * Uses params.current_time internally.
  */
 template <int dim>
 void assemble_poisson_system(
@@ -277,13 +248,7 @@ void assemble_poisson_system(
     const dealii::AffineConstraints<double>& phi_constraints);
 
 /**
- * @brief Assemble Poisson system for QUASI-EQUILIBRIUM model
- *
- * This interface is CORRECT for quasi-equilibrium (τ_M = 0, M = χH).
- * The M term is absorbed into permeability μ(θ) = 1 + χ(θ).
- *
- * Use the 9-arg version with explicit M_dof_handler only for full
- * DG transport model (Eq. 42c), which requires separate M storage.
+ * @brief 8-argument interface with explicit time (FIXED to use quasi-equilibrium)
  */
 template <int dim>
 void assemble_poisson_system(
@@ -298,9 +263,6 @@ void assemble_poisson_system(
 
 /**
  * @brief [DEPRECATED] Dirichlet BC setup - now a no-op
- *
- * The corrected implementation uses Neumann BC, so this function
- * does nothing. Constraints are set up by setup_poisson_neumann_constraints().
  */
 template <int dim>
 [[deprecated("Use setup_poisson_neumann_constraints instead")]]
