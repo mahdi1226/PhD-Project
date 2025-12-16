@@ -1,23 +1,22 @@
 // ============================================================================
-// solvers/poisson_solver.cc - Magnetostatic Poisson solver (CORRECTED)
+// solvers/poisson_solver.cc - Magnetostatic Poisson Solver
 //
 // Solves: (∇φ, ∇χ) = (h_a - m, ∇χ)  with Neumann BC
 //
-// The system is SPD (simple Laplacian, after fixing constant).
-// CG + SSOR is efficient and robust for this problem.
+// The system is SPD. CG + SSOR is efficient and robust.
 //
 // Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
 // ============================================================================
+
 #include "solvers/poisson_solver.h"
 
-#include <deal.II/lac/sparse_direct.h>
 #include <deal.II/lac/solver_cg.h>
+#include <deal.II/lac/solver_control.h>
 #include <deal.II/lac/precondition.h>
+#include <deal.II/lac/sparse_direct.h>
 
 #include <iostream>
-
-// Set to true for faster iterative solver, false for robust direct solver
-#define USE_ITERATIVE_POISSON_SOLVER true
+#include <chrono>
 
 void solve_poisson_system(
     const dealii::SparseMatrix<double>& matrix,
@@ -26,72 +25,84 @@ void solve_poisson_system(
     const dealii::AffineConstraints<double>& constraints,
     bool verbose)
 {
-    // Handle zero RHS case (can happen at t=0 when field is off)
+    // ----- Solver configuration -----
+    const bool use_iterative = true;
+    const double rel_tolerance = 1e-8;
+    const double abs_tolerance = 1e-12;
+    const unsigned int max_iterations = 2000;
+    const double ssor_omega = 1.2;
+    const bool fallback_to_direct = true;
+    const bool log_output = true;
+    // --------------------------------
+
     const double rhs_norm = rhs.l2_norm();
     if (rhs_norm < 1e-14)
     {
         solution = 0;
         constraints.distribute(solution);
-        if (verbose)
-        {
+        if (log_output)
             std::cout << "[Poisson] Zero RHS, solution set to zero\n";
-        }
         return;
     }
 
-#if USE_ITERATIVE_POISSON_SOLVER
-    // ========================================================================
-    // Iterative solver: CG + SSOR
-    // Good for SPD systems like Poisson with Neumann BC (after fixing constant)
-    // ========================================================================
+    if (solution.size() != rhs.size())
+        solution.reinit(rhs.size());
 
-    // Tolerance relative to RHS norm
-    const double tol = 1e-10 * rhs_norm;
-    dealii::SolverControl solver_control(1000, tol);
-    dealii::SolverCG<dealii::Vector<double>> solver(solver_control);
+    auto start = std::chrono::high_resolution_clock::now();
+    bool converged = false;
+    unsigned int iterations = 0;
+    double final_residual = 0.0;
 
-    // SSOR preconditioner
-    dealii::PreconditionSSOR<dealii::SparseMatrix<double>> preconditioner;
-    preconditioner.initialize(matrix, 1.2);  // relaxation parameter
-
-    try
+    if (use_iterative)
     {
-        solver.solve(matrix, solution, rhs, preconditioner);
+        const double tol = std::max(abs_tolerance, rel_tolerance * rhs_norm);
 
-        if (verbose)
+        dealii::SolverControl solver_control(max_iterations, tol);
+        dealii::SolverCG<dealii::Vector<double>> solver(solver_control);
+
+        dealii::PreconditionSSOR<dealii::SparseMatrix<double>> preconditioner;
+        preconditioner.initialize(matrix, ssor_omega);
+
+        try
         {
-            std::cout << "[Poisson] CG converged in "
-                      << solver_control.last_step() << " iterations, "
-                      << "residual = " << solver_control.last_value() << "\n";
+            solver.solve(matrix, solution, rhs, preconditioner);
+            converged = true;
+            iterations = solver_control.last_step();
+            final_residual = solver_control.last_value();
+        }
+        catch (dealii::SolverControl::NoConvergence& e)
+        {
+            std::cerr << "[Poisson] WARNING: CG did not converge after "
+                      << e.last_step << " iterations. "
+                      << "Residual = " << e.last_residual << "\n";
+            iterations = e.last_step;
+            final_residual = e.last_residual;
+
+            if (fallback_to_direct)
+                std::cerr << "[Poisson] Falling back to direct solver.\n";
         }
     }
-    catch (dealii::SolverControl::NoConvergence& e)
-    {
-        std::cerr << "[Poisson] WARNING: CG did not converge after "
-                  << e.last_step << " iterations. "
-                  << "Residual = " << e.last_residual << "\n";
-        std::cerr << "          Falling back to direct solver.\n";
 
-        // Fallback to direct solver
+    if (!converged)
+    {
         dealii::SparseDirectUMFPACK direct_solver;
         direct_solver.initialize(matrix);
         direct_solver.vmult(solution, rhs);
+        converged = true;
+        iterations = 1;
+        final_residual = 0.0;
     }
 
-#else
-    // ========================================================================
-    // Direct solver: UMFPACK (robust but slow)
-    // ========================================================================
-    dealii::SparseDirectUMFPACK solver;
-    solver.initialize(matrix);
-    solver.vmult(solution, rhs);
+    auto end = std::chrono::high_resolution_clock::now();
+    double solve_time = std::chrono::duration<double>(end - start).count();
 
-    if (verbose)
-    {
-        std::cout << "[Poisson] Direct solve (UMFPACK)\n";
-    }
-#endif
-
-    // Apply constraints (distribute values from constrained DoFs)
     constraints.distribute(solution);
+
+    if (log_output || verbose)
+    {
+        std::cout << "[Poisson] Size: " << matrix.m()
+                  << ", iterations: " << iterations
+                  << ", residual: " << final_residual
+                  << ", time: " << solve_time << "s\n";
+    }
 }

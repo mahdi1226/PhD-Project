@@ -17,16 +17,13 @@
 
 // ============================================================================
 // Sigmoid function H(x) = 1/(1 + e^(-x)) [Eq. 18]
-// Local definition to avoid header dependency issues
 // ============================================================================
-namespace {
-inline double sigmoid(double x)
+static inline double sigmoid(double x)
 {
     if (x > 20.0) return 1.0;
     if (x < -20.0) return 0.0;
     return 1.0 / (1.0 + std::exp(-x));
 }
-}  // anonymous namespace
 
 // ============================================================================
 // DiagnosticsLogger implementation
@@ -244,8 +241,8 @@ void compute_force_magnitudes(
     double& F_mag_L2,
     double& F_grav_L2)
 {
-    // Suppress unused parameter warning (we use theta_dof_handler for iteration)
     (void)psi_dof_handler;
+    (void)time;
 
     const unsigned int degree = params.fe.degree_velocity;
     dealii::QGauss<dim> quadrature(degree + 1);
@@ -272,12 +269,10 @@ void compute_force_magnitudes(
     const double mu_0 = params.ns.mu_0;
     const double r = params.ns.r;
 
-    // Gravity vector
     dealii::Tensor<1, dim> g;
     g[0] = 0.0;
     g[1] = -params.gravity.magnitude;
 
-    // Suppress unused variable warning for r if NS disabled
     (void)r;
 
     for (const auto& cell : theta_dof_handler.active_cell_iterators())
@@ -294,22 +289,16 @@ void compute_force_magnitudes(
         for (unsigned int q = 0; q < n_q_points; ++q)
         {
             const double theta = theta_values[q];
-
-            // Material properties
             const double H_val = sigmoid(theta / epsilon);
 
-            // ================================================================
-            // Capillary force: F_cap = (λ/ε) θ ∇ψ  (or just (λ/ε)∇ψ - TBD)
-            // ================================================================
+            // Capillary force: F_cap = (λ/ε) θ ∇ψ
             dealii::Tensor<1, dim> F_cap;
             for (unsigned int d = 0; d < dim; ++d)
                 F_cap[d] = (lambda / epsilon) * theta * psi_gradients[q][d];
 
             F_cap_sq += F_cap.norm_square() * fe_values.JxW(q);
 
-            // ================================================================
-            // Kelvin force: F_mag = μ₀ χ(θ) (H·∇)H where H = -∇φ
-            // ================================================================
+            // Kelvin force
             if (phi_dof_handler != nullptr && phi_solution != nullptr)
             {
                 dealii::Tensor<1, dim> H;
@@ -317,20 +306,13 @@ void compute_force_magnitudes(
                     H[d] = -phi_gradients[q][d];
 
                 const double chi = chi_0 * H_val;
-
-                // Simplified: F_mag ≈ μ₀ χ ∇(|H|²/2) = μ₀ χ (H·∇)H
-                // For now, compute magnitude estimate: |F_mag| ~ μ₀ χ |H|²/L
-                // More accurate would require Hessian of φ
-                // Approximation: |F_mag| ~ μ₀ χ |H|² (order of magnitude)
                 const double H_mag_sq = H.norm_square();
                 const double F_mag_approx = mu_0 * chi * H_mag_sq;
 
                 F_mag_sq += F_mag_approx * F_mag_approx * fe_values.JxW(q);
             }
 
-            // ================================================================
-            // Gravity/buoyancy: F_grav = (1 + r H(θ/ε)) g
-            // ================================================================
+            // Gravity/buoyancy
             if (params.gravity.enabled)
             {
                 const double density_factor = 1.0 + r * H_val;
@@ -367,7 +349,6 @@ DiagnosticData compute_all_diagnostics(
     double dt,
     double h_min)
 {
-    // Suppress unused parameter warnings
     (void)psi_dof_handler;
     (void)uy_dof_handler;
 
@@ -378,9 +359,6 @@ DiagnosticData compute_all_diagnostics(
     const double epsilon = params.ch.epsilon;
     const unsigned int degree = params.fe.degree_velocity;
 
-    // ========================================================================
-    // Compute everything in one loop for efficiency
-    // ========================================================================
     dealii::QGauss<dim> quadrature(degree + 1);
     dealii::FEValues<dim> fe_values(fe_Q2, quadrature,
         dealii::update_values |
@@ -490,10 +468,9 @@ DiagnosticData compute_all_diagnostics(
     // Store computed values
     data.mass_raw = mass_raw;
 
-    // Domain area for normalized mass
     const double domain_area = (params.domain.x_max - params.domain.x_min) *
                                (params.domain.y_max - params.domain.y_min);
-    data.mass = (mass_raw + domain_area) / (2.0 * domain_area);  // Normalized to [0,1]
+    data.mass = (mass_raw + domain_area) / (2.0 * domain_area);
 
     data.energy_ch = energy_ch;
     data.F_cap_L2 = std::sqrt(F_cap_sq);
@@ -501,17 +478,14 @@ DiagnosticData compute_all_diagnostics(
     data.F_grav_L2 = std::sqrt(F_grav_sq);
     data.div_u_L2 = std::sqrt(div_u_sq);
 
-    // Theta bounds (from nodal values)
     compute_theta_bounds(theta_solution, data.theta_min, data.theta_max);
 
-    // Phi bounds
     if (compute_mag)
     {
         data.phi_min = *std::min_element(phi_solution->begin(), phi_solution->end());
         data.phi_max = *std::max_element(phi_solution->begin(), phi_solution->end());
     }
 
-    // Velocity max and CFL
     if (compute_ns)
     {
         data.u_max = compute_u_max(*ux_solution, *uy_solution);

@@ -1,9 +1,9 @@
 // ============================================================================
-// solvers/poisson_solver.h - Magnetostatic Poisson solver (CORRECTED)
+// solvers/poisson_solver.h - Magnetostatic Poisson Solver
 //
 // Solves: (∇φ, ∇χ) = (h_a - m, ∇χ)  with Neumann BC
 //
-// Options: CG+SSOR (fast, SPD) or UMFPACK (robust)
+// Options: CG + SSOR (fast, SPD) with UMFPACK fallback
 //
 // Note: Pure Neumann problem - the constant is fixed by pinning one DoF.
 //
