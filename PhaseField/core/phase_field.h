@@ -180,6 +180,12 @@ private:
     std::vector<dealii::types::global_dof_index> uy_to_ns_map_;
     std::vector<dealii::types::global_dof_index> p_to_ns_map_;
 
+    // ========================================================================
+    // Pressure mass matrix (for Schur complement preconditioner)
+    // ========================================================================
+    dealii::SparsityPattern pressure_mass_sparsity_;
+    dealii::SparseMatrix<double> pressure_mass_matrix_;
+
     dealii::SparsityPattern ns_sparsity_;
     dealii::SparseMatrix<double> ns_matrix_;
     dealii::Vector<double> ns_rhs_;

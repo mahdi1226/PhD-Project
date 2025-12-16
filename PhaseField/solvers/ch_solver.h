@@ -1,7 +1,10 @@
 // ============================================================================
 // solvers/ch_solver.h - Cahn-Hilliard Linear Solver
 //
-// Solves the coupled (θ, ψ) system using direct solver.
+// Solves the coupled (θ, ψ) system using GMRES + ILU iterative solver.
+// Falls back to UMFPACK direct solver if iterative solver fails.
+//
+// The CH system is nonsymmetric due to convection terms, hence GMRES.
 //
 // Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
 // ============================================================================
@@ -18,7 +21,12 @@
  * @brief Solve the Cahn-Hilliard linear system
  *
  * Solves the coupled system and extracts θ, ψ solutions.
- * Uses UMFPACK direct solver for robustness.
+ *
+ * Solver: GMRES + ILU (with UMFPACK fallback)
+ *
+ * The system is nonsymmetric due to:
+ *   - Convection terms in θ equation
+ *   - Off-diagonal coupling between θ and ψ
  *
  * @param matrix           System matrix (already condensed)
  * @param rhs              Right-hand side (already condensed)

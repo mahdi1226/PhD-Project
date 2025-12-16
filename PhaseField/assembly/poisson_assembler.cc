@@ -35,19 +35,18 @@ void setup_poisson_neumann_constraints(
     const dealii::DoFHandler<dim>& phi_dof_handler,
     dealii::AffineConstraints<double>& phi_constraints)
 {
-    using namespace dealii;
 
     phi_constraints.clear();
 
     // Hanging nodes (important for AMR)
-    DoFTools::make_hanging_node_constraints(phi_dof_handler, phi_constraints);
+    dealii::DoFTools::make_hanging_node_constraints(phi_dof_handler, phi_constraints);
 
     // Pure Neumann: fix constant by pinning first unconstrained DoF
     const unsigned int n_dofs = phi_dof_handler.n_dofs();
-    Assert(n_dofs > 0, ExcMessage("phi_dof_handler has zero DoFs."));
+    Assert(n_dofs > 0, dealii::ExcMessage("phi_dof_handler has zero DoFs."));
 
-    types::global_dof_index pinned = numbers::invalid_dof_index;
-    for (types::global_dof_index i = 0; i < n_dofs; ++i)
+    dealii::types::global_dof_index pinned = dealii::numbers::invalid_dof_index;
+    for (dealii::types::global_dof_index i = 0; i < n_dofs; ++i)
     {
         if (!phi_constraints.is_constrained(i))
         {
@@ -56,8 +55,8 @@ void setup_poisson_neumann_constraints(
         }
     }
 
-    Assert(pinned != numbers::invalid_dof_index,
-           ExcMessage("Could not find an unconstrained DoF to pin for Neumann Poisson."));
+    Assert(pinned != dealii::numbers::invalid_dof_index,
+           dealii::ExcMessage("Could not find an unconstrained DoF to pin for Neumann Poisson."));
 
     phi_constraints.add_line(pinned);
     phi_constraints.set_inhomogeneity(pinned, 0.0);
@@ -90,11 +89,10 @@ void assemble_poisson_system(
     dealii::Vector<double>& phi_rhs,
     const dealii::AffineConstraints<double>& phi_constraints)
 {
-    using namespace dealii;
 
     // Verify triangulations match
     Assert(&phi_dof_handler.get_triangulation() == &M_dof_handler.get_triangulation(),
-           ExcMessage("phi and M DoFHandlers must share the same triangulation"));
+           dealii::ExcMessage("phi and M DoFHandlers must share the same triangulation"));
 
     phi_matrix = 0;
     phi_rhs = 0;
@@ -105,22 +103,22 @@ void assemble_poisson_system(
 
     // Quadrature - use sufficient order for both spaces
     const unsigned int quad_degree = std::max(phi_fe.degree, M_fe.degree) + 2;
-    QGauss<dim> quadrature(quad_degree);
+    dealii::QGauss<dim> quadrature(quad_degree);
     const unsigned int n_q_points = quadrature.size();
 
     // FEValues for φ (CG) - for shape functions and gradients
-    FEValues<dim> phi_fe_values(phi_fe, quadrature,
-        update_values | update_gradients |
-        update_quadrature_points | update_JxW_values);
+    dealii::FEValues<dim> phi_fe_values(phi_fe, quadrature,
+        dealii::update_values | dealii::update_gradients |
+        dealii::update_quadrature_points | dealii::update_JxW_values);
 
     // FEValues for M (DG) - for extracting magnetization values
     // CRITICAL: This must be built from M's DoFHandler, not θ's!
-    FEValues<dim> M_fe_values(M_fe, quadrature,
-        update_values);
+    dealii::FEValues<dim> M_fe_values(M_fe, quadrature,
+        dealii::update_values);
 
-    FullMatrix<double> local_matrix(dofs_per_cell, dofs_per_cell);
-    Vector<double> local_rhs(dofs_per_cell);
-    std::vector<types::global_dof_index> local_dof_indices(dofs_per_cell);
+    dealii::FullMatrix<double> local_matrix(dofs_per_cell, dofs_per_cell);
+    dealii::Vector<double> local_rhs(dofs_per_cell);
+    std::vector<dealii::types::global_dof_index> local_dof_indices(dofs_per_cell);
 
     // Storage for M values at quadrature points
     std::vector<double> mx_values(n_q_points);
@@ -150,20 +148,20 @@ void assemble_poisson_system(
         for (unsigned int q = 0; q < n_q_points; ++q)
         {
             const double JxW = phi_fe_values.JxW(q);
-            const Point<dim>& x_q = phi_fe_values.quadrature_point(q);
+            const dealii::Point<dim>& x_q = phi_fe_values.quadrature_point(q);
 
             // Compute applied field h_a at this quadrature point
-            Tensor<1, dim> h_a = compute_applied_field(x_q, params, current_time);
+            dealii::Tensor<1, dim> h_a = compute_applied_field(x_q, params, current_time);
             max_h_a_magnitude = std::max(max_h_a_magnitude, h_a.norm());
 
             // Get M^k from transport solution
-            Tensor<1, dim> M;
+            dealii::Tensor<1, dim> M;
             M[0] = mx_values[q];
             M[1] = my_values[q];
             max_M_magnitude = std::max(max_M_magnitude, M.norm());
 
             // RHS source: (h_a - M^k)
-            Tensor<1, dim> h_a_minus_M;
+            dealii::Tensor<1, dim> h_a_minus_M;
             h_a_minus_M[0] = h_a[0] - M[0];
             h_a_minus_M[1] = h_a[1] - M[1];
 
@@ -225,7 +223,6 @@ void assemble_poisson_system_simplified(
     dealii::Vector<double>& phi_rhs,
     const dealii::AffineConstraints<double>& phi_constraints)
 {
-    using namespace dealii;
 
     phi_matrix = 0;
     phi_rhs = 0;
@@ -233,16 +230,16 @@ void assemble_poisson_system_simplified(
     const auto& phi_fe = phi_dof_handler.get_fe();
     const unsigned int dofs_per_cell = phi_fe.n_dofs_per_cell();
 
-    QGauss<dim> quadrature(phi_fe.degree + 2);
+    dealii::QGauss<dim> quadrature(phi_fe.degree + 2);
     const unsigned int n_q_points = quadrature.size();
 
-    FEValues<dim> phi_fe_values(phi_fe, quadrature,
-        update_values | update_gradients |
-        update_quadrature_points | update_JxW_values);
+    dealii::FEValues<dim> phi_fe_values(phi_fe, quadrature,
+        dealii::update_values | dealii::update_gradients |
+        dealii::update_quadrature_points | dealii::update_JxW_values);
 
-    FullMatrix<double> local_matrix(dofs_per_cell, dofs_per_cell);
-    Vector<double> local_rhs(dofs_per_cell);
-    std::vector<types::global_dof_index> local_dof_indices(dofs_per_cell);
+    dealii::FullMatrix<double> local_matrix(dofs_per_cell, dofs_per_cell);
+    dealii::Vector<double> local_rhs(dofs_per_cell);
+    std::vector<dealii::types::global_dof_index> local_dof_indices(dofs_per_cell);
 
     for (const auto& cell : phi_dof_handler.active_cell_iterators())
     {
@@ -254,10 +251,10 @@ void assemble_poisson_system_simplified(
         for (unsigned int q = 0; q < n_q_points; ++q)
         {
             const double JxW = phi_fe_values.JxW(q);
-            const Point<dim>& x_q = phi_fe_values.quadrature_point(q);
+            const dealii::Point<dim>& x_q = phi_fe_values.quadrature_point(q);
 
             // Compute applied field h_a (M = 0 in simplified model)
-            Tensor<1, dim> h_a = compute_applied_field(x_q, params, current_time);
+            dealii::Tensor<1, dim> h_a = compute_applied_field(x_q, params, current_time);
 
             for (unsigned int i = 0; i < dofs_per_cell; ++i)
             {

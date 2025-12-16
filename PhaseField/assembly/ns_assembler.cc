@@ -103,7 +103,6 @@ void assemble_ns_system(
     dealii::SparseMatrix<double>& ns_matrix,
     dealii::Vector<double>& ns_rhs)
 {
-    using namespace dealii;
 
     (void)current_time;    // For future MMS use
 
@@ -116,120 +115,120 @@ void assemble_ns_system(
     const unsigned int dofs_per_cell_Q1 = fe_Q1.n_dofs_per_cell();
 
     // Quadrature
-    QGauss<dim> quadrature(params.fe.degree_velocity + 2);
-    QGauss<dim - 1> face_quadrature(params.fe.degree_velocity + 2);
+    dealii::QGauss<dim> quadrature(params.fe.degree_velocity + 2);
+    dealii::QGauss<dim - 1> face_quadrature(params.fe.degree_velocity + 2);
     const unsigned int n_q_points = quadrature.size();
     const unsigned int n_face_q_points = face_quadrature.size();
 
     // FEValues for velocity (Q2)
-    FEValues<dim> ux_fe_values(fe_Q2, quadrature,
-        update_values | update_gradients |
-        update_quadrature_points | update_JxW_values);
-    FEValues<dim> uy_fe_values(fe_Q2, quadrature,
-        update_values | update_gradients);
+    dealii::FEValues<dim> ux_fe_values(fe_Q2, quadrature,
+        dealii::update_values | dealii::update_gradients |
+        dealii::update_quadrature_points | dealii::update_JxW_values);
+    dealii::FEValues<dim> uy_fe_values(fe_Q2, quadrature,
+        dealii::update_values | dealii::update_gradients);
 
     // FEValues for pressure (Q1)
-    FEValues<dim> p_fe_values(fe_Q1, quadrature,
-        update_values);
+    dealii::FEValues<dim> p_fe_values(fe_Q1, quadrature,
+        dealii::update_values);
 
     // FEValues for θ (for lagged θ^{k-1})
-    FEValues<dim> theta_fe_values(theta_dof_handler.get_fe(), quadrature,
-        update_values);
+    dealii::FEValues<dim> theta_fe_values(theta_dof_handler.get_fe(), quadrature,
+        dealii::update_values);
 
     // FEValues for ψ (for ∇ψ^k in capillary)
-    FEValues<dim> psi_fe_values(psi_dof_handler.get_fe(), quadrature,
-        update_gradients);
+    dealii::FEValues<dim> psi_fe_values(psi_dof_handler.get_fe(), quadrature,
+        dealii::update_gradients);
 
     // FEValues for φ (for H^k = ∇φ^k)
-    std::unique_ptr<FEValues<dim>> phi_fe_values;
+    std::unique_ptr<dealii::FEValues<dim>> phi_fe_values;
     if (params.magnetic.enabled && phi_dof_handler != nullptr)
     {
-        phi_fe_values = std::make_unique<FEValues<dim>>(
+        phi_fe_values = std::make_unique<dealii::FEValues<dim>>(
             phi_dof_handler->get_fe(), quadrature,
-            update_gradients | update_hessians);
+            dealii::update_gradients | dealii::update_hessians);
     }
 
     // FEValues for M (DG) - CRITICAL: separate from θ!
     // Need update_gradients for div(M) in Kelvin skew form
-    std::unique_ptr<FEValues<dim>> M_fe_values;
+    std::unique_ptr<dealii::FEValues<dim>> M_fe_values;
     const bool use_full_kelvin = params.magnetic.enabled &&
                                   M_dof_handler != nullptr &&
                                   mx_solution != nullptr &&
                                   my_solution != nullptr;
     if (use_full_kelvin)
     {
-        M_fe_values = std::make_unique<FEValues<dim>>(
+        M_fe_values = std::make_unique<dealii::FEValues<dim>>(
             M_dof_handler->get_fe(), quadrature,
-            update_values | update_gradients);
+            dealii::update_values | dealii::update_gradients);
     }
 
     // FEFaceValues for B_h^m face terms (velocity)
-    FEFaceValues<dim> ux_fe_face_values(fe_Q2, face_quadrature,
-        update_values | update_normal_vectors | update_JxW_values);
-    FEFaceValues<dim> uy_fe_face_values(fe_Q2, face_quadrature,
-        update_values);
+    dealii::FEFaceValues<dim> ux_fe_face_values(fe_Q2, face_quadrature,
+        dealii::update_values | dealii::update_normal_vectors | dealii::update_JxW_values);
+    dealii::FEFaceValues<dim> uy_fe_face_values(fe_Q2, face_quadrature,
+        dealii::update_values);
 
     // FEFaceValues for φ (H traces)
-    std::unique_ptr<FEFaceValues<dim>> phi_fe_face_values_here;
-    std::unique_ptr<FEFaceValues<dim>> phi_fe_face_values_there;
+    std::unique_ptr<dealii::FEFaceValues<dim>> phi_fe_face_values_here;
+    std::unique_ptr<dealii::FEFaceValues<dim>> phi_fe_face_values_there;
     if (use_full_kelvin)
     {
-        phi_fe_face_values_here = std::make_unique<FEFaceValues<dim>>(
+        phi_fe_face_values_here = std::make_unique<dealii::FEFaceValues<dim>>(
             phi_dof_handler->get_fe(), face_quadrature,
-            update_gradients);
-        phi_fe_face_values_there = std::make_unique<FEFaceValues<dim>>(
+            dealii::update_gradients);
+        phi_fe_face_values_there = std::make_unique<dealii::FEFaceValues<dim>>(
             phi_dof_handler->get_fe(), face_quadrature,
-            update_gradients);
+            dealii::update_gradients);
     }
 
     // FEFaceValues for M (DG traces)
-    std::unique_ptr<FEFaceValues<dim>> M_fe_face_values_here;
-    std::unique_ptr<FEFaceValues<dim>> M_fe_face_values_there;
+    std::unique_ptr<dealii::FEFaceValues<dim>> M_fe_face_values_here;
+    std::unique_ptr<dealii::FEFaceValues<dim>> M_fe_face_values_there;
     if (use_full_kelvin)
     {
-        M_fe_face_values_here = std::make_unique<FEFaceValues<dim>>(
+        M_fe_face_values_here = std::make_unique<dealii::FEFaceValues<dim>>(
             M_dof_handler->get_fe(), face_quadrature,
-            update_values);
-        M_fe_face_values_there = std::make_unique<FEFaceValues<dim>>(
+            dealii::update_values);
+        M_fe_face_values_there = std::make_unique<dealii::FEFaceValues<dim>>(
             M_dof_handler->get_fe(), face_quadrature,
-            update_values);
+            dealii::update_values);
     }
 
     // Local matrices (9 blocks for 3×3 system)
-    FullMatrix<double> local_ux_ux(dofs_per_cell_Q2, dofs_per_cell_Q2);
-    FullMatrix<double> local_ux_uy(dofs_per_cell_Q2, dofs_per_cell_Q2);
-    FullMatrix<double> local_ux_p(dofs_per_cell_Q2, dofs_per_cell_Q1);
-    FullMatrix<double> local_uy_ux(dofs_per_cell_Q2, dofs_per_cell_Q2);
-    FullMatrix<double> local_uy_uy(dofs_per_cell_Q2, dofs_per_cell_Q2);
-    FullMatrix<double> local_uy_p(dofs_per_cell_Q2, dofs_per_cell_Q1);
-    FullMatrix<double> local_p_ux(dofs_per_cell_Q1, dofs_per_cell_Q2);
-    FullMatrix<double> local_p_uy(dofs_per_cell_Q1, dofs_per_cell_Q2);
+    dealii::FullMatrix<double> local_ux_ux(dofs_per_cell_Q2, dofs_per_cell_Q2);
+    dealii::FullMatrix<double> local_ux_uy(dofs_per_cell_Q2, dofs_per_cell_Q2);
+    dealii::FullMatrix<double> local_ux_p(dofs_per_cell_Q2, dofs_per_cell_Q1);
+    dealii::FullMatrix<double> local_uy_ux(dofs_per_cell_Q2, dofs_per_cell_Q2);
+    dealii::FullMatrix<double> local_uy_uy(dofs_per_cell_Q2, dofs_per_cell_Q2);
+    dealii::FullMatrix<double> local_uy_p(dofs_per_cell_Q2, dofs_per_cell_Q1);
+    dealii::FullMatrix<double> local_p_ux(dofs_per_cell_Q1, dofs_per_cell_Q2);
+    dealii::FullMatrix<double> local_p_uy(dofs_per_cell_Q1, dofs_per_cell_Q2);
 
-    Vector<double> local_rhs_ux(dofs_per_cell_Q2);
-    Vector<double> local_rhs_uy(dofs_per_cell_Q2);
-    Vector<double> local_rhs_p(dofs_per_cell_Q1);
+    dealii::Vector<double> local_rhs_ux(dofs_per_cell_Q2);
+    dealii::Vector<double> local_rhs_uy(dofs_per_cell_Q2);
+    dealii::Vector<double> local_rhs_p(dofs_per_cell_Q1);
 
-    std::vector<types::global_dof_index> ux_local_dofs(dofs_per_cell_Q2);
-    std::vector<types::global_dof_index> uy_local_dofs(dofs_per_cell_Q2);
-    std::vector<types::global_dof_index> p_local_dofs(dofs_per_cell_Q1);
+    std::vector<dealii::types::global_dof_index> ux_local_dofs(dofs_per_cell_Q2);
+    std::vector<dealii::types::global_dof_index> uy_local_dofs(dofs_per_cell_Q2);
+    std::vector<dealii::types::global_dof_index> p_local_dofs(dofs_per_cell_Q1);
 
     // Solution values at quadrature points
     std::vector<double> ux_old_values(n_q_points);
     std::vector<double> uy_old_values(n_q_points);
-    std::vector<Tensor<1, dim>> ux_old_gradients(n_q_points);
-    std::vector<Tensor<1, dim>> uy_old_gradients(n_q_points);
+    std::vector<dealii::Tensor<1, dim>> ux_old_gradients(n_q_points);
+    std::vector<dealii::Tensor<1, dim>> uy_old_gradients(n_q_points);
     std::vector<double> theta_old_values(n_q_points);  // LAGGED θ^{k-1}
-    std::vector<Tensor<1, dim>> psi_gradients(n_q_points);
-    std::vector<Tensor<1, dim>> phi_gradients(n_q_points);
-    std::vector<Tensor<2, dim>> phi_hessians(n_q_points);
+    std::vector<dealii::Tensor<1, dim>> psi_gradients(n_q_points);
+    std::vector<dealii::Tensor<1, dim>> phi_gradients(n_q_points);
+    std::vector<dealii::Tensor<2, dim>> phi_hessians(n_q_points);
     std::vector<double> mx_values(n_q_points);
     std::vector<double> my_values(n_q_points);
-    std::vector<Tensor<1, dim>> mx_gradients(n_q_points);  // For div(M) = ∂Mx/∂x + ∂My/∂y
-    std::vector<Tensor<1, dim>> my_gradients(n_q_points);
+    std::vector<dealii::Tensor<1, dim>> mx_gradients(n_q_points);  // For div(M) = ∂Mx/∂x + ∂My/∂y
+    std::vector<dealii::Tensor<1, dim>> my_gradients(n_q_points);
 
     // Face values for B_h^m
-    std::vector<Tensor<1, dim>> phi_grad_here(n_face_q_points);
-    std::vector<Tensor<1, dim>> phi_grad_there(n_face_q_points);
+    std::vector<dealii::Tensor<1, dim>> phi_grad_here(n_face_q_points);
+    std::vector<dealii::Tensor<1, dim>> phi_grad_there(n_face_q_points);
     std::vector<double> mx_here(n_face_q_points), mx_there(n_face_q_points);
     std::vector<double> my_here(n_face_q_points), my_there(n_face_q_points);
 
@@ -253,7 +252,7 @@ void assemble_ns_system(
     const bool use_gravity = params.gravity.enabled;
     const double g_mag = params.gravity.magnitude;
     const double r_density = params.ns.r;
-    Tensor<1, dim> g_direction = params.gravity.direction;
+    dealii::Tensor<1, dim> g_direction = params.gravity.direction;
 
     if (use_gravity)
     {
@@ -276,8 +275,8 @@ void assemble_ns_system(
     auto theta_cell = theta_dof_handler.begin_active();
     auto psi_cell = psi_dof_handler.begin_active();
 
-    typename DoFHandler<dim>::active_cell_iterator phi_cell;
-    typename DoFHandler<dim>::active_cell_iterator M_cell;
+    typename dealii::DoFHandler<dim>::active_cell_iterator phi_cell;
+    typename dealii::DoFHandler<dim>::active_cell_iterator M_cell;
 
     if (params.magnetic.enabled && phi_dof_handler != nullptr)
         phi_cell = phi_dof_handler->begin_active();
@@ -298,8 +297,8 @@ void assemble_ns_system(
         psi_fe_values.reinit(psi_cell);
 
         // Track current phi/M cells for face loop
-        typename DoFHandler<dim>::active_cell_iterator current_phi_cell;
-        typename DoFHandler<dim>::active_cell_iterator current_M_cell;
+        typename dealii::DoFHandler<dim>::active_cell_iterator current_phi_cell;
+        typename dealii::DoFHandler<dim>::active_cell_iterator current_M_cell;
 
         if (params.magnetic.enabled && phi_dof_handler != nullptr)
         {
@@ -359,12 +358,12 @@ void assemble_ns_system(
             // U^{k-1} at quadrature point
             const double ux_q = ux_old_values[q];
             const double uy_q = uy_old_values[q];
-            Tensor<1, dim> U_old;
+            dealii::Tensor<1, dim> U_old;
             U_old[0] = ux_q;
             U_old[1] = uy_q;
 
-            const Tensor<1, dim>& grad_ux_old = ux_old_gradients[q];
-            const Tensor<1, dim>& grad_uy_old = uy_old_gradients[q];
+            const dealii::Tensor<1, dim>& grad_ux_old = ux_old_gradients[q];
+            const dealii::Tensor<1, dim>& grad_uy_old = uy_old_gradients[q];
 
             // div(U^{k-1}) for skew form
             const double div_U_old = grad_ux_old[0] + grad_uy_old[1];
@@ -373,7 +372,7 @@ void assemble_ns_system(
             const double theta_old_q = theta_old_values[q];
 
             // ∇ψ^k for capillary
-            const Tensor<1, dim>& grad_psi = psi_gradients[q];
+            const dealii::Tensor<1, dim>& grad_psi = psi_gradients[q];
 
             // Phase-dependent viscosity at θ^{k-1} [Eq. 17]
             const double nu = mat_props.viscosity(theta_old_q);
@@ -382,7 +381,7 @@ void assemble_ns_system(
             // Capillary force [Eq. 10]: F_cap = (λ/ε)θ^{k-1}∇ψ^k
             // CORRECTED: Uses lagged θ^{k-1}, not θ^k
             // ================================================================
-            Tensor<1, dim> F_cap;
+            dealii::Tensor<1, dim> F_cap;
             F_cap = 0;
             {
                 const double coeff = lambda / epsilon;
@@ -394,7 +393,7 @@ void assemble_ns_system(
             // Gravity [Eq. 19]: F_grav = (1 + r·H(θ^{k-1}/ε))g
             // NOTE: Not in Eq. 42e, optional extension
             // ================================================================
-            Tensor<1, dim> F_grav;
+            dealii::Tensor<1, dim> F_grav;
             F_grav = 0;
             if (use_gravity)
             {
@@ -429,18 +428,18 @@ void assemble_ns_system(
 
             // Pre-compute Kelvin quantities using kelvin_force.h helpers
             double div_M = 0.0;
-            Tensor<1, dim> M_grad_H;
-            Tensor<1, dim> H_field;
+            dealii::Tensor<1, dim> M_grad_H;
+            dealii::Tensor<1, dim> H_field;
             M_grad_H = 0;
             H_field = 0;
 
             if (use_full_kelvin && phi_solution != nullptr)
             {
                 H_field = phi_gradients[q];  // H = ∇φ
-                const Tensor<2, dim>& hess_phi = phi_hessians[q];
+                const dealii::Tensor<2, dim>& hess_phi = phi_hessians[q];
 
                 // Build M vector from scalar components
-                Tensor<1, dim> M = KelvinForce::make_M_vector<dim>(mx_values[q], my_values[q]);
+                dealii::Tensor<1, dim> M = KelvinForce::make_M_vector<dim>(mx_values[q], my_values[q]);
 
                 // Compute div(M) = ∂Mx/∂x + ∂My/∂y
                 div_M = KelvinForce::compute_div_M<dim>(mx_gradients[q], my_gradients[q]);
@@ -463,12 +462,12 @@ void assemble_ns_system(
             {
                 const double phi_ux_i = ux_fe_values.shape_value(i, q);
                 const double phi_uy_i = uy_fe_values.shape_value(i, q);
-                const Tensor<1, dim> grad_phi_ux_i = ux_fe_values.shape_grad(i, q);
-                const Tensor<1, dim> grad_phi_uy_i = uy_fe_values.shape_grad(i, q);
+                const dealii::Tensor<1, dim> grad_phi_ux_i = ux_fe_values.shape_grad(i, q);
+                const dealii::Tensor<1, dim> grad_phi_uy_i = uy_fe_values.shape_grad(i, q);
 
                 // Test function symmetric gradients T(V)
-                SymmetricTensor<2, dim> T_V_x = compute_T_test_x<dim>(grad_phi_ux_i);
-                SymmetricTensor<2, dim> T_V_y = compute_T_test_y<dim>(grad_phi_uy_i);
+                dealii::SymmetricTensor<2, dim> T_V_x = compute_T_test_x<dim>(grad_phi_ux_i);
+                dealii::SymmetricTensor<2, dim> T_V_y = compute_T_test_y<dim>(grad_phi_uy_i);
 
                 // ============================================================
                 // RHS: momentum equations
@@ -515,12 +514,12 @@ void assemble_ns_system(
                 {
                     const double phi_ux_j = ux_fe_values.shape_value(j, q);
                     const double phi_uy_j = uy_fe_values.shape_value(j, q);
-                    const Tensor<1, dim> grad_phi_ux_j = ux_fe_values.shape_grad(j, q);
-                    const Tensor<1, dim> grad_phi_uy_j = uy_fe_values.shape_grad(j, q);
+                    const dealii::Tensor<1, dim> grad_phi_ux_j = ux_fe_values.shape_grad(j, q);
+                    const dealii::Tensor<1, dim> grad_phi_uy_j = uy_fe_values.shape_grad(j, q);
 
                     // Trial function symmetric gradients T(U)
-                    SymmetricTensor<2, dim> T_U_x = compute_T_test_x<dim>(grad_phi_ux_j);
-                    SymmetricTensor<2, dim> T_U_y = compute_T_test_y<dim>(grad_phi_uy_j);
+                    dealii::SymmetricTensor<2, dim> T_U_x = compute_T_test_x<dim>(grad_phi_ux_j);
+                    dealii::SymmetricTensor<2, dim> T_U_y = compute_T_test_y<dim>(grad_phi_uy_j);
 
                     // Mass: (1/τ)(U, V)
                     local_ux_ux(i, j) += (1.0 / dt) * phi_ux_i * phi_ux_j * JxW;
@@ -587,8 +586,8 @@ void assemble_ns_system(
 
                 for (unsigned int j = 0; j < dofs_per_cell_Q2; ++j)
                 {
-                    const Tensor<1, dim> grad_phi_ux_j = ux_fe_values.shape_grad(j, q);
-                    const Tensor<1, dim> grad_phi_uy_j = uy_fe_values.shape_grad(j, q);
+                    const dealii::Tensor<1, dim> grad_phi_ux_j = ux_fe_values.shape_grad(j, q);
+                    const dealii::Tensor<1, dim> grad_phi_uy_j = uy_fe_values.shape_grad(j, q);
 
                     local_p_ux(i, j) += grad_phi_ux_j[0] * phi_p_i * JxW;
                     local_p_uy(i, j) += grad_phi_uy_j[1] * phi_p_i * JxW;
@@ -644,7 +643,7 @@ void assemble_ns_system(
         // ====================================================================
         if (use_full_kelvin)
         {
-            for (unsigned int face_no = 0; face_no < GeometryInfo<dim>::faces_per_cell; ++face_no)
+            for (unsigned int face_no = 0; face_no < dealii::GeometryInfo<dim>::faces_per_cell; ++face_no)
             {
                 // Only process interior faces once
                 // AMR-SAFE: Use level + cell_id comparison, not index()
@@ -690,29 +689,29 @@ void assemble_ns_system(
 
                         // Get neighbor velocity cell and DoFs
                         auto uy_neighbor = uy_cell->neighbor(face_no);
-                        std::vector<types::global_dof_index> ux_there_dofs(dofs_per_cell_Q2);
-                        std::vector<types::global_dof_index> uy_there_dofs(dofs_per_cell_Q2);
+                        std::vector<dealii::types::global_dof_index> ux_there_dofs(dofs_per_cell_Q2);
+                        std::vector<dealii::types::global_dof_index> uy_there_dofs(dofs_per_cell_Q2);
                         neighbor->get_dof_indices(ux_there_dofs);
                         uy_neighbor->get_dof_indices(uy_there_dofs);
 
                         // FEFaceValues for neighbor velocity
-                        FEFaceValues<dim> ux_fe_face_values_there(fe_Q2, face_quadrature, update_values);
-                        FEFaceValues<dim> uy_fe_face_values_there(fe_Q2, face_quadrature, update_values);
+                        dealii::FEFaceValues<dim> ux_fe_face_values_there(fe_Q2, face_quadrature, dealii::update_values);
+                        dealii::FEFaceValues<dim> uy_fe_face_values_there(fe_Q2, face_quadrature, dealii::update_values);
                         ux_fe_face_values_there.reinit(neighbor, neighbor_face_no);
                         uy_fe_face_values_there.reinit(uy_neighbor, neighbor_face_no);
 
                         for (unsigned int q = 0; q < n_face_q_points; ++q)
                         {
                             const double JxW_face = ux_fe_face_values.JxW(q);
-                            const Tensor<1, dim>& normal_minus = ux_fe_face_values.normal_vector(q);
+                            const dealii::Tensor<1, dim>& normal_minus = ux_fe_face_values.normal_vector(q);
 
                             // Compute jump and average using helpers (one truth)
-                            Tensor<1, dim> jump_H = KelvinForce::compute_jump_H<dim>(
+                            dealii::Tensor<1, dim> jump_H = KelvinForce::compute_jump_H<dim>(
                                 phi_grad_here[q], phi_grad_there[q]);
 
-                            Tensor<1, dim> M_minus = KelvinForce::make_M_vector<dim>(mx_here[q], my_here[q]);
-                            Tensor<1, dim> M_plus = KelvinForce::make_M_vector<dim>(mx_there[q], my_there[q]);
-                            Tensor<1, dim> avg_M = KelvinForce::compute_avg_M<dim>(M_minus, M_plus);
+                            dealii::Tensor<1, dim> M_minus = KelvinForce::make_M_vector<dim>(mx_here[q], my_here[q]);
+                            dealii::Tensor<1, dim> M_plus = KelvinForce::make_M_vector<dim>(mx_there[q], my_there[q]);
+                            dealii::Tensor<1, dim> avg_M = KelvinForce::compute_avg_M<dim>(M_minus, M_plus);
 
                             // Assemble face contribution for minus cell test functions
                             // Uses normal_minus and jump_H = H⁻ - H⁺
