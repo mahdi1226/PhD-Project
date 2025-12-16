@@ -274,8 +274,8 @@ void PhaseFieldProblem<dim>::refine_mesh()
     if (params_.ns.enabled)
     {
         const unsigned int n_ns = ux_dof_handler_.n_dofs() +
-                                  uy_dof_handler_.n_dofs() +
-                                  p_dof_handler_.n_dofs();
+            uy_dof_handler_.n_dofs() +
+            p_dof_handler_.n_dofs();
         ns_solution_.reinit(n_ns);
 
         for (unsigned int i = 0; i < ux_to_ns_map_.size(); ++i)
@@ -290,6 +290,14 @@ void PhaseFieldProblem<dim>::refine_mesh()
 
         if (params_.output.verbose)
             std::cout << "[AMR] Rebuilt ns_solution_ from transferred fields\n";
+
+        // Force direct solver after AMR
+        use_direct_after_amr_ = true;
+        std::cout << "[AMR] Will use direct solver for next NS solve\n";
+
+        // Track first AMR for solver optimization
+        if (!first_amr_occurred_)
+            first_amr_occurred_ = true;
     }
 }
 

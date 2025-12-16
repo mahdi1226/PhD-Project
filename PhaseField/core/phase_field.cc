@@ -193,6 +193,9 @@ void PhaseFieldProblem<dim>::run()
 template <int dim>
 void PhaseFieldProblem<dim>::do_time_step(double dt)
 {
+    std::cout << "[DEBUG do_time_step START] use_direct_after_amr_ = "
+              << use_direct_after_amr_ << "\n";
+
     // Save old solutions BEFORE updating (for lagging)
     theta_old_solution_ = theta_solution_;
 
@@ -433,16 +436,30 @@ void PhaseFieldProblem<dim>::solve_ns()
         ns_rhs_);
 
     // Use FGMRES + Block Schur preconditioner (following deal.II step-56)
-    solve_ns_system_schur(
-        ns_matrix_,
-        ns_rhs_,
-        ns_solution_,
-        ns_combined_constraints_,
-        pressure_mass_matrix_,
-        ux_to_ns_map_,
-        uy_to_ns_map_,
-        p_to_ns_map_,
-        params_.output.verbose);
+    // Use direct solver for first step after first AMR (Schur struggles with near-zero initial state)
+    if (use_direct_after_amr_)
+    {
+        solve_ns_system_direct(
+            ns_matrix_,
+            ns_rhs_,
+            ns_solution_,
+            ns_combined_constraints_,
+            params_.output.verbose);
+        use_direct_after_amr_ = false;
+    }
+    else
+    {
+        solve_ns_system_schur(
+            ns_matrix_,
+            ns_rhs_,
+            ns_solution_,
+            ns_combined_constraints_,
+            pressure_mass_matrix_,
+            ux_to_ns_map_,
+            uy_to_ns_map_,
+            p_to_ns_map_,
+            params_.output.verbose);
+    }
 
     extract_ns_solutions(
         ns_solution_,

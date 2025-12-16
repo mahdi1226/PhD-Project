@@ -97,9 +97,9 @@ private:
     // ========================================================================
     void compute_mms_errors() const;
 
-    // ========================================================================
-    // Data members
-    // ========================================================================
+    // AMR tracking for solver optimization
+    bool first_amr_occurred_ = false;
+    bool use_direct_after_amr_ = false;
 
     // Parameters
     const Parameters& params_;
