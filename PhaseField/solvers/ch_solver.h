@@ -1,7 +1,10 @@
 // ============================================================================
-// solvers/ch_solver.h - Cahn-Hilliard System Solver
+// solvers/ch_solver.h - Cahn-Hilliard Linear Solver
 //
-// Free function interface - no circular dependencies.
+// Solves the coupled (θ, ψ) system using GMRES + ILU iterative solver.
+// Falls back to UMFPACK direct solver if iterative solver fails.
+//
+// The CH system is nonsymmetric due to convection terms, hence GMRES.
 //
 // Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
 // ============================================================================
@@ -15,26 +18,31 @@
 #include <vector>
 
 /**
- * @brief Solve the coupled Cahn-Hilliard system
+ * @brief Solve the Cahn-Hilliard linear system
  *
- * Solves the linear system Ax = b using UMFPACK direct solver,
- * then extracts θ and ψ solutions from the coupled solution vector.
+ * Solves the coupled system and extracts θ, ψ solutions.
  *
- * @param matrix             System matrix (already condensed with constraints)
- * @param rhs                RHS vector (already condensed with constraints)
- * @param constraints        Combined constraints for the coupled system
- * @param theta_to_ch_map    Index mapping: θ DoF → coupled system index
- * @param psi_to_ch_map      Index mapping: ψ DoF → coupled system index
- * @param theta_solution     Output: phase field solution
- * @param psi_solution       Output: chemical potential solution
+ * Solver: GMRES + ILU (with UMFPACK fallback)
+ *
+ * The system is nonsymmetric due to:
+ *   - Convection terms in θ equation
+ *   - Off-diagonal coupling between θ and ψ
+ *
+ * @param matrix           System matrix (already condensed)
+ * @param rhs              Right-hand side (already condensed)
+ * @param constraints      Constraints for distribute() after solve
+ * @param theta_to_ch_map  Index mapping: θ DoF → coupled system index
+ * @param psi_to_ch_map    Index mapping: ψ DoF → coupled system index
+ * @param theta_solution   [OUT] θ solution vector
+ * @param psi_solution     [OUT] ψ solution vector
  */
 void solve_ch_system(
-    const dealii::SparseMatrix<double>&  matrix,
-    const dealii::Vector<double>&        rhs,
+    const dealii::SparseMatrix<double>& matrix,
+    const dealii::Vector<double>& rhs,
     const dealii::AffineConstraints<double>& constraints,
     const std::vector<dealii::types::global_dof_index>& theta_to_ch_map,
     const std::vector<dealii::types::global_dof_index>& psi_to_ch_map,
-    dealii::Vector<double>&              theta_solution,
-    dealii::Vector<double>&              psi_solution);
+    dealii::Vector<double>& theta_solution,
+    dealii::Vector<double>& psi_solution);
 
 #endif // CH_SOLVER_H

@@ -1,19 +1,26 @@
 // ============================================================================
 // assembly/ch_assembler.h - Cahn-Hilliard System Assembler
 //
-// Free function interface - no circular dependencies.
-//
 // Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
-// Equations 14a-14b (continuous), 42a-b (discrete), p.499, 505
+// Equations 42a-42b (discrete scheme), p.505
 //
-// Weak form:
-//   Eq 14a: (1/τ)(θ - θ_old, φ) - (θu, ∇φ) + γ(∇ψ, ∇φ) = 0
-//   Eq 14b: (ψ, χ) + ε(∇θ, ∇χ) + (1/ε)(f'(θ_old)θ, χ) = (1/ε)(f'(θ_old)θ_old - f(θ_old), χ)
+// Paper's discrete scheme:
 //
-// where f(θ) = θ³ - θ, f'(θ) = 3θ² - 1
+//   Eq 42a: (δθ^k/τ, Λ) - (U^k θ^{k-1}, ∇Λ) - γ(∇ψ^k, ∇Λ) = 0
 //
-// MMS MODE: When params.mms.enabled is true, adds manufactured source terms
-// to verify implementation correctness. See diagnostics/ch_mms.h for details.
+//   Eq 42b: (ψ^k, Υ) + ε(∇θ^k, ∇Υ) + (1/ε)(f(θ^{k-1}), Υ) + (1/η)(δθ^k, Υ) = 0
+//
+// where:
+//   - δθ^k = θ^k - θ^{k-1}
+//   - f(θ) = θ³ - θ  (double-well derivative)
+//   - η > 0 is the stabilization parameter (η ~ ε for stability)
+//   - θ^{k-1} is LAGGED (explicit), θ^k and ψ^k are implicit
+//
+// KEY DIFFERENCES FROM NEWTON LINEARIZATION:
+//   - Paper uses LAGGED f(θ^{k-1}), NOT linearized f'(θ_old)θ
+//   - Advection uses LAGGED θ^{k-1}, NOT implicit θ^k
+//   - Stabilization term (1/η)(δθ^k, Υ) is REQUIRED for energy stability
+//
 // ============================================================================
 #ifndef CH_ASSEMBLER_H
 #define CH_ASSEMBLER_H
@@ -28,20 +35,30 @@
 struct Parameters;
 
 /**
- * @brief Assemble the coupled Cahn-Hilliard system
+ * @brief Assemble the coupled Cahn-Hilliard system (Paper Eq. 42a-42b)
  *
  * Assembles into a monolithic matrix with block structure:
- *   [θ-θ  θ-ψ] [θ]   [rhs_θ]
- *   [ψ-θ  ψ-ψ] [ψ] = [rhs_ψ]
+ *   [θ-θ  θ-ψ] [θ^k]   [rhs_θ]
+ *   [ψ-θ  ψ-ψ] [ψ^k] = [rhs_ψ]
+ *
+ * Matrix blocks (LHS):
+ *   θ-θ: (1/τ)(θ, Λ)
+ *   θ-ψ: -γ(∇ψ, ∇Λ)
+ *   ψ-θ: ε(∇θ, ∇Υ) + (1/η)(θ, Υ)
+ *   ψ-ψ: (ψ, Υ)
+ *
+ * RHS:
+ *   rhs_θ: (1/τ)(θ^{k-1}, Λ) + (U^k θ^{k-1}, ∇Λ)
+ *   rhs_ψ: -(1/ε)(f(θ^{k-1}), Υ) + (1/η)(θ^{k-1}, Υ)
  *
  * @param theta_dof_handler  DoFHandler for phase field θ
  * @param psi_dof_handler    DoFHandler for chemical potential ψ
- * @param theta_old          Previous time step θ solution
- * @param ux_solution        Velocity x-component (can be zero for standalone CH)
- * @param uy_solution        Velocity y-component (can be zero for standalone CH)
- * @param params             Simulation parameters
+ * @param theta_old          Previous time step θ^{k-1}
+ * @param ux_solution        Velocity x-component U^k_x
+ * @param uy_solution        Velocity y-component U^k_y
+ * @param params             Simulation parameters (includes η = params.ch.eta)
  * @param dt                 Time step size τ
- * @param current_time       Current simulation time (used for MMS source terms)
+ * @param current_time       Current simulation time (for MMS)
  * @param theta_to_ch_map    Index mapping: θ DoF → coupled system index
  * @param psi_to_ch_map      Index mapping: ψ DoF → coupled system index
  * @param matrix             Output: assembled system matrix

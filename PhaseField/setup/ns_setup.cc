@@ -1,5 +1,7 @@
 // ============================================================================
-// setup/ns_setup.cc - Navier-Stokes Coupled System Setup Implementation
+// setup/ns_setup.cc - Navier-Stokes Coupled System Setup (CORRECTED)
+//
+// CORRECTED: Sparsity patterns now built WITH constraints
 //
 // Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
 // ============================================================================
@@ -26,6 +28,7 @@ void setup_ns_coupled_system(
     dealii::SparsityPattern& ns_sparsity,
     bool verbose)
 {
+
     const unsigned int n_ux = ux_dof_handler.n_dofs();
     const unsigned int n_uy = uy_dof_handler.n_dofs();
     const unsigned int n_p = p_dof_handler.n_dofs();
@@ -56,19 +59,28 @@ void setup_ns_coupled_system(
     //   [uy-ux, uy-uy, uy-p ]
     //   [p-ux,  p-uy,  p-p  ]
     //
-    // Note: p-p block is empty (no pressure-pressure coupling)
+    // Note: p-p block is empty (no pressure-pressure coupling) except diagonal
 
     dealii::DynamicSparsityPattern dsp(n_total, n_total);
 
-    // Build base sparsity patterns for Q2-Q2 and Q1-Q1 couplings
+    // Build base sparsity patterns
+    // IMPORTANT: keep_constrained_dofs=true because NS assembler uses condense()
+    // pattern (writes to all entries, then condenses). If false, constrained
+    // entries don't exist and assembly fails.
     dealii::DynamicSparsityPattern dsp_Q2(n_ux, n_ux);
-    dealii::DoFTools::make_sparsity_pattern(ux_dof_handler, dsp_Q2);
+    dealii::DoFTools::make_sparsity_pattern(ux_dof_handler, dsp_Q2,
+                                    ux_constraints,
+                                    /*keep_constrained_dofs=*/true);
 
     dealii::DynamicSparsityPattern dsp_Q1(n_p, n_p);
-    dealii::DoFTools::make_sparsity_pattern(p_dof_handler, dsp_Q1);
+    dealii::DoFTools::make_sparsity_pattern(p_dof_handler, dsp_Q1,
+                                    p_constraints,
+                                    /*keep_constrained_dofs=*/true);
 
     // Q2-Q1 coupling (velocity-pressure)
     // For Taylor-Hood, we need the coupling between Q2 velocity and Q1 pressure
+    // Note: This version of make_sparsity_pattern doesn't take constraints,
+    // but the coupling structure is determined by the mesh topology
     dealii::DynamicSparsityPattern dsp_Q2_Q1(n_ux, n_p);
     dealii::DoFTools::make_sparsity_pattern(ux_dof_handler, p_dof_handler, dsp_Q2_Q1);
 
@@ -78,7 +90,7 @@ void setup_ns_coupled_system(
         for (auto j = dsp_Q2.begin(i); j != dsp_Q2.end(i); ++j)
             dsp.add(ux_to_ns_map[i], ux_to_ns_map[j->column()]);
 
-    // Block (0,1): ux-uy (Q2-Q2) - for grad-div stabilization
+    // Block (0,1): ux-uy (Q2-Q2) - for grad-div stabilization and symmetric gradient
     for (unsigned int i = 0; i < n_ux; ++i)
         for (auto j = dsp_Q2.begin(i); j != dsp_Q2.end(i); ++j)
             dsp.add(ux_to_ns_map[i], uy_to_ns_map[j->column()]);
@@ -88,7 +100,7 @@ void setup_ns_coupled_system(
         for (auto j = dsp_Q2_Q1.begin(i); j != dsp_Q2_Q1.end(i); ++j)
             dsp.add(ux_to_ns_map[i], p_to_ns_map[j->column()]);
 
-    // Block (1,0): uy-ux (Q2-Q2) - for grad-div stabilization
+    // Block (1,0): uy-ux (Q2-Q2) - for grad-div stabilization and symmetric gradient
     for (unsigned int i = 0; i < n_uy; ++i)
         for (auto j = dsp_Q2.begin(i); j != dsp_Q2.end(i); ++j)
             dsp.add(uy_to_ns_map[i], ux_to_ns_map[j->column()]);
@@ -113,8 +125,10 @@ void setup_ns_coupled_system(
         for (auto j = dsp_Q2_Q1.begin(i); j != dsp_Q2_Q1.end(i); ++j)
             dsp.add(p_to_ns_map[j->column()], uy_to_ns_map[i]);
 
-    // Block (2,2): p-p - empty (no pressure stabilization by default)
-    // Could add pressure stabilization here if needed
+    // Block (2,2): p-p diagonal entries
+    // REQUIRED for constraint handling (pressure DoF 0 is pinned to fix constant)
+    for (unsigned int i = 0; i < n_p; ++i)
+        dsp.add(p_to_ns_map[i], p_to_ns_map[i]);
 
     ns_sparsity.copy_from(dsp);
 
@@ -159,10 +173,9 @@ void setup_ns_coupled_system(
 
     if (verbose)
     {
-        std::cout << "[Setup] NS system: " << n_ux << " + " << n_uy << " + " << n_p
-                  << " = " << n_total << " DoFs\n";
-        std::cout << "[Setup] NS sparsity: " << ns_sparsity.n_nonzero_elements()
-                  << " nonzeros\n";
+        std::cout << "[NS Setup] ux: " << n_ux << ", uy: " << n_uy
+                  << ", p: " << n_p << ", total: " << n_total
+                  << ", nnz: " << ns_sparsity.n_nonzero_elements() << "\n";
     }
 }
 
@@ -173,6 +186,20 @@ template void setup_ns_coupled_system<2>(
     const dealii::DoFHandler<2>&,
     const dealii::DoFHandler<2>&,
     const dealii::DoFHandler<2>&,
+    const dealii::AffineConstraints<double>&,
+    const dealii::AffineConstraints<double>&,
+    const dealii::AffineConstraints<double>&,
+    std::vector<dealii::types::global_dof_index>&,
+    std::vector<dealii::types::global_dof_index>&,
+    std::vector<dealii::types::global_dof_index>&,
+    dealii::AffineConstraints<double>&,
+    dealii::SparsityPattern&,
+    bool);
+
+template void setup_ns_coupled_system<3>(
+    const dealii::DoFHandler<3>&,
+    const dealii::DoFHandler<3>&,
+    const dealii::DoFHandler<3>&,
     const dealii::AffineConstraints<double>&,
     const dealii::AffineConstraints<double>&,
     const dealii::AffineConstraints<double>&,

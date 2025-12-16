@@ -123,8 +123,11 @@ void setup_ch_coupled_system(
 
     // Build base sparsity for single field
     dealii::DynamicSparsityPattern base_dsp(n_theta, n_theta);
-    dealii::DoFTools::make_sparsity_pattern(theta_dof_handler, base_dsp);
-
+    dealii::DoFTools::make_sparsity_pattern(
+        theta_dof_handler,
+        base_dsp,
+        theta_constraints,
+        /*keep_constrained_dofs=*/false);
     // All 4 blocks use the same structure
     for (unsigned int i = 0; i < n_theta; ++i)
     {

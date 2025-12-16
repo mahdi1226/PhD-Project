@@ -1,10 +1,9 @@
 // ============================================================================
 // utilities/parameters.h - Simulation Parameters
 //
-// All parameters for ferrofluid simulation based on:
-// Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
+// Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
 //
-// Two test cases:
+// Test cases:
 //   - Rosensweig (Section 6.2): 5 dipoles at y=-15, χ₀=0.5, ε=0.01
 //   - Hedgehog (Section 6.3): 42 dipoles at y=-0.5 to -1.0, χ₀=0.9, ε=0.005
 // ============================================================================
@@ -21,8 +20,16 @@
 struct Parameters
 {
     // ========================================================================
+    // Default constructor
+    // ========================================================================
+    Parameters()
+    {
+        gravity.direction[0] = 0.0;
+        gravity.direction[1] = -1.0;
+    }
+
+    // ========================================================================
     // Current simulation time (updated by time-stepping loop)
-    // Used by poisson_assembler for dipole ramping
     // ========================================================================
     double current_time = 0.0;
 
@@ -35,63 +42,66 @@ struct Parameters
         double x_max = 1.0;
         double y_min = 0.0;
         double y_max = 0.6;
-        double layer_height = 0.2;        // Initial ferrofluid pool depth
-        unsigned int initial_refinement = 5;  // Global refinement level
+        double layer_height = 0.2;
+        unsigned int initial_refinement = 5;
+        unsigned int initial_cells_x = 10;
+        unsigned int initial_cells_y = 6;
     } domain;
 
     // ========================================================================
-    // Initial condition parameters
+    // Initial condition: FLAT LAYER ONLY (type=0)
     // ========================================================================
     struct IC
     {
-        int type = 0;                     // 0=flat, 1=perturbed, 2=circle, etc.
-        double pool_depth = 0.2;          // Ferrofluid pool depth
-        double perturbation = 0.0;        // Perturbation amplitude
-        int perturbation_modes = 4;       // Number of Fourier modes
+        int type = 0;                    // ALWAYS 0 for flat layer
+        double pool_depth = 0.2;
+        double perturbation = 0.0;       // No perturbation
+        int perturbation_modes = 0;      // No modes
     } ic;
 
     // ========================================================================
-    // Method of Manufactured Solutions (MMS) parameters
+    // MMS parameters
     // ========================================================================
     struct MMS
     {
         bool enabled = false;
-        double t_init = 0.0;              // Initial time for MMS
+        double t_init = 0.0;
     } mms;
 
     // ========================================================================
-    // Cahn-Hilliard parameters (Eq. 14a-14b, p.499)
+    // Cahn-Hilliard parameters (Eq. 14a-14b)
     // ========================================================================
     struct CH
     {
-        double epsilon = 0.01;    // Interface thickness ε
-        double lambda = 0.05;     // Capillary coefficient λ
-        double gamma = 0.0002;    // Mobility γ
-        double eta = 0.01;        // Stabilization parameter η ≤ ε
+        double epsilon = 0.01;
+        double lambda = 0.05;
+        double gamma = 0.0002;
+        double eta = 0.01;
     } ch;
 
     // ========================================================================
-    // Magnetization parameters (Eq. 14c, p.499)
+    // Magnetization parameters (Eq. 14c)
+    // tau_M = 0 means quasi-equilibrium M = χH
     // ========================================================================
     struct Magnetization
     {
-        double chi_0 = 0.5;       // Susceptibility χ₀ ≤ 4
-        double T_relax = 0.0;     // Relaxation time (0 = quasi-equilibrium)
+        double chi_0 = 0.5;
+        double tau_M = 0.0;
+        double T_relax = 0.0;  // Alias for tau_M
     } magnetization;
 
     // ========================================================================
-    // Navier-Stokes parameters (Eq. 14e-14f, p.500)
+    // Navier-Stokes parameters (Eq. 14e-14f)
     // ========================================================================
     struct NS
     {
-        bool enabled = false;     // Enable Navier-Stokes solve
-        double nu_water = 1.0;    // ν_w (non-magnetic phase)
-        double nu_ferro = 2.0;    // ν_f (ferrofluid phase)
-        double mu_0 = 1.0;        // Magnetic permeability μ₀
-        double rho = 1.0;         // Density ρ
-        double r = 0.1;           // Density ratio for Boussinesq (Eq. 19)
-        double density_ratio = 0.1;  // Backward compatibility alias for r
-        double grad_div = 0.0;    // Grad-div stabilization γ_gd
+        bool enabled = true;
+        double nu_water = 1.0;
+        double nu_ferro = 2.0;
+        double mu_0 = 1.0;
+        double rho = 1.0;
+        double r = 0.1;
+        double grad_div = 0.0;
     } ns;
 
     // ========================================================================
@@ -100,119 +110,114 @@ struct Parameters
     struct Gravity
     {
         bool enabled = true;
-        double magnitude = 30000.0;  // |g| from Eq. 103
-        dealii::Tensor<1, 2> direction = dealii::Tensor<1, 2>({0.0, -1.0});  // Downward
+        double magnitude = 30000.0;
+        dealii::Tensor<1, 2> direction;
     } gravity;
 
     // ========================================================================
-    // Dipole parameters (Eq. 96-98, p.519)
-    // Rosensweig: 5 dipoles at y=-15
-    // Hedgehog: 42 dipoles at y=-0.5, -0.75, -1.0
+    // Dipole parameters (Eq. 96-98)
     // ========================================================================
     struct Dipoles
     {
-        std::vector<dealii::Point<2>> positions = {
-            dealii::Point<2>(-0.5, -15.0),
-            dealii::Point<2>( 0.0, -15.0),
-            dealii::Point<2>( 0.5, -15.0),
-            dealii::Point<2>( 1.0, -15.0),
-            dealii::Point<2>( 1.5, -15.0)
-        };
-        std::vector<double> direction = {0.0, 1.0};  // d = (0, 1)^T upward
-        double intensity_max = 6000.0;               // α_max
-        double ramp_time = 1.6;                      // Linear ramp [0, ramp_time]
+        std::vector<dealii::Point<2>> positions;
+        std::vector<double> direction = {0.0, 1.0};
+        double intensity_max = 6000.0;
+        double ramp_time = 1.6;
     } dipoles;
 
     // ========================================================================
-    // Magnetic model options
+    // Magnetic model
+    // use_dg_transport = false means quasi-equilibrium M = χH
     // ========================================================================
     struct Magnetic
     {
         bool enabled = true;
-        bool use_simplified = false;  // Section 5: h := h_a (skip Poisson)
+        bool use_simplified = false;
+        bool use_dg_transport = false;  // false = quasi-equilibrium (paper default)
     } magnetic;
 
     // ========================================================================
-    // Time-stepping parameters
+    // Time-stepping
     // ========================================================================
     struct Time
     {
-        double dt = 5e-4;             // Time step τ
-        double t_final = 2.0;         // Final time t_F
+        double dt = 5e-4;
+        double t_final = 2.0;
         unsigned int max_steps = 4000;
-        double theta = 1.0;           // Time stepping parameter (1.0 = backward Euler)
+        double theta = 1.0;
     } time;
 
     // ========================================================================
-    // Finite element parameters
+    // Finite element
     // ========================================================================
     struct FE
     {
-        unsigned int degree_phase = 2;       // θ, ψ polynomial degree
-        unsigned int degree_velocity = 2;    // u polynomial degree
-        unsigned int degree_pressure = 1;    // p polynomial degree
-        unsigned int degree_potential = 2;   // φ polynomial degree
-        unsigned int degree_magnetization = 1;  // m polynomial degree
+        unsigned int degree_phase = 2;
+        unsigned int degree_velocity = 2;
+        unsigned int degree_pressure = 1;
+        unsigned int degree_potential = 2;
+        unsigned int degree_magnetization = 0;
     } fe;
 
     // ========================================================================
-    // Mesh parameters
+    // Mesh
     // ========================================================================
     struct Mesh
     {
         unsigned int initial_refinement = 5;
-        bool use_amr = true;
+        bool use_amr = false;
         unsigned int amr_min_level = 4;
         unsigned int amr_max_level = 7;
-        unsigned int amr_interval = 5;       // Refine every N steps
+        unsigned int amr_interval = 5;
         double amr_upper_fraction = 0.3;
         double amr_lower_fraction = 0.1;
     } mesh;
 
     // ========================================================================
-    // Output parameters
+    // Output
     // ========================================================================
     struct Output
     {
-        std::string folder = "output";       // Output directory
-        std::string output_dir = "output";   // Alias for folder
-        unsigned int frequency = 100;        // Output every N steps
-        unsigned int output_interval = 100;  // Alias for frequency
+        std::string folder = "../Results";
+        unsigned int frequency = 100;
         bool verbose = false;
     } output;
 
     // ========================================================================
-    // Solver parameters
+    // Solver
     // ========================================================================
     struct Solver
     {
         unsigned int max_iterations = 1000;
         double tolerance = 1e-10;
-        bool use_direct = false;  // Use direct solver (UMFPACK) vs iterative
+        bool use_direct = true;
     } solver;
 
     // ========================================================================
-    // Static method: Parse command line arguments
+    // Parse command line
     // ========================================================================
     static Parameters parse_command_line(int argc, char* argv[]);
 
     // ========================================================================
-    // Helper: Setup for Rosensweig test case (Section 6.2)
+    // Rosensweig test case (Section 6.2)
     // ========================================================================
     void setup_rosensweig()
     {
-        // Domain
+        // Domain: [0,1] x [0,0.6], base mesh 10×6
         domain.x_min = 0.0;
         domain.x_max = 1.0;
         domain.y_min = 0.0;
         domain.y_max = 0.6;
         domain.layer_height = 0.2;
         domain.initial_refinement = 5;
+        domain.initial_cells_x = 10;
+        domain.initial_cells_y = 6;
 
-        // IC
-        ic.type = 0;  // Flat interface
+        // Flat pool at y = 0.2
+        ic.type = 0;
         ic.pool_depth = 0.2;
         ic.perturbation = 0.0;
+        ic.perturbation_modes = 0;
 
         // Cahn-Hilliard
         ch.epsilon = 0.01;
@@ -220,23 +225,21 @@ struct Parameters
         ch.gamma = 0.0002;
         ch.eta = 0.01;
 
-        // Magnetization
+        // Magnetization (quasi-equilibrium)
         magnetization.chi_0 = 0.5;
+        magnetization.tau_M = 0.0;
+        magnetization.T_relax = 0.0;
 
-        // NS
-        ns.nu_water = 1.0;
-        ns.nu_ferro = 2.0;
-        ns.mu_0 = 1.0;
-        ns.r = 0.1;
-        ns.density_ratio = 0.1;
+        // NS + Magnetic enabled
+        ns.enabled = true;
+        magnetic.enabled = true;
+        magnetic.use_dg_transport = false;
 
         // Gravity
         gravity.enabled = true;
         gravity.magnitude = 30000.0;
-        gravity.direction[0] = 0.0;
-        gravity.direction[1] = -1.0;
 
-        // Dipoles: 5 at y = -15 (far below, nearly uniform field)
+        // 5 dipoles at y = -15
         dipoles.positions = {
             dealii::Point<2>(-0.5, -15.0),
             dealii::Point<2>( 0.0, -15.0),
@@ -252,30 +255,36 @@ struct Parameters
         time.dt = 5e-4;
         time.t_final = 2.0;
         time.max_steps = 4000;
-        time.theta = 1.0;
 
         // Mesh
         mesh.initial_refinement = 5;
+        mesh.use_amr = true;
         mesh.amr_interval = 5;
+
+        // Output
+        output.frequency = 100;
     }
 
     // ========================================================================
-    // Helper: Setup for Hedgehog test case (Section 6.3)
+    // Hedgehog test case (Section 6.3)
     // ========================================================================
     void setup_hedgehog()
     {
-        // Domain (same as Rosensweig)
+        // Domain: [0,1] x [0,0.6], base mesh 15×9
         domain.x_min = 0.0;
         domain.x_max = 1.0;
         domain.y_min = 0.0;
         domain.y_max = 0.6;
-        domain.layer_height = 0.11;  // Shallower pool
-        domain.initial_refinement = 5;
+        domain.layer_height = 0.11;
+        domain.initial_refinement = 6;
+        domain.initial_cells_x = 15;
+        domain.initial_cells_y = 9;
 
-        // IC
+        // Flat pool at y = 0.11
         ic.type = 0;
         ic.pool_depth = 0.11;
         ic.perturbation = 0.0;
+        ic.perturbation_modes = 0;
 
         // Cahn-Hilliard (sharper interface)
         ch.epsilon = 0.005;
@@ -283,27 +292,25 @@ struct Parameters
         ch.gamma = 0.0002;
         ch.eta = 0.005;
 
-        // Magnetization (higher susceptibility)
+        // Magnetization (quasi-equilibrium, higher susceptibility)
         magnetization.chi_0 = 0.9;
+        magnetization.tau_M = 0.0;
+        magnetization.T_relax = 0.0;
 
-        // NS (same)
-        ns.nu_water = 1.0;
-        ns.nu_ferro = 2.0;
-        ns.mu_0 = 1.0;
-        ns.r = 0.1;
-        ns.density_ratio = 0.1;
+        // NS + Magnetic enabled
+        ns.enabled = true;
+        magnetic.enabled = true;
+        magnetic.use_dg_transport = false;
 
-        // Gravity (same)
+        // Gravity
         gravity.enabled = true;
         gravity.magnitude = 30000.0;
-        gravity.direction[0] = 0.0;
-        gravity.direction[1] = -1.0;
 
-        // Dipoles: 42 dipoles in 3 rows (approximating bar magnet)
+        // 42 dipoles (3 rows × 14 dipoles)
         dipoles.positions.clear();
         const double y_rows[3] = {-0.5, -0.75, -1.0};
         const int n_per_row = 14;
-        const double x_start = 0.3;  // Centered bar magnet ~0.4 wide
+        const double x_start = 0.3;
         const double x_end = 0.7;
         const double dx = (x_end - x_start) / (n_per_row - 1);
 
@@ -315,23 +322,22 @@ struct Parameters
                 dipoles.positions.push_back(dealii::Point<2>(x, y_rows[row]));
             }
         }
-
         dipoles.direction = {0.0, 1.0};
-        dipoles.intensity_max = 4.3;  // Different intensity
-        dipoles.ramp_time = 4.2;      // Longer ramp
+        dipoles.intensity_max = 4.3;
+        dipoles.ramp_time = 4.2;
 
-        // Time (longer simulation)
-        time.dt = 2.5e-4;  // 24000 steps for t_F=6
+        // Time
+        time.dt = 0.00025;
         time.t_final = 6.0;
         time.max_steps = 24000;
-        time.theta = 1.0;
 
-        // Mesh (finer initial)
-        mesh.initial_refinement = 5;
+        // Mesh
+        mesh.initial_refinement = 6;
+        mesh.use_amr = true;
         mesh.amr_interval = 5;
 
-        // Magnetic: MUST use full model (not simplified) for hedgehog
-        magnetic.use_simplified = false;
+        // Output
+        output.frequency = 100;
     }
 };
 
