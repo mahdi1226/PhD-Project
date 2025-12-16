@@ -182,7 +182,7 @@ void BlockSchurPreconditioner::vmult(
 
     if (do_solve_A_)
     {
-        dealii::SolverControl solver_control(10000, 1e-4 * rhs_vel.l2_norm());
+        dealii::SolverControl solver_control(1000, 1e-4 * rhs_vel.l2_norm());
         dealii::SolverCG<dealii::Vector<double>> cg(solver_control);
 
         z_vel = 0;
