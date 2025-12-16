@@ -62,9 +62,10 @@ private:
     void setup_constraints();
     void setup_ch_system();
     void setup_poisson_system();
-    void setup_magnetization_system();  // NEW: DG transport
+    void setup_magnetization_system();
     void setup_ns_system();
     void initialize_solutions();
+    void refine_mesh();                 //  AMR
 
     // ========================================================================
     // Solve methods (in phase_field.cc)
@@ -72,7 +73,7 @@ private:
     void do_time_step(double dt);
     void solve_ch();
     void solve_poisson();
-    void solve_magnetization();  // NEW: DG transport
+    void solve_magnetization();
     void solve_ns();
 
     // ========================================================================

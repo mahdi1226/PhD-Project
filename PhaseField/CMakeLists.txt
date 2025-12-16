@@ -29,6 +29,7 @@ set(SOURCES
         # Core
         core/phase_field.cc
         core/phase_field_setup.cc
+        core/phase_field_amr.cc
 
         # Assembly
         assembly/ch_assembler.cc

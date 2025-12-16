@@ -144,6 +144,15 @@ void PhaseFieldProblem<dim>::run()
 
         do_time_step(current_dt);
 
+        // AMR: Refine mesh every amr_interval steps (Paper Section 6.1)
+        if (params_.mesh.use_amr &&
+           timestep_number_ % params_.mesh.amr_interval == 0 &&
+           timestep_number_ > 0)
+        {
+            refine_mesh();
+        }
+        // ==============================
+
         // Output periodically
         if (timestep_number_ % params_.output.frequency == 0 ||
             time_ >= params_.time.t_final - 1e-12)
