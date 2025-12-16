@@ -55,8 +55,8 @@ void PhaseFieldProblem<dim>::refine_mesh()
     dealii::GridRefinement::refine_and_coarsen_fixed_fraction(
         triangulation_,
         indicators,
-        params_.mesh.amr_upper_fraction,  // Refine top 30%
-        0.0);  // No coarsening (paper allows it, but risky for stability)
+        params_.mesh.amr_upper_fraction, // Refine top 30%
+        0.0); // No coarsening (paper allows it, but risky for stability)
 
     // Enforce min/max refinement levels
     for (const auto& cell : triangulation_.active_cell_iterators())
@@ -65,7 +65,7 @@ void PhaseFieldProblem<dim>::refine_mesh()
             cell->clear_refine_flag();
         if (cell->level() <= static_cast<int>(params_.mesh.amr_min_level))
             cell->clear_coarsen_flag();
-        cell->clear_coarsen_flag();  // Always clear coarsen for stability
+        cell->clear_coarsen_flag(); // Always clear coarsen for stability
     }
 
     // Check if any refinement will happen
@@ -244,24 +244,52 @@ void PhaseFieldProblem<dim>::refine_mesh()
 
     // =========================================================================
     // Step 8: Apply constraints to ensure consistency
-    // NOTE: DG magnetization (mx, my) has no constraints (discontinuous space)
     // =========================================================================
     theta_constraints_.distribute(theta_solution_);
     theta_constraints_.distribute(theta_old_solution_);
     psi_constraints_.distribute(psi_solution_);
-    phi_constraints_.distribute(phi_solution_);
-    // mx, my are DG0 - no constraints needed
-    ux_constraints_.distribute(ux_solution_);
-    ux_constraints_.distribute(ux_old_solution_);
-    uy_constraints_.distribute(uy_solution_);
-    uy_constraints_.distribute(uy_old_solution_);
-    p_constraints_.distribute(p_solution_);
+
+    if (params_.magnetic.enabled)
+        phi_constraints_.distribute(phi_solution_);
+
+    if (params_.ns.enabled)
+    {
+        ux_constraints_.distribute(ux_solution_);
+        ux_constraints_.distribute(ux_old_solution_);
+        uy_constraints_.distribute(uy_solution_);
+        uy_constraints_.distribute(uy_old_solution_);
+        p_constraints_.distribute(p_solution_);
+    }
 
     if (params_.output.verbose)
     {
         std::cout << "[AMR] New DoFs: θ=" << theta_dof_handler_.n_dofs()
-                  << ", ux=" << ux_dof_handler_.n_dofs()
-                  << ", p=" << p_dof_handler_.n_dofs() << "\n";
+            << ", ux=" << ux_dof_handler_.n_dofs()
+            << ", p=" << p_dof_handler_.n_dofs() << "\n";
+    }
+
+    // =========================================================================
+    // Step 9: Rebuild ns_solution_ from transferred individual solutions
+    // =========================================================================
+    if (params_.ns.enabled)
+    {
+        const unsigned int n_ns = ux_dof_handler_.n_dofs() +
+                                  uy_dof_handler_.n_dofs() +
+                                  p_dof_handler_.n_dofs();
+        ns_solution_.reinit(n_ns);
+
+        for (unsigned int i = 0; i < ux_to_ns_map_.size(); ++i)
+            ns_solution_[ux_to_ns_map_[i]] = ux_solution_[i];
+        for (unsigned int i = 0; i < uy_to_ns_map_.size(); ++i)
+            ns_solution_[uy_to_ns_map_[i]] = uy_solution_[i];
+        for (unsigned int i = 0; i < p_to_ns_map_.size(); ++i)
+            ns_solution_[p_to_ns_map_[i]] = p_solution_[i];
+
+        // CRITICAL: Ensure ns_solution_ satisfies combined constraints
+        ns_combined_constraints_.distribute(ns_solution_);
+
+        if (params_.output.verbose)
+            std::cout << "[AMR] Rebuilt ns_solution_ from transferred fields\n";
     }
 }
 

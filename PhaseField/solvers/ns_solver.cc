@@ -116,7 +116,7 @@ void solve_ns_system_schur(
     bool verbose)
 {
     const double rel_tolerance = 1e-6;
-    const unsigned int max_iterations = 500;
+    const unsigned int max_iterations = 1500;
 
     if (solution.size() != rhs.size())
         solution.reinit(rhs.size());
@@ -241,6 +241,7 @@ void extract_ns_solutions(
 template <int dim>
 void assemble_pressure_mass_matrix(
     const dealii::DoFHandler<dim>& p_dof_handler,
+    const dealii::AffineConstraints<double>& p_constraints,
     dealii::SparsityPattern& sparsity,
     dealii::SparseMatrix<double>& mass_matrix)
 {
@@ -248,8 +249,13 @@ void assemble_pressure_mass_matrix(
     const dealii::FiniteElement<dim>& fe = p_dof_handler.get_fe();
     const unsigned int dofs_per_cell = fe.n_dofs_per_cell();
 
+    // Create sparsity pattern WITH constraints (critical for AMR!)
     dealii::DynamicSparsityPattern dsp(n_p, n_p);
-    dealii::DoFTools::make_sparsity_pattern(p_dof_handler, dsp);
+    dealii::DoFTools::make_sparsity_pattern(
+        p_dof_handler,
+        dsp,
+        p_constraints,
+        /*keep_constrained_dofs=*/ false);
     sparsity.copy_from(dsp);
     mass_matrix.reinit(sparsity);
 
@@ -275,18 +281,24 @@ void assemble_pressure_mass_matrix(
 
         cell->get_dof_indices(local_dof_indices);
 
-        for (unsigned int i = 0; i < dofs_per_cell; ++i)
-            for (unsigned int j = 0; j < dofs_per_cell; ++j)
-                mass_matrix.add(local_dof_indices[i],
-                                local_dof_indices[j],
-                                cell_matrix(i, j));
+        // Use constraints for proper hanging node handling
+        p_constraints.distribute_local_to_global(
+            cell_matrix,
+            local_dof_indices,
+            mass_matrix);
     }
 
     std::cout << "[Pressure Mass] Assembled: " << n_p << " DoFs\n";
 }
 
-// Explicit instantiations
+// Update explicit instantiations:
 template void assemble_pressure_mass_matrix<2>(
-    const dealii::DoFHandler<2>&, dealii::SparsityPattern&, dealii::SparseMatrix<double>&);
+    const dealii::DoFHandler<2>&,
+    const dealii::AffineConstraints<double>&,
+    dealii::SparsityPattern&,
+    dealii::SparseMatrix<double>&);
 template void assemble_pressure_mass_matrix<3>(
-    const dealii::DoFHandler<3>&, dealii::SparsityPattern&, dealii::SparseMatrix<double>&);
+    const dealii::DoFHandler<3>&,
+    const dealii::AffineConstraints<double>&,
+    dealii::SparsityPattern&,
+    dealii::SparseMatrix<double>&);

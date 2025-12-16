@@ -438,9 +438,10 @@ void PhaseFieldProblem<dim>::setup_ns_system()
     // Assemble pressure mass matrix (for Schur complement preconditioner)
     // ========================================================================
     assemble_pressure_mass_matrix<dim>(
-        p_dof_handler_,
-        pressure_mass_sparsity_,
-        pressure_mass_matrix_);
+    p_dof_handler_,
+    p_constraints_,
+    pressure_mass_sparsity_,
+    pressure_mass_matrix_);
 }
 
 // ============================================================================

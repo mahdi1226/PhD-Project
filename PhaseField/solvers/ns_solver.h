@@ -73,7 +73,9 @@ void extract_ns_solutions(
 template <int dim>
 void assemble_pressure_mass_matrix(
     const dealii::DoFHandler<dim>& p_dof_handler,
+    const dealii::AffineConstraints<double>& p_constraints,  // ADD
     dealii::SparsityPattern& sparsity,
     dealii::SparseMatrix<double>& mass_matrix);
+
 
 #endif // NS_SOLVER_H
