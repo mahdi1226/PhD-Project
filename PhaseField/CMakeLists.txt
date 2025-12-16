@@ -41,6 +41,7 @@ set(SOURCES
         solvers/poisson_solver.cc
         solvers/magnetization_solver.cc
         solvers/ns_solver.cc
+        solvers/ns_block_preconditioner.cc
 
         # Setup
         setup/ch_setup.cc

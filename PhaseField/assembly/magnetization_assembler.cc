@@ -70,20 +70,19 @@ template <int dim>
 void MagnetizationAssembler<dim>::create_sparsity_pattern(
     dealii::SparsityPattern& sparsity) const
 {
-    using namespace dealii;
 
     const unsigned int n_dofs = M_dof_handler_.n_dofs();
-    DynamicSparsityPattern dsp(n_dofs, n_dofs);
+    dealii::DynamicSparsityPattern dsp(n_dofs, n_dofs);
 
     // Standard DG sparsity (block-diagonal over cells)
-    DoFTools::make_sparsity_pattern(M_dof_handler_, dsp);
+    dealii::DoFTools::make_sparsity_pattern(M_dof_handler_, dsp);
 
     // Add face coupling for DG transport (Eq. 57 face term)
-    const FiniteElement<dim>& fe = M_dof_handler_.get_fe();
+    const dealii::FiniteElement<dim>& fe = M_dof_handler_.get_fe();
     const unsigned int dofs_per_cell = fe.dofs_per_cell;
 
-    std::vector<types::global_dof_index> dofs_here(dofs_per_cell);
-    std::vector<types::global_dof_index> dofs_there(dofs_per_cell);
+    std::vector<dealii::types::global_dof_index> dofs_here(dofs_per_cell);
+    std::vector<dealii::types::global_dof_index> dofs_there(dofs_per_cell);
 
     for (const auto& cell : M_dof_handler_.active_cell_iterators())
     {
@@ -133,48 +132,47 @@ void MagnetizationAssembler<dim>::assemble(
     const dealii::Vector<double>& My_old,
     double dt) const
 {
-    using namespace dealii;
 
-    const FiniteElement<dim>& fe_M = M_dof_handler_.get_fe();
-    const FiniteElement<dim>& fe_U = U_dof_handler_.get_fe();
-    const FiniteElement<dim>& fe_phi = phi_dof_handler_.get_fe();
-    const FiniteElement<dim>& fe_theta = theta_dof_handler_.get_fe();
+    const dealii::FiniteElement<dim>& fe_M = M_dof_handler_.get_fe();
+    const dealii::FiniteElement<dim>& fe_U = U_dof_handler_.get_fe();
+    const dealii::FiniteElement<dim>& fe_phi = phi_dof_handler_.get_fe();
+    const dealii::FiniteElement<dim>& fe_theta = theta_dof_handler_.get_fe();
 
     const unsigned int dofs_per_cell = fe_M.dofs_per_cell;
 
     // Quadrature
-    QGauss<dim> quadrature_cell(fe_M.degree + 2);
-    QGauss<dim-1> quadrature_face(fe_M.degree + 2);
+    dealii::QGauss<dim> quadrature_cell(fe_M.degree + 2);
+    dealii::QGauss<dim-1> quadrature_face(fe_M.degree + 2);
 
     const unsigned int n_q_cell = quadrature_cell.size();
     const unsigned int n_q_face = quadrature_face.size();
 
     // FEValues for cells
-    FEValues<dim> fe_values_M(fe_M, quadrature_cell,
-                               update_values | update_gradients | update_JxW_values);
-    FEValues<dim> fe_values_U(fe_U, quadrature_cell,
-                               update_values | update_gradients);
-    FEValues<dim> fe_values_phi(fe_phi, quadrature_cell,
-                                 update_gradients);
-    FEValues<dim> fe_values_theta(fe_theta, quadrature_cell,
-                                   update_values);
+    dealii::FEValues<dim> fe_values_M(fe_M, quadrature_cell,
+                               dealii::update_values | dealii::update_gradients | dealii::update_JxW_values);
+    dealii::FEValues<dim> fe_values_U(fe_U, quadrature_cell,
+                               dealii::update_values | dealii::update_gradients);
+    dealii::FEValues<dim> fe_values_phi(fe_phi, quadrature_cell,
+                                 dealii::update_gradients);
+    dealii::FEValues<dim> fe_values_theta(fe_theta, quadrature_cell,
+                                   dealii::update_values);
 
     // FEInterfaceValues for faces
-    FEInterfaceValues<dim> fe_interface_M(fe_M, quadrature_face,
-                                           update_values | update_JxW_values | update_normal_vectors);
+    dealii::FEInterfaceValues<dim> fe_interface_M(fe_M, quadrature_face,
+                                           dealii::update_values | dealii::update_JxW_values | dealii::update_normal_vectors);
 
     // Storage for field values
     std::vector<double> Ux_vals(n_q_cell), Uy_vals(n_q_cell);
-    std::vector<Tensor<1, dim>> grad_Ux(n_q_cell), grad_Uy(n_q_cell);
-    std::vector<Tensor<1, dim>> grad_phi(n_q_cell);
+    std::vector<dealii::Tensor<1, dim>> grad_Ux(n_q_cell), grad_Uy(n_q_cell);
+    std::vector<dealii::Tensor<1, dim>> grad_phi(n_q_cell);
     std::vector<double> theta_vals(n_q_cell);
     std::vector<double> Mx_old_vals(n_q_cell), My_old_vals(n_q_cell);
 
     // Local contributions
-    FullMatrix<double> local_matrix(dofs_per_cell, dofs_per_cell);
-    Vector<double> local_rhs_x(dofs_per_cell);
-    Vector<double> local_rhs_y(dofs_per_cell);
-    std::vector<types::global_dof_index> local_dofs(dofs_per_cell);
+    dealii::FullMatrix<double> local_matrix(dofs_per_cell, dofs_per_cell);
+    dealii::Vector<double> local_rhs_x(dofs_per_cell);
+    dealii::Vector<double> local_rhs_y(dofs_per_cell);
+    std::vector<dealii::types::global_dof_index> local_dofs(dofs_per_cell);
 
     // Parameters
     const double tau = dt;
@@ -225,13 +223,13 @@ void MagnetizationAssembler<dim>::assemble(
             const double JxW = fe_values_M.JxW(q);
 
             // U and div(U)
-            Tensor<1, dim> U;
+            dealii::Tensor<1, dim> U;
             U[0] = Ux_vals[q];
             U[1] = Uy_vals[q];
             const double div_U = grad_Ux[q][0] + grad_Uy[q][1];
 
             // H = ∇φ (paper convention: Poisson RHS is (h_a - M, ∇χ), so H = ∇φ)
-            Tensor<1, dim> H;
+            dealii::Tensor<1, dim> H;
             H[0] = grad_phi[q][0];
             H[1] = grad_phi[q][1];
 
@@ -241,7 +239,7 @@ void MagnetizationAssembler<dim>::assemble(
             for (unsigned int i = 0; i < dofs_per_cell; ++i)
             {
                 const double phi_i = fe_values_M.shape_value(i, q);
-                const Tensor<1, dim>& grad_phi_i = fe_values_M.shape_grad(i, q);
+                const dealii::Tensor<1, dim>& grad_phi_i = fe_values_M.shape_grad(i, q);
 
                 for (unsigned int j = 0; j < dofs_per_cell; ++j)
                 {
@@ -303,12 +301,12 @@ void MagnetizationAssembler<dim>::assemble(
             const unsigned int nf = cell_M->neighbor_of_neighbor(f);
 
             // Reinit interface
-            fe_interface_M.reinit(cell_M, f, numbers::invalid_unsigned_int,
-                                   neighbor_M, nf, numbers::invalid_unsigned_int);
+            fe_interface_M.reinit(cell_M, f, dealii::numbers::invalid_unsigned_int,
+                                   neighbor_M, nf, dealii::numbers::invalid_unsigned_int);
 
             // U values on face (for computing U·n)
-            FEFaceValues<dim> fe_face_U_here(fe_U, quadrature_face, update_values);
-            FEFaceValues<dim> fe_face_U_there(fe_U, quadrature_face, update_values);
+            dealii::FEFaceValues<dim> fe_face_U_here(fe_U, quadrature_face, dealii::update_values);
+            dealii::FEFaceValues<dim> fe_face_U_there(fe_U, quadrature_face, dealii::update_values);
             fe_face_U_here.reinit(cell_U, f);
             fe_face_U_there.reinit(neighbor_U, nf);
 
@@ -320,23 +318,23 @@ void MagnetizationAssembler<dim>::assemble(
             fe_face_U_there.get_function_values(Uy, Uy_there);
 
             // DoF indices
-            std::vector<types::global_dof_index> dofs_here(dofs_per_cell);
-            std::vector<types::global_dof_index> dofs_there(dofs_per_cell);
+            std::vector<dealii::types::global_dof_index> dofs_here(dofs_per_cell);
+            std::vector<dealii::types::global_dof_index> dofs_there(dofs_per_cell);
             cell_M->get_dof_indices(dofs_here);
             neighbor_M->get_dof_indices(dofs_there);
 
             // Face matrices (4 blocks for cell-cell coupling)
-            FullMatrix<double> face_hh(dofs_per_cell, dofs_per_cell);
-            FullMatrix<double> face_ht(dofs_per_cell, dofs_per_cell);
-            FullMatrix<double> face_th(dofs_per_cell, dofs_per_cell);
-            FullMatrix<double> face_tt(dofs_per_cell, dofs_per_cell);
+            dealii::FullMatrix<double> face_hh(dofs_per_cell, dofs_per_cell);
+            dealii::FullMatrix<double> face_ht(dofs_per_cell, dofs_per_cell);
+            dealii::FullMatrix<double> face_th(dofs_per_cell, dofs_per_cell);
+            dealii::FullMatrix<double> face_tt(dofs_per_cell, dofs_per_cell);
 
             face_hh = 0; face_ht = 0; face_th = 0; face_tt = 0;
 
             for (unsigned int q = 0; q < n_q_face; ++q)
             {
                 const double JxW = fe_interface_M.JxW(q);
-                const Tensor<1, dim>& normal = fe_interface_M.normal(q);
+                const dealii::Tensor<1, dim>& normal = fe_interface_M.normal(q);
 
                 // U·n⁻: evaluated on minus (here) side, consistent with skew_forms.h
                 // For CG velocity this equals the trace, but we use minus-side
@@ -412,31 +410,30 @@ void MagnetizationAssembler<dim>::assemble_rhs_only(
     const dealii::Vector<double>& My_old,
     double dt) const
 {
-    using namespace dealii;
 
-    const FiniteElement<dim>& fe_M = M_dof_handler_.get_fe();
-    const FiniteElement<dim>& fe_phi = phi_dof_handler_.get_fe();
-    const FiniteElement<dim>& fe_theta = theta_dof_handler_.get_fe();
+    const dealii::FiniteElement<dim>& fe_M = M_dof_handler_.get_fe();
+    const dealii::FiniteElement<dim>& fe_phi = phi_dof_handler_.get_fe();
+    const dealii::FiniteElement<dim>& fe_theta = theta_dof_handler_.get_fe();
 
     const unsigned int dofs_per_cell = fe_M.dofs_per_cell;
 
-    QGauss<dim> quadrature_cell(fe_M.degree + 2);
+    dealii::QGauss<dim> quadrature_cell(fe_M.degree + 2);
     const unsigned int n_q_cell = quadrature_cell.size();
 
-    FEValues<dim> fe_values_M(fe_M, quadrature_cell,
-                               update_values | update_JxW_values);
-    FEValues<dim> fe_values_phi(fe_phi, quadrature_cell,
-                                 update_gradients);
-    FEValues<dim> fe_values_theta(fe_theta, quadrature_cell,
-                                   update_values);
+    dealii::FEValues<dim> fe_values_M(fe_M, quadrature_cell,
+                               dealii::update_values | dealii::update_JxW_values);
+    dealii::FEValues<dim> fe_values_phi(fe_phi, quadrature_cell,
+                                 dealii::update_gradients);
+    dealii::FEValues<dim> fe_values_theta(fe_theta, quadrature_cell,
+                                   dealii::update_values);
 
-    std::vector<Tensor<1, dim>> grad_phi(n_q_cell);
+    std::vector<dealii::Tensor<1, dim>> grad_phi(n_q_cell);
     std::vector<double> theta_vals(n_q_cell);
     std::vector<double> Mx_old_vals(n_q_cell), My_old_vals(n_q_cell);
 
-    Vector<double> local_rhs_x(dofs_per_cell);
-    Vector<double> local_rhs_y(dofs_per_cell);
-    std::vector<types::global_dof_index> local_dofs(dofs_per_cell);
+    dealii::Vector<double> local_rhs_x(dofs_per_cell);
+    dealii::Vector<double> local_rhs_y(dofs_per_cell);
+    std::vector<dealii::types::global_dof_index> local_dofs(dofs_per_cell);
 
     const double tau = dt;
     const double T_relax = params_.magnetization.T_relax;
@@ -469,7 +466,7 @@ void MagnetizationAssembler<dim>::assemble_rhs_only(
             const double JxW = fe_values_M.JxW(q);
 
             // H = ∇φ (paper convention)
-            Tensor<1, dim> H;
+            dealii::Tensor<1, dim> H;
             H[0] = grad_phi[q][0];
             H[1] = grad_phi[q][1];
 

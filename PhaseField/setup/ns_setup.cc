@@ -28,7 +28,6 @@ void setup_ns_coupled_system(
     dealii::SparsityPattern& ns_sparsity,
     bool verbose)
 {
-    using namespace dealii;
 
     const unsigned int n_ux = ux_dof_handler.n_dofs();
     const unsigned int n_uy = uy_dof_handler.n_dofs();
@@ -62,19 +61,19 @@ void setup_ns_coupled_system(
     //
     // Note: p-p block is empty (no pressure-pressure coupling) except diagonal
 
-    DynamicSparsityPattern dsp(n_total, n_total);
+    dealii::DynamicSparsityPattern dsp(n_total, n_total);
 
     // Build base sparsity patterns
     // IMPORTANT: keep_constrained_dofs=true because NS assembler uses condense()
     // pattern (writes to all entries, then condenses). If false, constrained
     // entries don't exist and assembly fails.
-    DynamicSparsityPattern dsp_Q2(n_ux, n_ux);
-    DoFTools::make_sparsity_pattern(ux_dof_handler, dsp_Q2,
+    dealii::DynamicSparsityPattern dsp_Q2(n_ux, n_ux);
+    dealii::DoFTools::make_sparsity_pattern(ux_dof_handler, dsp_Q2,
                                     ux_constraints,
                                     /*keep_constrained_dofs=*/true);
 
-    DynamicSparsityPattern dsp_Q1(n_p, n_p);
-    DoFTools::make_sparsity_pattern(p_dof_handler, dsp_Q1,
+    dealii::DynamicSparsityPattern dsp_Q1(n_p, n_p);
+    dealii::DoFTools::make_sparsity_pattern(p_dof_handler, dsp_Q1,
                                     p_constraints,
                                     /*keep_constrained_dofs=*/true);
 
@@ -82,8 +81,8 @@ void setup_ns_coupled_system(
     // For Taylor-Hood, we need the coupling between Q2 velocity and Q1 pressure
     // Note: This version of make_sparsity_pattern doesn't take constraints,
     // but the coupling structure is determined by the mesh topology
-    DynamicSparsityPattern dsp_Q2_Q1(n_ux, n_p);
-    DoFTools::make_sparsity_pattern(ux_dof_handler, p_dof_handler, dsp_Q2_Q1);
+    dealii::DynamicSparsityPattern dsp_Q2_Q1(n_ux, n_p);
+    dealii::DoFTools::make_sparsity_pattern(ux_dof_handler, p_dof_handler, dsp_Q2_Q1);
 
     // Fill the 9 blocks
     // Block (0,0): ux-ux (Q2-Q2)
@@ -139,8 +138,8 @@ void setup_ns_coupled_system(
     ns_combined_constraints.clear();
 
     // Helper lambda to map constraints
-    auto map_constraints = [&](const AffineConstraints<double>& src,
-                               const std::vector<types::global_dof_index>& index_map,
+    auto map_constraints = [&](const dealii::AffineConstraints<double>& src,
+                               const std::vector<dealii::types::global_dof_index>& index_map,
                                unsigned int n_dofs)
     {
         for (unsigned int i = 0; i < n_dofs; ++i)

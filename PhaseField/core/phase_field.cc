@@ -23,6 +23,8 @@
 #include "solvers/ns_solver.h"
 #include "utilities/tools.h"
 #include "diagnostics/ch_mms.h"
+#include "diagnostics/mms_runtime.h"
+
 
 #include <deal.II/numerics/data_out.h>
 #include <deal.II/base/quadrature_lib.h>
@@ -385,6 +387,11 @@ void PhaseFieldProblem<dim>::solve_magnetization()
 // ============================================================================
 // solve_ns() - Solve Navier-Stokes system
 // ============================================================================
+// ============================================================================
+// solve_ns() - Solve Navier-Stokes system
+//
+// Replace the existing solve_ns() function in phase_field.cc (around line 388-445)
+// ============================================================================
 template <int dim>
 void PhaseFieldProblem<dim>::solve_ns()
 {
@@ -416,9 +423,17 @@ void PhaseFieldProblem<dim>::solve_ns()
         ns_matrix_,
         ns_rhs_);
 
-    solve_ns_system(ns_matrix_, ns_rhs_, ns_solution_,
-                    ns_combined_constraints_,
-                    params_.output.verbose);
+    // Use FGMRES + Block Schur preconditioner (following deal.II step-56)
+    solve_ns_system_schur(
+        ns_matrix_,
+        ns_rhs_,
+        ns_solution_,
+        ns_combined_constraints_,
+        pressure_mass_matrix_,
+        ux_to_ns_map_,
+        uy_to_ns_map_,
+        p_to_ns_map_,
+        params_.output.verbose);
 
     extract_ns_solutions(
         ns_solution_,
@@ -433,7 +448,6 @@ void PhaseFieldProblem<dim>::solve_ns()
     uy_constraints_.distribute(uy_solution_);
     p_constraints_.distribute(p_solution_);
 }
-
 // ============================================================================
 // update_mms_boundary_constraints()
 // ============================================================================

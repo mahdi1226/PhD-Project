@@ -26,11 +26,10 @@ void build_poisson_sparsity(
     dealii::SparsityPattern& phi_sparsity,
     bool verbose)
 {
-    using namespace dealii;
 
-    DynamicSparsityPattern dsp(phi_dof_handler.n_dofs(), phi_dof_handler.n_dofs());
+    dealii::DynamicSparsityPattern dsp(phi_dof_handler.n_dofs(), phi_dof_handler.n_dofs());
 
-    DoFTools::make_sparsity_pattern(phi_dof_handler, dsp, phi_constraints,
+    dealii::DoFTools::make_sparsity_pattern(phi_dof_handler, dsp, phi_constraints,
                                     /*keep_constrained_dofs=*/false);
 
     phi_sparsity.copy_from(dsp);

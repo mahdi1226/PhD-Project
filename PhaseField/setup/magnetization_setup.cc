@@ -27,7 +27,6 @@ void initialize_magnetization_dg(
     dealii::Vector<double>& Mx_solution,
     dealii::Vector<double>& My_solution)
 {
-    using namespace dealii;
 
     // All DoFHandlers must share the same triangulation
     Assert(&M_dof_handler.get_triangulation() == &theta_dof_handler.get_triangulation(),
@@ -85,21 +84,21 @@ void initialize_magnetization_dg(
         fe_values_phi.get_function_gradients(phi_solution, grad_phi_values);
 
         // Build local mass matrix and RHS
-        local_mass = 0;
-        local_rhs_x = 0;
-        local_rhs_y = 0;
+        dealii::local_mass = 0;
+        dealii::local_rhs_x = 0;
+        dealii::local_rhs_y = 0;
 
         for (unsigned int q = 0; q < n_q_points; ++q)
         {
-            const double JxW = fe_values_M.JxW(q);
+            const double JxW = dealii::fe_values_M.JxW(q);
             const double theta_q = theta_values[q];
-            const Tensor<1, dim>& grad_phi_q = grad_phi_values[q];
+            const dealii::Tensor<1, dim>& grad_phi_q = grad_phi_values[q];
 
             // Compute χ(θ) = χ₀(1+θ)/2
             const double chi = susceptibility(theta_q, chi_0);
 
             // Compute H = -∇φ
-            Tensor<1, dim> H;
+            dealii::Tensor<1, dim> H;
             for (unsigned int d = 0; d < dim; ++d)
                 H[d] = -grad_phi_q[d];
 
@@ -112,32 +111,32 @@ void initialize_magnetization_dg(
                 const double phi_i = fe_values_M.shape_value(i, q);
 
                 // RHS: (χ(θ) H, φ_i)_T
-                local_rhs_x(i) += target_Mx * phi_i * JxW;
-                local_rhs_y(i) += target_My * phi_i * JxW;
+                dealii::local_rhs_x(i) += target_Mx * phi_i * JxW;
+                dealii::local_rhs_y(i) += target_My * phi_i * JxW;
 
                 for (unsigned int j = 0; j < dofs_per_cell; ++j)
                 {
                     const double phi_j = fe_values_M.shape_value(j, q);
 
                     // Mass: (φ_i, φ_j)_T
-                    local_mass(i, j) += phi_i * phi_j * JxW;
+                    dealii::local_mass(i, j) += phi_i * phi_j * JxW;
                 }
             }
         }
 
         // Solve local system: M_T * sol = rhs
         // Invert local mass matrix (small matrix, direct inversion is fine)
-        local_mass_inv.invert(local_mass);
+        dealii::local_mass_inv.invert(local_mass);
 
-        local_mass_inv.vmult(local_sol_x, local_rhs_x);
-        local_mass_inv.vmult(local_sol_y, local_rhs_y);
+        dealii::local_mass_inv.vmult(local_sol_x, local_rhs_x);
+        dealii::local_mass_inv.vmult(local_sol_y, local_rhs_y);
 
         // Store in global vectors
         cell_M->get_dof_indices(local_dof_indices);
         for (unsigned int i = 0; i < dofs_per_cell; ++i)
         {
-            Mx_solution(local_dof_indices[i]) = local_sol_x(i);
-            My_solution(local_dof_indices[i]) = local_sol_y(i);
+            Mx_solution(local_dof_indices[i]) = dealii::local_sol_x(i);
+            My_solution(local_dof_indices[i]) = dealii::local_sol_y(i);
         }
     }
 }

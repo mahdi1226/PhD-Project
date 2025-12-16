@@ -11,6 +11,8 @@
 #include "setup/ch_setup.h"
 #include "setup/poisson_setup.h"
 #include "setup/ns_setup.h"
+#include "solvers/ns_solver.h"
+
 
 #include <deal.II/grid/grid_generator.h>
 #include <deal.II/grid/grid_tools.h>
@@ -58,17 +60,16 @@ PhaseFieldProblem<dim>::PhaseFieldProblem(const Parameters& params)
 template <int dim>
 void PhaseFieldProblem<dim>::setup_mesh()
 {
-    using namespace dealii;
 
     // Create rectangular domain with subdivisions
-    Point<dim> p1(params_.domain.x_min, params_.domain.y_min);
-    Point<dim> p2(params_.domain.x_max, params_.domain.y_max);
+    dealii::Point<dim> p1(params_.domain.x_min, params_.domain.y_min);
+    dealii::Point<dim> p2(params_.domain.x_max, params_.domain.y_max);
 
     std::vector<unsigned int> subdivisions(dim);
     subdivisions[0] = params_.domain.initial_cells_x;
     subdivisions[1] = params_.domain.initial_cells_y;
 
-    GridGenerator::subdivided_hyper_rectangle(triangulation_, subdivisions, p1, p2);
+    dealii::GridGenerator::subdivided_hyper_rectangle(triangulation_, subdivisions, p1, p2);
 
     // Assign boundary IDs:
     //   0 = bottom (y = y_min)
@@ -111,7 +112,6 @@ void PhaseFieldProblem<dim>::setup_mesh()
 template <int dim>
 void PhaseFieldProblem<dim>::setup_dof_handlers()
 {
-    using namespace dealii;
 
     // ========================================================================
     // CH fields (θ, ψ) - Q2 elements
@@ -233,15 +233,14 @@ void PhaseFieldProblem<dim>::setup_dof_handlers()
 template <int dim>
 void PhaseFieldProblem<dim>::setup_constraints()
 {
-    using namespace dealii;
 
     // θ constraints
     theta_constraints_.clear();
-    DoFTools::make_hanging_node_constraints(theta_dof_handler_, theta_constraints_);
+    dealii::DoFTools::make_hanging_node_constraints(theta_dof_handler_, theta_constraints_);
 
     // ψ constraints
     psi_constraints_.clear();
-    DoFTools::make_hanging_node_constraints(psi_dof_handler_, psi_constraints_);
+    dealii::DoFTools::make_hanging_node_constraints(psi_dof_handler_, psi_constraints_);
 
     // For MMS: add Dirichlet BCs at initial time
     if (params_.mms.enabled)
@@ -297,11 +296,10 @@ void PhaseFieldProblem<dim>::setup_ch_system()
 template <int dim>
 void PhaseFieldProblem<dim>::setup_poisson_system()
 {
-    using namespace dealii;
 
     // Constraints: hanging nodes + pin DoF 0
     phi_constraints_.clear();
-    DoFTools::make_hanging_node_constraints(phi_dof_handler_, phi_constraints_);
+    dealii::DoFTools::make_hanging_node_constraints(phi_dof_handler_, phi_constraints_);
 
     // Pin DoF 0 to zero (fixes the constant for pure Neumann)
     if (phi_dof_handler_.n_dofs() > 0 && !phi_constraints_.is_constrained(0))
@@ -312,8 +310,8 @@ void PhaseFieldProblem<dim>::setup_poisson_system()
     phi_constraints_.close();
 
     // Sparsity pattern WITH constraints
-    DynamicSparsityPattern dsp(phi_dof_handler_.n_dofs());
-    DoFTools::make_sparsity_pattern(phi_dof_handler_, dsp,
+    dealii::DynamicSparsityPattern dsp(phi_dof_handler_.n_dofs());
+    dealii::DoFTools::make_sparsity_pattern(phi_dof_handler_, dsp,
                                      phi_constraints_,
                                      /*keep_constrained_dofs=*/false);
     phi_sparsity_.copy_from(dsp);
@@ -340,13 +338,12 @@ void PhaseFieldProblem<dim>::setup_poisson_system()
 template <int dim>
 void PhaseFieldProblem<dim>::setup_magnetization_system()
 {
-    using namespace dealii;
 
     const unsigned int n_M = mx_dof_handler_.n_dofs();
 
     // DG sparsity: includes face coupling (for upwind flux)
-    DynamicSparsityPattern dsp_M(n_M, n_M);
-    DoFTools::make_flux_sparsity_pattern(mx_dof_handler_, dsp_M);
+    dealii::DynamicSparsityPattern dsp_M(n_M, n_M);
+    dealii::DoFTools::make_flux_sparsity_pattern(mx_dof_handler_, dsp_M);
     mx_sparsity_.copy_from(dsp_M);
     my_sparsity_.copy_from(dsp_M);  // Same pattern for My
 
@@ -372,7 +369,6 @@ void PhaseFieldProblem<dim>::setup_magnetization_system()
 template <int dim>
 void PhaseFieldProblem<dim>::setup_ns_system()
 {
-    using namespace dealii;
 
     // ========================================================================
     // Individual field constraints
@@ -381,22 +377,22 @@ void PhaseFieldProblem<dim>::setup_ns_system()
     uy_constraints_.clear();
     p_constraints_.clear();
 
-    DoFTools::make_hanging_node_constraints(ux_dof_handler_, ux_constraints_);
-    DoFTools::make_hanging_node_constraints(uy_dof_handler_, uy_constraints_);
-    DoFTools::make_hanging_node_constraints(p_dof_handler_, p_constraints_);
+    dealii::DoFTools::make_hanging_node_constraints(ux_dof_handler_, ux_constraints_);
+    dealii::DoFTools::make_hanging_node_constraints(uy_dof_handler_, uy_constraints_);
+    dealii::DoFTools::make_hanging_node_constraints(p_dof_handler_, p_constraints_);
 
     // No-slip BCs: u = 0 on all boundaries
     for (unsigned int boundary_id = 0; boundary_id < 4; ++boundary_id)
     {
-        VectorTools::interpolate_boundary_values(
+        dealii::VectorTools::interpolate_boundary_values(
             ux_dof_handler_,
             boundary_id,
-            Functions::ZeroFunction<dim>(),
+            dealii::Functions::ZeroFunction<dim>(),
             ux_constraints_);
-        VectorTools::interpolate_boundary_values(
+        dealii::VectorTools::interpolate_boundary_values(
             uy_dof_handler_,
             boundary_id,
-            Functions::ZeroFunction<dim>(),
+            dealii::Functions::ZeroFunction<dim>(),
             uy_constraints_);
     }
 
@@ -437,6 +433,14 @@ void PhaseFieldProblem<dim>::setup_ns_system()
     ns_matrix_.reinit(ns_sparsity_);
     ns_rhs_.reinit(n_ns);
     ns_solution_.reinit(n_ns);
+
+    // ========================================================================
+    // Assemble pressure mass matrix (for Schur complement preconditioner)
+    // ========================================================================
+    assemble_pressure_mass_matrix<dim>(
+        p_dof_handler_,
+        pressure_mass_sparsity_,
+        pressure_mass_matrix_);
 }
 
 // ============================================================================
@@ -452,7 +456,6 @@ void PhaseFieldProblem<dim>::setup_ns_system()
 template <int dim>
 void PhaseFieldProblem<dim>::initialize_solutions()
 {
-    using namespace dealii;
 
     // MMS mode: use exact solutions at t_init
     if (params_.mms.enabled)
@@ -486,21 +489,21 @@ void PhaseFieldProblem<dim>::initialize_solutions()
         // θ = +1 below interface (ferrofluid)
         // θ = -1 above interface (non-magnetic)
         // ================================================================
-        class FlatLayerIC : public Function<dim>
+        class FlatLayerIC : public dealii::Function<dim>
         {
         public:
             double interface_y_, eps_;
             FlatLayerIC(double y, double e)
-                : Function<dim>(1), interface_y_(y), eps_(e) {}
+                : dealii::Function<dim>(1), interface_y_(y), eps_(e) {}
 
-            double value(const Point<dim>& p, unsigned int = 0) const override
+            double value(const dealii::Point<dim>& p, unsigned int = 0) const override
             {
                 return -std::tanh((p[1] - interface_y_) / (std::sqrt(2.0) * eps_));
             }
         };
 
         FlatLayerIC ic_func(interface_y, epsilon);
-        VectorTools::interpolate(theta_dof_handler_, ic_func, theta_solution_);
+        dealii::VectorTools::interpolate(theta_dof_handler_, ic_func, theta_solution_);
 
         if (params_.output.verbose)
             std::cout << "[Setup] Flat layer IC: interface at y = " << interface_y << "\n";
@@ -514,17 +517,17 @@ void PhaseFieldProblem<dim>::initialize_solutions()
         const int n_modes = params_.ic.perturbation_modes;
         const double Lx = params_.domain.x_max - params_.domain.x_min;
 
-        class PerturbedLayerIC : public Function<dim>
+        class PerturbedLayerIC : public dealii::Function<dim>
         {
         public:
             double interface_y_, eps_, amp_, Lx_, x_min_;
             int n_modes_;
 
             PerturbedLayerIC(double y, double e, double a, double L, double xm, int n)
-                : Function<dim>(1)
+                : dealii::Function<dim>(1)
                 , interface_y_(y), eps_(e), amp_(a), Lx_(L), x_min_(xm), n_modes_(n) {}
 
-            double value(const Point<dim>& p, unsigned int = 0) const override
+            double value(const dealii::Point<dim>& p, unsigned int = 0) const override
             {
                 double pert = 0.0;
                 for (int k = 1; k <= n_modes_; ++k)
@@ -536,7 +539,7 @@ void PhaseFieldProblem<dim>::initialize_solutions()
 
         PerturbedLayerIC ic_func(interface_y, epsilon, perturbation, Lx,
                                   params_.domain.x_min, n_modes);
-        VectorTools::interpolate(theta_dof_handler_, ic_func, theta_solution_);
+        dealii::VectorTools::interpolate(theta_dof_handler_, ic_func, theta_solution_);
 
         if (params_.output.verbose)
             std::cout << "[Setup] Perturbed layer IC: interface at y = " << interface_y << "\n";
@@ -550,14 +553,14 @@ void PhaseFieldProblem<dim>::initialize_solutions()
         const double cy = 0.5 * (params_.domain.y_min + params_.domain.y_max);
         const double radius = 0.2;
 
-        class DropletIC : public Function<dim>
+        class DropletIC : public dealii::Function<dim>
         {
         public:
             double cx_, cy_, radius_, eps_;
             DropletIC(double cx, double cy, double r, double e)
-                : Function<dim>(1), cx_(cx), cy_(cy), radius_(r), eps_(e) {}
+                : dealii::Function<dim>(1), cx_(cx), cy_(cy), radius_(r), eps_(e) {}
 
-            double value(const Point<dim>& p, unsigned int = 0) const override
+            double value(const dealii::Point<dim>& p, unsigned int = 0) const override
             {
                 const double dist = std::sqrt((p[0]-cx_)*(p[0]-cx_) + (p[1]-cy_)*(p[1]-cy_));
                 return -std::tanh((dist - radius_) / (std::sqrt(2.0) * eps_));
@@ -565,7 +568,7 @@ void PhaseFieldProblem<dim>::initialize_solutions()
         };
 
         DropletIC ic_func(cx, cy, radius, epsilon);
-        VectorTools::interpolate(theta_dof_handler_, ic_func, theta_solution_);
+        dealii::VectorTools::interpolate(theta_dof_handler_, ic_func, theta_solution_);
 
         if (params_.output.verbose)
             std::cout << "[Setup] Circular droplet IC\n";
