@@ -11,6 +11,7 @@
 
 #include "solvers/ns_solver.h"
 #include "solvers/ns_block_preconditioner.h"
+#include "utilities/parameters.h"
 
 #include <deal.II/lac/solver_gmres.h>
 #include <deal.II/lac/solver_cg.h>
@@ -26,20 +27,16 @@
 #include <chrono>
 
 // ============================================================================
-// Simple GMRES + ILU solver (baseline)
+// Simple GMRES + ILU solver with parameters
 // ============================================================================
 void solve_ns_system(
     const dealii::SparseMatrix<double>& matrix,
     const dealii::Vector<double>& rhs,
     dealii::Vector<double>& solution,
     const dealii::AffineConstraints<double>& constraints,
-    bool verbose)
+    const LinearSolverParams& params,
+    bool log_output)
 {
-    const double rel_tolerance = 1e-3;
-    const double abs_tolerance = 1e-6;
-    const unsigned int max_iterations = 3000;
-    const unsigned int gmres_restart = 150;
-
     if (solution.size() != rhs.size())
         solution.reinit(rhs.size());
 
@@ -48,17 +45,19 @@ void solve_ns_system(
     {
         solution = 0;
         constraints.distribute(solution);
-        std::cout << "[NS Solver] Zero RHS\n";
+        if (log_output)
+            std::cout << "[NS Solver] Zero RHS\n";
         return;
     }
 
     auto start = std::chrono::high_resolution_clock::now();
 
-    const double tol = std::max(abs_tolerance, rel_tolerance * rhs_norm);
-    dealii::SolverControl solver_control(max_iterations, tol);
+    const double tol = std::max(params.abs_tolerance,
+                                params.rel_tolerance * rhs_norm);
+    dealii::SolverControl solver_control(params.max_iterations, tol);
 
     typename dealii::SolverGMRES<dealii::Vector<double>>::AdditionalData gmres_data;
-    gmres_data.max_n_tmp_vectors = gmres_restart + 2;
+    gmres_data.max_n_tmp_vectors = params.gmres_restart + 2;
     dealii::SolverGMRES<dealii::Vector<double>> solver(solver_control);
 
     dealii::SparseILU<double> preconditioner;
@@ -79,12 +78,15 @@ void solve_ns_system(
         std::cerr << "[NS Solver] GMRES: " << iterations << " iters, "
                   << "res = " << final_residual << " (tol = " << tol << ")\n";
 
-        std::cerr << "[NS Solver] Falling back to UMFPACK.\n";
-        dealii::SparseDirectUMFPACK direct;
-        direct.initialize(matrix);
-        direct.vmult(solution, rhs);
-        iterations = 1;
-        final_residual = 0.0;
+        if (params.fallback_to_direct)
+        {
+            std::cerr << "[NS Solver] Falling back to UMFPACK.\n";
+            dealii::SparseDirectUMFPACK direct;
+            direct.initialize(matrix);
+            direct.vmult(solution, rhs);
+            iterations = 1;
+            final_residual = 0.0;
+        }
     }
 
     auto end = std::chrono::high_resolution_clock::now();
@@ -92,7 +94,7 @@ void solve_ns_system(
 
     constraints.distribute(solution);
 
-    if (verbose)
+    if (log_output || params.verbose)
     {
         std::cout << "[NS Solver] Size: " << matrix.m()
                   << ", iters: " << iterations
@@ -102,7 +104,33 @@ void solve_ns_system(
 }
 
 // ============================================================================
-// FGMRES + Block Schur preconditioner (following step-56)
+// Legacy interface with default parameters
+// ============================================================================
+void solve_ns_system(
+    const dealii::SparseMatrix<double>& matrix,
+    const dealii::Vector<double>& rhs,
+    dealii::Vector<double>& solution,
+    const dealii::AffineConstraints<double>& constraints,
+    bool verbose)
+{
+    // Default NS simple parameters
+    LinearSolverParams default_params;
+    default_params.type = LinearSolverParams::Type::GMRES;
+    default_params.preconditioner = LinearSolverParams::Preconditioner::ILU;
+    default_params.rel_tolerance = 1e-3;
+    default_params.abs_tolerance = 1e-6;
+    default_params.max_iterations = 3000;
+    default_params.gmres_restart = 150;
+    default_params.use_iterative = true;
+    default_params.fallback_to_direct = true;
+    default_params.verbose = verbose;
+
+    solve_ns_system(matrix, rhs, solution, constraints,
+                    default_params, /*log_output=*/verbose);
+}
+
+// ============================================================================
+// FGMRES + Block Schur preconditioner with parameters
 // ============================================================================
 void solve_ns_system_schur(
     const dealii::SparseMatrix<double>& matrix,
@@ -113,11 +141,9 @@ void solve_ns_system_schur(
     const std::vector<dealii::types::global_dof_index>& ux_to_ns_map,
     const std::vector<dealii::types::global_dof_index>& uy_to_ns_map,
     const std::vector<dealii::types::global_dof_index>& p_to_ns_map,
-    bool verbose)
+    const LinearSolverParams& params,
+    bool log_output)
 {
-    const double rel_tolerance = 1e-6;
-    const unsigned int max_iterations = 1500;
-
     if (solution.size() != rhs.size())
         solution.reinit(rhs.size());
 
@@ -126,14 +152,16 @@ void solve_ns_system_schur(
     {
         solution = 0;
         constraints.distribute(solution);
-        std::cout << "[NS Schur] Zero RHS\n";
+        if (log_output)
+            std::cout << "[NS Schur] Zero RHS\n";
         return;
     }
 
     auto start = std::chrono::high_resolution_clock::now();
 
-    const double tol = rel_tolerance * rhs_norm;
-    dealii::SolverControl solver_control(max_iterations, tol);
+    const double tol = std::max(params.abs_tolerance,
+                                params.rel_tolerance * rhs_norm);
+    dealii::SolverControl solver_control(params.max_iterations, tol);
 
     dealii::SolverFGMRES<dealii::Vector<double>> solver(solver_control);
 
@@ -159,10 +187,13 @@ void solve_ns_system_schur(
         std::cerr << "[NS Schur] FGMRES: " << iterations << " iters, "
                   << "res = " << final_residual << " (tol = " << tol << ")\n";
 
-        std::cerr << "[NS Schur] Falling back to UMFPACK.\n";
-        dealii::SparseDirectUMFPACK direct;
-        direct.initialize(matrix);
-        direct.vmult(solution, rhs);
+        if (params.fallback_to_direct)
+        {
+            std::cerr << "[NS Schur] Falling back to UMFPACK.\n";
+            dealii::SparseDirectUMFPACK direct;
+            direct.initialize(matrix);
+            direct.vmult(solution, rhs);
+        }
     }
 
     auto end = std::chrono::high_resolution_clock::now();
@@ -170,13 +201,44 @@ void solve_ns_system_schur(
 
     constraints.distribute(solution);
 
-    if (verbose)
+    if (log_output || params.verbose)
     {
         std::cout << "[NS Schur] FGMRES iters: " << iterations
                   << ", A solves: " << preconditioner.n_iterations_A
                   << ", S solves: " << preconditioner.n_iterations_S
                   << ", time: " << solve_time << "s\n";
     }
+}
+
+// ============================================================================
+// Legacy Schur interface with default parameters
+// ============================================================================
+void solve_ns_system_schur(
+    const dealii::SparseMatrix<double>& matrix,
+    const dealii::Vector<double>& rhs,
+    dealii::Vector<double>& solution,
+    const dealii::AffineConstraints<double>& constraints,
+    const dealii::SparseMatrix<double>& pressure_mass,
+    const std::vector<dealii::types::global_dof_index>& ux_to_ns_map,
+    const std::vector<dealii::types::global_dof_index>& uy_to_ns_map,
+    const std::vector<dealii::types::global_dof_index>& p_to_ns_map,
+    bool verbose)
+{
+    // Default NS Schur parameters
+    LinearSolverParams default_params;
+    default_params.type = LinearSolverParams::Type::FGMRES;
+    default_params.preconditioner = LinearSolverParams::Preconditioner::BlockSchur;
+    default_params.rel_tolerance = 1e-6;
+    default_params.abs_tolerance = 1e-10;
+    default_params.max_iterations = 1500;
+    default_params.gmres_restart = 100;
+    default_params.use_iterative = true;
+    default_params.fallback_to_direct = true;
+    default_params.verbose = verbose;
+
+    solve_ns_system_schur(matrix, rhs, solution, constraints,
+                          pressure_mass, ux_to_ns_map, uy_to_ns_map, p_to_ns_map,
+                          default_params, /*log_output=*/true);
 }
 
 // ============================================================================
@@ -291,7 +353,7 @@ void assemble_pressure_mass_matrix(
     std::cout << "[Pressure Mass] Assembled: " << n_p << " DoFs\n";
 }
 
-// Update explicit instantiations:
+// Explicit instantiations
 template void assemble_pressure_mass_matrix<2>(
     const dealii::DoFHandler<2>&,
     const dealii::AffineConstraints<double>&,

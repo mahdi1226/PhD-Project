@@ -7,11 +7,12 @@
 // ============================================================================
 
 #include "core/phase_field.h"
-#include "diagnostics/ch_mms.h"
+#include "mms/ch_mms.h"
 #include "setup/ch_setup.h"
 #include "setup/poisson_setup.h"
 #include "setup/ns_setup.h"
 #include "solvers/ns_solver.h"
+#include "mms/ns_mms.h"
 
 
 #include <deal.II/grid/grid_generator.h>
@@ -95,13 +96,13 @@ void PhaseFieldProblem<dim>::setup_mesh()
     }
 
     // Global refinement
-    triangulation_.refine_global(params_.domain.initial_refinement);
+    triangulation_.refine_global(params_.mesh.initial_refinement);
 
     if (params_.output.verbose)
     {
         std::cout << "[Setup] Base mesh: " << params_.domain.initial_cells_x
                   << " × " << params_.domain.initial_cells_y << " cells\n";
-        std::cout << "[Setup] After " << params_.domain.initial_refinement
+        std::cout << "[Setup] After " << params_.mesh.initial_refinement
                   << " refinements: " << triangulation_.n_active_cells() << " cells\n";
     }
 }
@@ -469,6 +470,24 @@ void PhaseFieldProblem<dim>::initialize_solutions()
             params_.mms.t_init);
 
         theta_old_solution_ = theta_solution_;
+
+        // NS MMS IC
+        if (params_.ns.enabled)
+        {
+            const double L_y = params_.domain.y_max - params_.domain.y_min;
+            const double t_init = params_.mms.t_init;
+
+            NSExactVelocityX<dim> exact_ux(t_init, L_y);
+            NSExactVelocityY<dim> exact_uy(t_init, L_y);
+            NSExactPressure<dim> exact_p(t_init, L_y);
+
+            dealii::VectorTools::interpolate(ux_dof_handler_, exact_ux, ux_solution_);
+            dealii::VectorTools::interpolate(uy_dof_handler_, exact_uy, uy_solution_);
+            dealii::VectorTools::interpolate(p_dof_handler_, exact_p, p_solution_);
+
+            ux_old_solution_ = ux_solution_;
+            uy_old_solution_ = uy_solution_;
+        }
 
         if (params_.output.verbose)
         {

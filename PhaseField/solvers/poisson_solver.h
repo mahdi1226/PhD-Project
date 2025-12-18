@@ -16,6 +16,9 @@
 #include <deal.II/lac/vector.h>
 #include <deal.II/lac/affine_constraints.h>
 
+// Forward declaration
+struct LinearSolverParams;
+
 /**
  * @brief Solve the Poisson system for magnetic potential
  *
@@ -28,7 +31,19 @@
  * @param rhs          Right-hand side (h_a - m, ∇χ)
  * @param solution     [OUT] Magnetic potential φ
  * @param constraints  Constraints (hanging nodes + pinned DoF)
- * @param verbose      Print solver info
+ * @param params       Solver parameters (tolerances, iterations, etc.)
+ * @param log_output   Print solver statistics
+ */
+void solve_poisson_system(
+    const dealii::SparseMatrix<double>& matrix,
+    const dealii::Vector<double>& rhs,
+    dealii::Vector<double>& solution,
+    const dealii::AffineConstraints<double>& constraints,
+    const LinearSolverParams& params,
+    bool log_output = true);
+
+/**
+ * @brief Legacy interface (uses default parameters)
  */
 void solve_poisson_system(
     const dealii::SparseMatrix<double>& matrix,

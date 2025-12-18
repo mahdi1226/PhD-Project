@@ -23,6 +23,9 @@ void setup_ch_coupled_system(
     dealii::SparsityPattern& ch_sparsity,
     bool verbose)
 {
+    Assert(theta_dof_handler.n_dofs() == psi_dof_handler.n_dofs(),
+           dealii::ExcMessage("θ and ψ DoF counts must match"));
+
     const unsigned int n_theta = theta_dof_handler.n_dofs();
     const unsigned int n_psi = psi_dof_handler.n_dofs();
     const unsigned int n_total = n_theta + n_psi;
@@ -157,6 +160,8 @@ void setup_ch_coupled_system(
                   << " nonzeros\n";
     }
 }
+
+
 
 // ============================================================================
 // Explicit instantiation

@@ -15,7 +15,7 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
     for (int i = 1; i < argc; ++i)
     {
         // ====================================================================
-        // Preset configurations (USE THESE)
+        // Preset configurations
         // ====================================================================
         if (std::strcmp(argv[i], "--rosensweig") == 0)
         {
@@ -31,8 +31,7 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
         // ====================================================================
         else if (std::strcmp(argv[i], "--refinement") == 0 || std::strcmp(argv[i], "-r") == 0)
         {
-            params.domain.initial_refinement = std::stoul(argv[++i]);
-            params.mesh.initial_refinement = params.domain.initial_refinement;
+            params.mesh.initial_refinement = std::stoul(argv[++i]);
         }
         else if (std::strcmp(argv[i], "--x_min") == 0)
             params.domain.x_min = std::stod(argv[++i]);
@@ -45,7 +44,6 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
         else if (std::strcmp(argv[i], "--pool_depth") == 0 || std::strcmp(argv[i], "--layer_height") == 0)
         {
             params.ic.pool_depth = std::stod(argv[++i]);
-            params.domain.layer_height = params.ic.pool_depth;
         }
 
         // ====================================================================
@@ -56,31 +54,23 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
         else if (std::strcmp(argv[i], "--mms_t_init") == 0 || std::strcmp(argv[i], "--t_init") == 0)
             params.mms.t_init = std::stod(argv[++i]);
 
-        // ====================================================================
-        // Cahn-Hilliard
-        // ====================================================================
+            // ====================================================================
+            // Cahn-Hilliard
+            // ====================================================================
         else if (std::strcmp(argv[i], "--epsilon") == 0)
-        {
             params.ch.epsilon = std::stod(argv[++i]);
-            params.ch.eta = params.ch.epsilon;
-        }
-        else if (std::strcmp(argv[i], "--lambda") == 0)
-            params.ch.lambda = std::stod(argv[++i]);
         else if (std::strcmp(argv[i], "--mobility") == 0 || std::strcmp(argv[i], "--gamma") == 0)
             params.ch.gamma = std::stod(argv[++i]);
-        else if (std::strcmp(argv[i], "--eta") == 0)
-            params.ch.eta = std::stod(argv[++i]);
 
-        // ====================================================================
-        // Magnetization
-        // ====================================================================
+            // ====================================================================
+            // Magnetization
+            // ====================================================================
         else if (std::strcmp(argv[i], "--chi_0") == 0)
             params.magnetization.chi_0 = std::stod(argv[++i]);
         else if (std::strcmp(argv[i], "--tau_M") == 0)
         {
             double val = std::stod(argv[++i]);
             params.magnetization.tau_M = val;
-            params.magnetization.T_relax = val;
         }
 
         // ====================================================================
@@ -98,10 +88,12 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             params.ns.mu_0 = std::stod(argv[++i]);
         else if (std::strcmp(argv[i], "--r") == 0)
             params.ns.r = std::stod(argv[++i]);
+        else if (std::strcmp(argv[i], "--lambda") == 0)
+            params.ns.lambda = std::stod(argv[++i]);
 
-        // ====================================================================
-        // Gravity
-        // ====================================================================
+            // ====================================================================
+            // Gravity
+            // ====================================================================
         else if (std::strcmp(argv[i], "--gravity") == 0)
             params.gravity.enabled = true;
         else if (std::strcmp(argv[i], "--no_gravity") == 0)
@@ -109,17 +101,17 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
         else if (std::strcmp(argv[i], "--g") == 0)
             params.gravity.magnitude = std::stod(argv[++i]);
 
-        // ====================================================================
-        // Dipoles
-        // ====================================================================
+            // ====================================================================
+            // Dipoles
+            // ====================================================================
         else if (std::strcmp(argv[i], "--dipole_intensity") == 0)
             params.dipoles.intensity_max = std::stod(argv[++i]);
         else if (std::strcmp(argv[i], "--dipole_ramp") == 0)
             params.dipoles.ramp_time = std::stod(argv[++i]);
 
-        // ====================================================================
-        // Magnetic
-        // ====================================================================
+            // ====================================================================
+            // Magnetic
+            // ====================================================================
         else if (std::strcmp(argv[i], "--magnetic") == 0)
             params.magnetic.enabled = true;
         else if (std::strcmp(argv[i], "--no_magnetic") == 0)
@@ -131,9 +123,9 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
         else if (std::strcmp(argv[i], "--quasi_equilibrium") == 0)
             params.magnetic.use_dg_transport = false;
 
-        // ====================================================================
-        // Time
-        // ====================================================================
+            // ====================================================================
+            // Time
+            // ====================================================================
         else if (std::strcmp(argv[i], "--dt") == 0)
             params.time.dt = std::stod(argv[++i]);
         else if (std::strcmp(argv[i], "--t_final") == 0)
@@ -141,9 +133,9 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
         else if (std::strcmp(argv[i], "--max_steps") == 0)
             params.time.max_steps = std::stoul(argv[++i]);
 
-        // ====================================================================
-        // Mesh/AMR
-        // ====================================================================
+            // ====================================================================
+            // Mesh/AMR
+            // ====================================================================
         else if (std::strcmp(argv[i], "--amr") == 0)
             params.mesh.use_amr = true;
         else if (std::strcmp(argv[i], "--no_amr") == 0)
@@ -154,10 +146,12 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             params.mesh.amr_max_level = std::stoul(argv[++i]);
         else if (std::strcmp(argv[i], "--amr_interval") == 0)
             params.mesh.amr_interval = std::stoul(argv[++i]);
+        else if (std::strcmp(argv[i], "--direct") == 0)
+            params.solvers.ns.use_iterative = false;
 
-        // ====================================================================
-        // Output
-        // ====================================================================
+            // ====================================================================
+            // Output
+            // ====================================================================
         else if (std::strcmp(argv[i], "--output") == 0 || std::strcmp(argv[i], "-o") == 0)
             params.output.folder = argv[++i];
         else if (std::strcmp(argv[i], "--output_frequency") == 0)
@@ -166,18 +160,34 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             params.output.verbose = true;
 
         // ====================================================================
-        // Solver
+        // Solver (affects all subsystems)
         // ====================================================================
         else if (std::strcmp(argv[i], "--direct") == 0)
-            params.solver.use_direct = true;
+        {
+            params.solvers.ch.use_iterative = false;
+            params.solvers.poisson.use_iterative = false;
+            params.solvers.ns.use_iterative = false;
+            params.solvers.ns_simple.use_iterative = false;
+        }
         else if (std::strcmp(argv[i], "--iterative") == 0)
-            params.solver.use_direct = false;
+        {
+            params.solvers.ch.use_iterative = true;
+            params.solvers.poisson.use_iterative = true;
+            params.solvers.ns.use_iterative = true;
+            params.solvers.ns_simple.use_iterative = true;
+        }
         else if (std::strcmp(argv[i], "--tol") == 0)
-            params.solver.tolerance = std::stod(argv[++i]);
+        {
+            double tol = std::stod(argv[++i]);
+            params.solvers.ch.rel_tolerance = tol;
+            params.solvers.poisson.rel_tolerance = tol;
+            params.solvers.ns.rel_tolerance = tol;
+            params.solvers.ns_simple.rel_tolerance = tol;
+        }
 
-        // ====================================================================
-        // Help
-        // ====================================================================
+            // ====================================================================
+            // Help
+            // ====================================================================
         else if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0)
         {
             std::cout << "Ferrofluid Phase Field Solver\n";
@@ -194,8 +204,12 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
 
             std::cout << "CAHN-HILLIARD:\n";
             std::cout << "  --epsilon E          Interface thickness\n";
-            std::cout << "  --lambda L           Capillary coefficient\n";
             std::cout << "  --gamma G            Mobility\n\n";
+
+            std::cout << "NAVIER-STOKES:\n";
+            std::cout << "  --lambda L           Capillary coefficient\n";
+            std::cout << "  --nu_water NU        Water viscosity\n";
+            std::cout << "  --nu_ferro NU        Ferrofluid viscosity\n\n";
 
             std::cout << "MAGNETIC:\n";
             std::cout << "  --chi_0 C            Susceptibility\n";
@@ -226,19 +240,18 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
         }
     }
 
-    // Sync aliases
-    params.magnetization.T_relax = params.magnetization.tau_M;
 
     // Print configuration
     if (params.output.verbose)
     {
         std::cout << "=== Configuration ===\n";
         std::cout << "  Domain: [" << params.domain.x_min << ", " << params.domain.x_max
-                  << "] x [" << params.domain.y_min << ", " << params.domain.y_max << "]\n";
+            << "] x [" << params.domain.y_min << ", " << params.domain.y_max << "]\n";
         std::cout << "  Pool depth: " << params.ic.pool_depth << "\n";
-        std::cout << "  Refinement: " << params.domain.initial_refinement << "\n";
-        std::cout << "  epsilon=" << params.ch.epsilon << ", lambda=" << params.ch.lambda
-                  << ", gamma=" << params.ch.gamma << "\n";
+        std::cout << "  Refinement: " << params.mesh.initial_refinement << "\n";
+        std::cout << "  epsilon=" << params.ch.epsilon
+            << ", gamma=" << params.ch.gamma
+            << ", lambda=" << params.ns.lambda << "\n";
         std::cout << "  chi_0=" << params.magnetization.chi_0 << "\n";
         std::cout << "  Magnetic: " << (params.magnetic.enabled ? "ON" : "OFF") << "\n";
         std::cout << "  NS: " << (params.ns.enabled ? "ON" : "OFF") << "\n";

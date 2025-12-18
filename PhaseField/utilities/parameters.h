@@ -17,6 +17,39 @@
 #include <cmath>
 #include <iostream>
 
+// ============================================================================
+// Linear Solver Configuration (used by all subsystem solvers)
+// ============================================================================
+struct LinearSolverParams
+{
+    // Solver type
+    enum class Type { CG, GMRES, FGMRES, Direct };
+    Type type = Type::GMRES;
+
+    // Preconditioner type
+    enum class Preconditioner { None, Jacobi, SSOR, ILU, BlockSchur };
+    Preconditioner preconditioner = Preconditioner::ILU;
+
+    // Tolerances
+    double rel_tolerance = 1e-8;
+    double abs_tolerance = 1e-12;
+
+    // Iteration limits
+    unsigned int max_iterations = 2000;
+    unsigned int gmres_restart = 50;
+
+    // Preconditioner parameters
+    double ssor_omega = 1.2;
+
+    // Behavior
+    bool use_iterative = true;
+    bool fallback_to_direct = true;
+    bool verbose = false;
+};
+
+// ============================================================================
+// Main Parameters Struct
+// ============================================================================
 struct Parameters
 {
     // ========================================================================
@@ -42,8 +75,6 @@ struct Parameters
         double x_max = 1.0;
         double y_min = 0.0;
         double y_max = 0.6;
-        double layer_height = 0.2;
-        unsigned int initial_refinement = 5;
         unsigned int initial_cells_x = 10;
         unsigned int initial_cells_y = 6;
     } domain;
@@ -53,10 +84,10 @@ struct Parameters
     // ========================================================================
     struct IC
     {
-        int type = 0;                    // ALWAYS 0 for flat layer
+        int type = 0;
         double pool_depth = 0.2;
-        double perturbation = 0.0;       // No perturbation
-        int perturbation_modes = 0;      // No modes
+        double perturbation = 0.0;
+        int perturbation_modes = 0;
     } ic;
 
     // ========================================================================
@@ -74,20 +105,16 @@ struct Parameters
     struct CH
     {
         double epsilon = 0.01;
-        double lambda = 0.05;
         double gamma = 0.0002;
-        double eta = 0.01;
     } ch;
 
     // ========================================================================
     // Magnetization parameters (Eq. 14c)
-    // tau_M = 0 means quasi-equilibrium M = χH
     // ========================================================================
     struct Magnetization
     {
         double chi_0 = 0.5;
         double tau_M = 0.0;
-        double T_relax = 0.0;  // Alias for tau_M
     } magnetization;
 
     // ========================================================================
@@ -102,6 +129,7 @@ struct Parameters
         double rho = 1.0;
         double r = 0.1;
         double grad_div = 0.0;
+        double lambda = 0.05;
     } ns;
 
     // ========================================================================
@@ -127,13 +155,12 @@ struct Parameters
 
     // ========================================================================
     // Magnetic model
-    // use_dg_transport = false means quasi-equilibrium M = χH
     // ========================================================================
     struct Magnetic
     {
         bool enabled = true;
         bool use_simplified = false;
-        bool use_dg_transport = false;  // false = quasi-equilibrium (paper default)
+        bool use_dg_transport = false;
     } magnetic;
 
     // ========================================================================
@@ -184,14 +211,69 @@ struct Parameters
     } output;
 
     // ========================================================================
-    // Solver
+    // Solver parameters (per-subsystem)
     // ========================================================================
-    struct Solver
+    struct Solvers
     {
-        unsigned int max_iterations = 1000;
-        double tolerance = 1e-10;
-        bool use_direct = true;
-    } solver;
+        // Cahn-Hilliard (θ, ψ) - nonsymmetric coupled system
+        LinearSolverParams ch = {
+            LinearSolverParams::Type::GMRES,
+            LinearSolverParams::Preconditioner::ILU,
+            1e-8,   // rel_tolerance
+            1e-12,  // abs_tolerance
+            2000,   // max_iterations
+            50,     // gmres_restart
+            1.2,    // ssor_omega (unused)
+            true,   // use_iterative
+            true,   // fallback_to_direct
+            false   // verbose
+        };
+
+        // Poisson (φ) - SPD system
+        LinearSolverParams poisson = {
+            LinearSolverParams::Type::CG,
+            LinearSolverParams::Preconditioner::SSOR,
+            1e-8,   // rel_tolerance
+            1e-12,  // abs_tolerance
+            2000,   // max_iterations
+            50,     // gmres_restart (unused for CG)
+            1.2,    // ssor_omega
+            true,   // use_iterative
+            true,   // fallback_to_direct
+            false   // verbose
+        };
+
+        // Navier-Stokes (u, p) - saddle-point system with Schur preconditioner
+        LinearSolverParams ns = {
+            LinearSolverParams::Type::FGMRES,
+            LinearSolverParams::Preconditioner::BlockSchur,
+            1e-6,   // rel_tolerance (looser for time-stepping)
+            1e-10,  // abs_tolerance
+            1500,   // max_iterations
+            100,    // gmres_restart
+            1.2,    // ssor_omega (unused)
+            true,   // use_iterative
+            true,   // fallback_to_direct
+            false   // verbose
+        };
+
+        // Simple NS solver (GMRES + ILU fallback)
+        LinearSolverParams ns_simple = {
+            LinearSolverParams::Type::GMRES,
+            LinearSolverParams::Preconditioner::ILU,
+            1e-3,   // rel_tolerance
+            1e-6,   // abs_tolerance
+            3000,   // max_iterations
+            150,    // gmres_restart
+            1.2,    // ssor_omega (unused)
+            true,   // use_iterative
+            true,   // fallback_to_direct
+            false   // verbose
+        };
+
+        // Global settings
+        bool log_convergence = true;
+    } solvers;
 
     // ========================================================================
     // Parse command line
@@ -203,43 +285,32 @@ struct Parameters
     // ========================================================================
     void setup_rosensweig()
     {
-        // Domain: [0,1] x [0,0.6], base mesh 10×6
         domain.x_min = 0.0;
         domain.x_max = 1.0;
         domain.y_min = 0.0;
         domain.y_max = 0.6;
-        domain.layer_height = 0.2;
-        domain.initial_refinement = 5;
         domain.initial_cells_x = 10;
         domain.initial_cells_y = 6;
 
-        // Flat pool at y = 0.2
         ic.type = 0;
         ic.pool_depth = 0.2;
         ic.perturbation = 0.0;
         ic.perturbation_modes = 0;
 
-        // Cahn-Hilliard
         ch.epsilon = 0.01;
-        ch.lambda = 0.05;
         ch.gamma = 0.0002;
-        ch.eta = 0.01;
 
-        // Magnetization (quasi-equilibrium)
         magnetization.chi_0 = 0.5;
         magnetization.tau_M = 0.0;
-        magnetization.T_relax = 0.0;
 
-        // NS + Magnetic enabled
         ns.enabled = true;
+        ns.lambda = 0.05;
         magnetic.enabled = true;
         magnetic.use_dg_transport = false;
 
-        // Gravity
         gravity.enabled = true;
         gravity.magnitude = 30000.0;
 
-        // 5 dipoles at y = -15
         dipoles.positions = {
             dealii::Point<2>(-0.5, -15.0),
             dealii::Point<2>( 0.0, -15.0),
@@ -251,17 +322,14 @@ struct Parameters
         dipoles.intensity_max = 6000.0;
         dipoles.ramp_time = 1.6;
 
-        // Time
         time.dt = 5e-4;
         time.t_final = 2.0;
         time.max_steps = 4000;
 
-        // Mesh
         mesh.initial_refinement = 5;
         mesh.use_amr = true;
         mesh.amr_interval = 5;
 
-        // Output
         output.frequency = 100;
     }
 
@@ -270,43 +338,32 @@ struct Parameters
     // ========================================================================
     void setup_hedgehog()
     {
-        // Domain: [0,1] x [0,0.6], base mesh 15×9
         domain.x_min = 0.0;
         domain.x_max = 1.0;
         domain.y_min = 0.0;
         domain.y_max = 0.6;
-        domain.layer_height = 0.11;
-        domain.initial_refinement = 6;
         domain.initial_cells_x = 15;
         domain.initial_cells_y = 9;
 
-        // Flat pool at y = 0.11
         ic.type = 0;
         ic.pool_depth = 0.11;
         ic.perturbation = 0.0;
         ic.perturbation_modes = 0;
 
-        // Cahn-Hilliard (sharper interface)
         ch.epsilon = 0.005;
-        ch.lambda = 0.025;
         ch.gamma = 0.0002;
-        ch.eta = 0.005;
 
-        // Magnetization (quasi-equilibrium, higher susceptibility)
         magnetization.chi_0 = 0.9;
         magnetization.tau_M = 0.0;
-        magnetization.T_relax = 0.0;
 
-        // NS + Magnetic enabled
         ns.enabled = true;
+        ns.lambda = 0.025;
         magnetic.enabled = true;
         magnetic.use_dg_transport = false;
 
-        // Gravity
         gravity.enabled = true;
         gravity.magnitude = 30000.0;
 
-        // 42 dipoles (3 rows × 14 dipoles)
         dipoles.positions.clear();
         const double y_rows[3] = {-0.5, -0.75, -1.0};
         const int n_per_row = 14;
@@ -326,17 +383,14 @@ struct Parameters
         dipoles.intensity_max = 4.3;
         dipoles.ramp_time = 4.2;
 
-        // Time
         time.dt = 0.00025;
         time.t_final = 6.0;
         time.max_steps = 24000;
 
-        // Mesh
         mesh.initial_refinement = 6;
         mesh.use_amr = true;
         mesh.amr_interval = 5;
 
-        // Output
         output.frequency = 100;
     }
 };

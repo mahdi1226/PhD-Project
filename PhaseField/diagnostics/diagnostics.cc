@@ -7,6 +7,7 @@
 #include "diagnostics/diagnostics.h"
 #include "physics/material_properties.h"
 #include "physics/kelvin_force.h"
+#include "diagnostics/ch_diagnostics.h"
 
 #include <deal.II/base/quadrature_lib.h>
 #include <deal.II/fe/fe_values.h>
@@ -160,21 +161,6 @@ double compute_ch_energy(
     return energy;
 }
 
-void compute_theta_bounds(
-    const dealii::Vector<double>& theta_solution,
-    double& theta_min,
-    double& theta_max)
-{
-    theta_min = std::numeric_limits<double>::max();
-    theta_max = std::numeric_limits<double>::lowest();
-
-    for (unsigned int i = 0; i < theta_solution.size(); ++i)
-    {
-        theta_min = std::min(theta_min, theta_solution[i]);
-        theta_max = std::max(theta_max, theta_solution[i]);
-    }
-}
-
 double compute_u_max(
     const dealii::Vector<double>& ux_solution,
     const dealii::Vector<double>& uy_solution)
@@ -263,7 +249,7 @@ void compute_force_magnitudes(
     double F_mag_sq = 0.0;
     double F_grav_sq = 0.0;
 
-    const double lambda = params.ch.lambda;
+    const double lambda = params.ns.lambda;
     const double epsilon = params.ch.epsilon;
     const double chi_0 = params.magnetization.chi_0;
     const double mu_0 = params.ns.mu_0;
@@ -382,7 +368,7 @@ DiagnosticData compute_all_diagnostics(
     double F_grav_sq = 0.0;
     double div_u_sq = 0.0;
 
-    const double lambda = params.ch.lambda;
+    const double lambda = params.ns.lambda;
     const double chi_0 = params.magnetization.chi_0;
     const double mu_0 = params.ns.mu_0;
     const double r = params.ns.r;
@@ -498,11 +484,7 @@ DiagnosticData compute_all_diagnostics(
 // ============================================================================
 // Explicit instantiations
 // ============================================================================
-template double compute_ch_energy<2>(
-    const dealii::DoFHandler<2>&,
-    const dealii::Vector<double>&,
-    const dealii::FE_Q<2>&,
-    double);
+
 
 template double compute_div_u_L2<2>(
     const dealii::DoFHandler<2>&,

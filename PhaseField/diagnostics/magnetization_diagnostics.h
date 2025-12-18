@@ -1,0 +1,14 @@
+//
+// Created by Mahdi on 12/17/25.
+//
+
+#ifndef FERROFLUID_MAGNETIZATION_DIAGNOSTICS_H
+#define FERROFLUID_MAGNETIZATION_DIAGNOSTICS_H
+
+
+class magnetization_diagnostics
+{
+};
+
+
+#endif //FERROFLUID_MAGNETIZATION_DIAGNOSTICS_H

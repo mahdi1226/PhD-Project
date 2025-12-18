@@ -19,6 +19,7 @@
 #include <deal.II/fe/fe_q.h>
 
 #include "utilities/parameters.h"
+#include "diagnostics/ch_diagnostics.h"
 
 #include <string>
 #include <fstream>
@@ -88,27 +89,6 @@ private:
 // Diagnostic computation functions
 // ============================================================================
 
-/**
- * @brief Compute Cahn-Hilliard energy
- *
- * E_CH = ∫[ε/2 |∇θ|² + (1/ε) F(θ)] dΩ
- *
- * where F(θ) = (1/4)(θ² - 1)² is the double-well potential
- */
-template <int dim>
-double compute_ch_energy(
-    const dealii::DoFHandler<dim>& theta_dof_handler,
-    const dealii::Vector<double>& theta_solution,
-    const dealii::FE_Q<dim>& fe,
-    double epsilon);
-
-/**
- * @brief Compute theta bounds (min and max)
- */
-void compute_theta_bounds(
-    const dealii::Vector<double>& theta_solution,
-    double& theta_min,
-    double& theta_max);
 
 /**
  * @brief Compute maximum velocity magnitude
