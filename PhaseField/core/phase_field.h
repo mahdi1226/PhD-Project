@@ -80,7 +80,6 @@ private:
     // Constraint updates (for MMS or time-varying BCs)
     // ========================================================================
     void update_mms_boundary_constraints(double time);
-    void update_ns_constraints();
 
     // ========================================================================
     // Output and diagnostics
@@ -91,6 +90,8 @@ private:
     double compute_kinetic_energy() const;
     double compute_magnetic_energy() const;
     double get_min_h() const;
+    double ch_energy_prev_ = 0.0;
+
 
     // ========================================================================
     // MMS verification

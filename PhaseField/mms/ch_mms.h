@@ -137,7 +137,7 @@ public:
         const double lap_psi = -2.0 * M_PI * M_PI * t4 * sin_px * sin_py;
 
         // S_θ = θ_t - γΔψ
-        return theta_t + gamma_ * lap_psi;
+        return theta_t - gamma_ * lap_psi;
     }
 
 private:
@@ -166,37 +166,42 @@ template <int dim>
 class CHSourcePsi : public dealii::Function<dim>
 {
 public:
-    CHSourcePsi(double epsilon) : dealii::Function<dim>(1), epsilon_(epsilon) {}
+    CHSourcePsi(double epsilon, double dt)
+        : dealii::Function<dim>(1), epsilon_(epsilon), dt_(dt) {}
 
     double value(const dealii::Point<dim>& p, const unsigned int = 0) const override
     {
         const double t = this->get_time();
+        const double t_old = t - dt_;
         const double x = p[0], y = p[1];
+
+        // Current time values
         const double t4 = t * t * t * t;
-        //const double t12 = t4 * t4 * t4;
-        const double sin_px = std::sin(M_PI * x);
+        const double t4_old = t_old * t_old * t_old * t_old;
+
         const double cos_px = std::cos(M_PI * x);
-        const double sin_py = std::sin(M_PI * y);
         const double cos_py = std::cos(M_PI * y);
+        const double sin_px = std::sin(M_PI * x);
+        const double sin_py = std::sin(M_PI * y);
 
-        // θ = t⁴ cos(πx) cos(πy)
-        const double theta = t4 * cos_px * cos_py;
-
-        // ψ = t⁴ sin(πx) sin(πy)
+        const double theta_n = t4 * cos_px * cos_py;
+        const double theta_old = t4_old * cos_px * cos_py;
         const double psi = t4 * sin_px * sin_py;
-
-        // Δθ = -2π² t⁴ cos(πx) cos(πy)
         const double lap_theta = -2.0 * M_PI * M_PI * t4 * cos_px * cos_py;
 
-        // f(θ) = θ³ - θ
-        const double f_theta = theta * theta * theta - theta;
+        // f(θ^{n-1}) = θ_old³ - θ_old
+        const double f_old = theta_old * theta_old * theta_old - theta_old;
 
-        // S_ψ = ψ - εΔθ + (1/ε)f(θ)
-        return psi - epsilon_ * lap_theta + (1.0 / epsilon_) * f_theta;
+        // S_ψ = ψ - εΔθ + (1/η)(θ^n - θ^{n-1}) + (1/ε)f(θ^{n-1})
+        // With η = ε:
+        return psi - epsilon_ * lap_theta
+               + (1.0/epsilon_) * (theta_n - theta_old)
+               + (1.0/epsilon_) * f_old;
     }
 
 private:
     double epsilon_;
+    double dt_;
 };
 
 // ============================================================================

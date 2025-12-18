@@ -9,6 +9,7 @@
 // ============================================================================
 
 #include "solvers/poisson_solver.h"
+#include "utilities/parameters.h"
 
 #include <deal.II/lac/solver_cg.h>
 #include <deal.II/lac/solver_control.h>
@@ -18,23 +19,17 @@
 #include <iostream>
 #include <chrono>
 
+// ============================================================================
+// Main solver with explicit parameters
+// ============================================================================
 void solve_poisson_system(
     const dealii::SparseMatrix<double>& matrix,
     const dealii::Vector<double>& rhs,
     dealii::Vector<double>& solution,
     const dealii::AffineConstraints<double>& constraints,
-    bool verbose)
+    const LinearSolverParams& params,
+    bool log_output)
 {
-    // ----- Solver configuration -----
-    const bool use_iterative = true;
-    const double rel_tolerance = 1e-8;
-    const double abs_tolerance = 1e-12;
-    const unsigned int max_iterations = 2000;
-    const double ssor_omega = 1.2;
-    const bool fallback_to_direct = true;
-    const bool log_output = true;
-    // --------------------------------
-
     const double rhs_norm = rhs.l2_norm();
     if (rhs_norm < 1e-14)
     {
@@ -53,15 +48,16 @@ void solve_poisson_system(
     unsigned int iterations = 0;
     double final_residual = 0.0;
 
-    if (use_iterative)
+    if (params.use_iterative)
     {
-        const double tol = std::max(abs_tolerance, rel_tolerance * rhs_norm);
+        const double tol = std::max(params.abs_tolerance,
+                                    params.rel_tolerance * rhs_norm);
 
-        dealii::SolverControl solver_control(max_iterations, tol);
+        dealii::SolverControl solver_control(params.max_iterations, tol);
         dealii::SolverCG<dealii::Vector<double>> solver(solver_control);
 
         dealii::PreconditionSSOR<dealii::SparseMatrix<double>> preconditioner;
-        preconditioner.initialize(matrix, ssor_omega);
+        preconditioner.initialize(matrix, params.ssor_omega);
 
         try
         {
@@ -78,12 +74,12 @@ void solve_poisson_system(
             iterations = e.last_step;
             final_residual = e.last_residual;
 
-            if (fallback_to_direct)
+            if (params.fallback_to_direct)
                 std::cerr << "[Poisson] Falling back to direct solver.\n";
         }
     }
 
-    if (!converged)
+    if (!converged && params.fallback_to_direct)
     {
         dealii::SparseDirectUMFPACK direct_solver;
         direct_solver.initialize(matrix);
@@ -98,11 +94,37 @@ void solve_poisson_system(
 
     constraints.distribute(solution);
 
-    if (log_output || verbose)
+    if (log_output || params.verbose)
     {
         std::cout << "[Poisson] Size: " << matrix.m()
                   << ", iterations: " << iterations
                   << ", residual: " << final_residual
                   << ", time: " << solve_time << "s\n";
     }
+}
+
+// ============================================================================
+// Legacy interface with default parameters
+// ============================================================================
+void solve_poisson_system(
+    const dealii::SparseMatrix<double>& matrix,
+    const dealii::Vector<double>& rhs,
+    dealii::Vector<double>& solution,
+    const dealii::AffineConstraints<double>& constraints,
+    bool verbose)
+{
+    // Default Poisson parameters (SPD system: CG + SSOR)
+    LinearSolverParams default_params;
+    default_params.type = LinearSolverParams::Type::CG;
+    default_params.preconditioner = LinearSolverParams::Preconditioner::SSOR;
+    default_params.rel_tolerance = 1e-8;
+    default_params.abs_tolerance = 1e-12;
+    default_params.max_iterations = 2000;
+    default_params.ssor_omega = 1.2;
+    default_params.use_iterative = true;
+    default_params.fallback_to_direct = true;
+    default_params.verbose = verbose;
+
+    solve_poisson_system(matrix, rhs, solution, constraints,
+                         default_params, /*log_output=*/true);
 }

@@ -8,6 +8,7 @@
 // ============================================================================
 
 #include "solvers/magnetization_solver.h"
+#include "utilities/parameters.h"
 
 #include <deal.II/lac/solver_control.h>
 #include <deal.II/lac/solver_gmres.h>
@@ -19,11 +20,11 @@
 // Constructor
 // ============================================================================
 template <int dim>
-MagnetizationSolver<dim>::MagnetizationSolver(const Parameters& params)
+MagnetizationSolver<dim>::MagnetizationSolver(const LinearSolverParams& params)
     : params_(params)
     , matrix_ptr_(nullptr)
     , last_n_iterations_(0)
-    , use_direct_(params.solver.use_direct)
+    , use_direct_(!params.use_iterative)  // use_direct = NOT use_iterative
     , initialized_(false)
 {
 }
@@ -35,12 +36,10 @@ template <int dim>
 void MagnetizationSolver<dim>::initialize(
     const dealii::SparseMatrix<double>& system_matrix)
 {
-    // Store matrix pointer for both solver types (non-owning)
     matrix_ptr_ = &system_matrix;
 
     if (use_direct_)
     {
-        // UMFPACK factorization
         direct_solver_.initialize(system_matrix);
     }
 
@@ -60,27 +59,23 @@ void MagnetizationSolver<dim>::solve(
     Assert(matrix_ptr_ != nullptr,
            dealii::ExcMessage("Matrix pointer is null."));
 
-    // Ensure solution vector is properly sized
     if (solution.size() != rhs.size())
         solution.reinit(rhs.size());
 
     if (use_direct_)
     {
-        // Direct solve (UMFPACK)
         direct_solver_.vmult(solution, rhs);
-        last_n_iterations_ = 1;  // Direct solver = 1 "iteration"
+        last_n_iterations_ = 1;
     }
     else
     {
-        // Iterative solve (GMRES with Jacobi preconditioner)
-        dealii::SolverControl solver_control(
-            params_.solver.max_iterations,
-            params_.solver.tolerance * rhs.l2_norm());
+        const double rhs_norm = rhs.l2_norm();
+        const double tol = std::max(params_.abs_tolerance,
+                                    params_.rel_tolerance * rhs_norm);
 
+        dealii::SolverControl solver_control(params_.max_iterations, tol);
         dealii::SolverGMRES<dealii::Vector<double>> solver(solver_control);
 
-        // Jacobi preconditioner (diagonal scaling)
-        // For better performance on larger problems, consider ILU
         dealii::PreconditionJacobi<dealii::SparseMatrix<double>> preconditioner;
         preconditioner.initialize(*matrix_ptr_);
 
@@ -95,6 +90,15 @@ void MagnetizationSolver<dim>::solve(
                       << e.what() << std::endl;
             std::cerr << "  Last residual: " << e.last_residual << std::endl;
             last_n_iterations_ = solver_control.last_step();
+
+            if (params_.fallback_to_direct)
+            {
+                std::cerr << "[MagnetizationSolver] Falling back to direct solver.\n";
+                dealii::SparseDirectUMFPACK fallback;
+                fallback.initialize(*matrix_ptr_);
+                fallback.vmult(solution, rhs);
+                last_n_iterations_ = 1;
+            }
         }
     }
 }

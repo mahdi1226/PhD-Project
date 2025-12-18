@@ -9,6 +9,7 @@
 //   2. Symmetric gradient T(U) = ∇U + (∇U)^T
 //   3. Skew convection B_h(U^{k-1}, U^k, V) for energy stability
 //   4. Full Kelvin force B_h^m(V, H^k, M^k) with DG face terms
+//   5. MMS source term support for verification
 //
 // ============================================================================
 
@@ -16,6 +17,8 @@
 #include "physics/material_properties.h"
 #include "physics/skew_forms.h"
 #include "physics/kelvin_force.h"
+#include "mms/ns_mms.h"
+
 
 #include <deal.II/base/quadrature_lib.h>
 #include <deal.II/fe/fe_values.h>
@@ -103,9 +106,6 @@ void assemble_ns_system(
     dealii::SparseMatrix<double>& ns_matrix,
     dealii::Vector<double>& ns_rhs)
 {
-
-    (void)current_time;    // For future MMS use
-
     ns_matrix = 0;
     ns_rhs = 0;
 
@@ -233,7 +233,7 @@ void assemble_ns_system(
     std::vector<double> my_here(n_face_q_points), my_there(n_face_q_points);
 
     // Physical parameters
-    const double lambda = params.ch.lambda;
+    const double lambda = params.ns.lambda;
     const double epsilon = params.ch.epsilon;
     const double nu_water = params.ns.nu_water;
     const double nu_ferro = params.ns.nu_ferro;
@@ -244,12 +244,18 @@ void assemble_ns_system(
     // Material properties helper
     MaterialProperties mat_props(nu_water, nu_ferro, chi_0, epsilon);
 
+    // MMS parameters
+    const bool mms_mode = params.mms.enabled;
+    const double L_y = params.domain.y_max - params.domain.y_min;
+    const double nu_mms = params.ns.nu_water;  // Constant viscosity for MMS
+
     // ========================================================================
     // Gravity (optional extension, NOT in paper Eq. 42e)
     // WARNING: Gravity is not part of the energy proof in the paper.
     // Enable only for physical simulations, not paper replication.
+    // Disabled in MMS mode.
     // ========================================================================
-    const bool use_gravity = params.gravity.enabled;
+    const bool use_gravity = params.gravity.enabled && !mms_mode;
     const double g_mag = params.gravity.magnitude;
     const double r_density = params.ns.r;
     dealii::Tensor<1, dim> g_direction = params.gravity.direction;
@@ -354,6 +360,7 @@ void assemble_ns_system(
         for (unsigned int q = 0; q < n_q_points; ++q)
         {
             const double JxW = ux_fe_values.JxW(q);
+            const dealii::Point<dim>& x_q = ux_fe_values.quadrature_point(q);
 
             // U^{k-1} at quadrature point
             const double ux_q = ux_old_values[q];
@@ -375,14 +382,17 @@ void assemble_ns_system(
             const dealii::Tensor<1, dim>& grad_psi = psi_gradients[q];
 
             // Phase-dependent viscosity at θ^{k-1} [Eq. 17]
-            const double nu = mat_props.viscosity(theta_old_q);
+            // Use constant viscosity in MMS mode
+            const double nu = mms_mode ? nu_mms : mat_props.viscosity(theta_old_q);
 
             // ================================================================
             // Capillary force [Eq. 10]: F_cap = (λ/ε)θ^{k-1}∇ψ^k
             // CORRECTED: Uses lagged θ^{k-1}, not θ^k
+            // Disabled in MMS mode
             // ================================================================
             dealii::Tensor<1, dim> F_cap;
             F_cap = 0;
+            if (!mms_mode)
             {
                 const double coeff = lambda / epsilon;
                 F_cap[0] = coeff * theta_old_q * grad_psi[0];
@@ -392,14 +402,26 @@ void assemble_ns_system(
             // ================================================================
             // Gravity [Eq. 19]: F_grav = (1 + r·H(θ^{k-1}/ε))g
             // NOTE: Not in Eq. 42e, optional extension
+            // Disabled in MMS mode (use_gravity already includes !mms_mode)
             // ================================================================
             dealii::Tensor<1, dim> F_grav;
             F_grav = 0;
             if (use_gravity)
             {
                 const double H_theta = MaterialProperties::heaviside(theta_old_q / epsilon);
-                const double gravity_factor = 1.0 + r_density * H_theta;
+                const double gravity_factor = r_density * H_theta;
                 F_grav = gravity_factor * g_mag * g_direction;
+            }
+
+            // ================================================================
+            // MMS source term: f = ∂U/∂t + (U·∇)U - ν∇²U + ∇p
+            // Only active in MMS mode
+            // ================================================================
+            dealii::Tensor<1, dim> F_mms;
+            F_mms = 0;
+            if (mms_mode)
+            {
+                F_mms = compute_ns_mms_source<dim>(x_q, current_time, nu_mms, L_y);
             }
 
             // ================================================================
@@ -424,6 +446,8 @@ void assemble_ns_system(
             // For V_i = (0, φ_uy):
             //   (M·∇)H · V_i = (M·∇)H_y * φ_uy
             //   (H·V_i) = H_y * φ_uy
+            //
+            // Disabled in MMS mode
             // ================================================================
 
             // Pre-compute Kelvin quantities using kelvin_force.h helpers
@@ -433,7 +457,8 @@ void assemble_ns_system(
             M_grad_H = 0;
             H_field = 0;
 
-            if (use_full_kelvin && phi_solution != nullptr)
+            const bool compute_kelvin = !mms_mode && use_full_kelvin && phi_solution != nullptr;
+            if (compute_kelvin)
             {
                 H_field = phi_gradients[q];  // H = ∇φ
                 const dealii::Tensor<2, dim>& hess_phi = phi_hessians[q];
@@ -454,6 +479,17 @@ void assemble_ns_system(
             // Track max forces for diagnostics
             max_F_cap = std::max(max_F_cap, F_cap.norm());
             max_F_grav = std::max(max_F_grav, F_grav.norm());
+
+
+
+            // DEBUG: Disable forces to isolate div U source
+            const bool DEBUG_NO_CAPILLARY = false;
+            const bool DEBUG_NO_GRAVITY = false;
+            const bool DEBUG_NO_KELVIN = false;
+
+            if (DEBUG_NO_CAPILLARY) F_cap = 0;
+            if (DEBUG_NO_GRAVITY) F_grav = 0;
+            // Kelvin is already controlled by compute_kelvin
 
             // ================================================================
             // Assemble local contributions
@@ -488,11 +524,15 @@ void assemble_ns_system(
                 rhs_ux += F_grav[0] * phi_ux_i;
                 rhs_uy += F_grav[1] * phi_uy_i;
 
+                // MMS source term
+                rhs_ux += F_mms[0] * phi_ux_i;
+                rhs_uy += F_mms[1] * phi_uy_i;
+
                 // ============================================================
                 // Kelvin cell term: μ₀ B_h^m(V, H, M) cell contribution
                 // Uses kelvin_force.h::cell_kernel
                 // ============================================================
-                if (use_full_kelvin && phi_solution != nullptr)
+                if (compute_kelvin)
                 {
                     double kelvin_ux, kelvin_uy;
                     KelvinForce::cell_kernel<dim>(
@@ -552,8 +592,8 @@ void assemble_ns_system(
                     local_uy_uy(i, j) += (U_dot_grad_phi_uy_j + 0.5 * div_U_old * phi_uy_j) * phi_uy_i * JxW;
 
                     // Cross blocks for full vector consistency (Eq. 42e)
-                    local_ux_uy(i, j) += (U_dot_grad_phi_uy_j + 0.5 * div_U_old * phi_uy_j) * phi_ux_i * JxW;
-                    local_uy_ux(i, j) += (U_dot_grad_phi_ux_j + 0.5 * div_U_old * phi_ux_j) * phi_uy_i * JxW;
+                    //local_ux_uy(i, j) += (U_dot_grad_phi_uy_j + 0.5 * div_U_old * phi_uy_j) * phi_ux_i * JxW;
+                    //local_uy_ux(i, j) += (U_dot_grad_phi_ux_j + 0.5 * div_U_old * phi_ux_j) * phi_uy_i * JxW;
 
                     // Grad-div stabilization (optional)
                     if (grad_div_gamma > 0.0)
@@ -640,8 +680,10 @@ void assemble_ns_system(
         //
         // Face contribution: -μ₀ (V·n⁻) [[H]] · {M}
         // where [[H]] = H⁻ - H⁺, {M} = ½(M⁻ + M⁺)
+        //
+        // Disabled in MMS mode
         // ====================================================================
-        if (use_full_kelvin)
+        if (!mms_mode && use_full_kelvin)
         {
             for (unsigned int face_no = 0; face_no < dealii::GeometryInfo<dim>::faces_per_cell; ++face_no)
             {
@@ -765,8 +807,8 @@ void assemble_ns_system(
     // ========================================================================
     ns_constraints.condense(ns_matrix, ns_rhs);
 
-    // Diagnostic output
-    if (params.output.verbose)
+    // Diagnostic output (disabled in MMS mode)
+    if (params.output.verbose && !mms_mode)
     {
         static unsigned int call_count = 0;
         if (call_count % 100 == 0)

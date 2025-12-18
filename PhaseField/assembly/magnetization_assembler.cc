@@ -176,11 +176,11 @@ void MagnetizationAssembler<dim>::assemble(
 
     // Parameters
     const double tau = dt;
-    const double T_relax = params_.magnetization.T_relax;
+    const double tau_M = params_.magnetization.tau_M;
 
     // Coefficients: (1/τ + 1/T) for LHS, 1/T and 1/τ for RHS
-    const double mass_coeff = (T_relax > 0.0) ? (1.0/tau + 1.0/T_relax) : 1.0/tau;
-    const double relax_coeff = (T_relax > 0.0) ? 1.0/T_relax : 0.0;
+    const double mass_coeff = (tau_M > 0.0) ? (1.0/tau + 1.0/tau_M) : 1.0/tau;
+    const double relax_coeff = (tau_M > 0.0) ? 1.0/tau_M : 0.0;
     const double old_coeff = 1.0/tau;
 
     // Initialize
@@ -436,8 +436,8 @@ void MagnetizationAssembler<dim>::assemble_rhs_only(
     std::vector<dealii::types::global_dof_index> local_dofs(dofs_per_cell);
 
     const double tau = dt;
-    const double T_relax = params_.magnetization.T_relax;
-    const double relax_coeff = (T_relax > 0.0) ? 1.0/T_relax : 0.0;
+const double tau_M = params_.magnetization.tau_M;
+    const double relax_coeff = (tau_M > 0.0) ? 1.0/tau_M : 0.0;
     const double old_coeff = 1.0/tau;
 
     rhs_x = 0;

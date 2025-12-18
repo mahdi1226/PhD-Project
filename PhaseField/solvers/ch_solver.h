@@ -1,10 +1,8 @@
 // ============================================================================
-// solvers/ch_solver.h - Cahn-Hilliard Linear Solver
+// solvers/ch_solver.h - Cahn-Hilliard Coupled System Solver
 //
-// Solves the coupled (θ, ψ) system using GMRES + ILU iterative solver.
-// Falls back to UMFPACK direct solver if iterative solver fails.
-//
-// The CH system is nonsymmetric due to convection terms, hence GMRES.
+// Solves the coupled (θ, ψ) system from CH equations.
+// Uses GMRES + ILU (nonsymmetric system) with direct fallback.
 //
 // Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
 // ============================================================================
@@ -17,24 +15,35 @@
 
 #include <vector>
 
+// Forward declaration
+struct LinearSolverParams;
+
 /**
- * @brief Solve the Cahn-Hilliard linear system
+ * @brief Solve the coupled Cahn-Hilliard system
  *
- * Solves the coupled system and extracts θ, ψ solutions.
- *
- * Solver: GMRES + ILU (with UMFPACK fallback)
- *
- * The system is nonsymmetric due to:
- *   - Convection terms in θ equation
- *   - Off-diagonal coupling between θ and ψ
- *
- * @param matrix           System matrix (already condensed)
- * @param rhs              Right-hand side (already condensed)
- * @param constraints      Constraints for distribute() after solve
- * @param theta_to_ch_map  Index mapping: θ DoF → coupled system index
- * @param psi_to_ch_map    Index mapping: ψ DoF → coupled system index
- * @param theta_solution   [OUT] θ solution vector
- * @param psi_solution     [OUT] ψ solution vector
+ * @param matrix           Coupled system matrix
+ * @param rhs              Right-hand side
+ * @param constraints      Combined constraints for coupled system
+ * @param theta_to_ch_map  DoF mapping: θ local → coupled global
+ * @param psi_to_ch_map    DoF mapping: ψ local → coupled global
+ * @param theta_solution   [OUT] Phase field θ
+ * @param psi_solution     [OUT] Chemical potential ψ
+ * @param params           Solver parameters
+ * @param log_output       Print solver statistics
+ */
+void solve_ch_system(
+    const dealii::SparseMatrix<double>& matrix,
+    const dealii::Vector<double>& rhs,
+    const dealii::AffineConstraints<double>& constraints,
+    const std::vector<dealii::types::global_dof_index>& theta_to_ch_map,
+    const std::vector<dealii::types::global_dof_index>& psi_to_ch_map,
+    dealii::Vector<double>& theta_solution,
+    dealii::Vector<double>& psi_solution,
+    const LinearSolverParams& params,
+    bool log_output = true);
+
+/**
+ * @brief Legacy interface (uses default parameters)
  */
 void solve_ch_system(
     const dealii::SparseMatrix<double>& matrix,

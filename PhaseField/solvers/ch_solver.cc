@@ -1,13 +1,14 @@
 // ============================================================================
 // solvers/ch_solver.cc - Cahn-Hilliard System Solver Implementation
 //
-// UPDATED: Uses GMRES + ILU iterative solver instead of UMFPACK.
+// Uses GMRES + ILU iterative solver for the nonsymmetric coupled system.
 // Falls back to direct solver if iterative solver fails.
 //
 // Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
 // ============================================================================
 
 #include "solvers/ch_solver.h"
+#include "utilities/parameters.h"
 
 #include <deal.II/lac/solver_gmres.h>
 #include <deal.II/lac/solver_control.h>
@@ -17,6 +18,9 @@
 #include <iostream>
 #include <chrono>
 
+// ============================================================================
+// Main solver with explicit parameters
+// ============================================================================
 void solve_ch_system(
     const dealii::SparseMatrix<double>& matrix,
     const dealii::Vector<double>& rhs,
@@ -24,18 +28,10 @@ void solve_ch_system(
     const std::vector<dealii::types::global_dof_index>& theta_to_ch_map,
     const std::vector<dealii::types::global_dof_index>& psi_to_ch_map,
     dealii::Vector<double>& theta_solution,
-    dealii::Vector<double>& psi_solution)
+    dealii::Vector<double>& psi_solution,
+    const LinearSolverParams& params,
+    bool log_output)
 {
-    // ----- Solver configuration -----
-    const bool use_iterative = true;
-    const double rel_tolerance = 1e-8;
-    const double abs_tolerance = 1e-12;
-    const unsigned int max_iterations = 2000;
-    const unsigned int gmres_restart = 50;
-    const bool fallback_to_direct = true;
-    const bool log_output = true;
-    // --------------------------------
-
     dealii::Vector<double> coupled_solution(rhs.size());
 
     const double rhs_norm = rhs.l2_norm();
@@ -59,14 +55,15 @@ void solve_ch_system(
     unsigned int iterations = 0;
     double final_residual = 0.0;
 
-    if (use_iterative)
+    if (params.use_iterative)
     {
-        const double tol = std::max(abs_tolerance, rel_tolerance * rhs_norm);
+        const double tol = std::max(params.abs_tolerance,
+                                    params.rel_tolerance * rhs_norm);
 
-        dealii::SolverControl solver_control(max_iterations, tol);
+        dealii::SolverControl solver_control(params.max_iterations, tol);
 
         typename dealii::SolverGMRES<dealii::Vector<double>>::AdditionalData gmres_data;
-        gmres_data.max_n_tmp_vectors = gmres_restart + 2;
+        gmres_data.max_n_tmp_vectors = params.gmres_restart + 2;
         dealii::SolverGMRES<dealii::Vector<double>> solver(solver_control, gmres_data);
 
         dealii::SparseILU<double> preconditioner;
@@ -87,12 +84,12 @@ void solve_ch_system(
             iterations = e.last_step;
             final_residual = e.last_residual;
 
-            if (fallback_to_direct)
+            if (params.fallback_to_direct)
                 std::cerr << "[CH Solver] Falling back to direct solver.\n";
         }
     }
 
-    if (!converged)
+    if (!converged && params.fallback_to_direct)
     {
         dealii::SparseDirectUMFPACK direct_solver;
         direct_solver.initialize(matrix);
@@ -107,13 +104,14 @@ void solve_ch_system(
 
     constraints.distribute(coupled_solution);
 
+    // Extract individual solutions
     for (unsigned int i = 0; i < theta_solution.size(); ++i)
         theta_solution[i] = coupled_solution[theta_to_ch_map[i]];
 
     for (unsigned int i = 0; i < psi_solution.size(); ++i)
         psi_solution[i] = coupled_solution[psi_to_ch_map[i]];
 
-    if (log_output)
+    if (log_output || params.verbose)
     {
         std::cout << "[CH Solver] Size: " << matrix.m()
                   << ", nnz: " << matrix.n_nonzero_elements()
@@ -121,4 +119,34 @@ void solve_ch_system(
                   << ", residual: " << final_residual
                   << ", time: " << solve_time << "s\n";
     }
+}
+
+// ============================================================================
+// Legacy interface with default parameters
+// ============================================================================
+void solve_ch_system(
+    const dealii::SparseMatrix<double>& matrix,
+    const dealii::Vector<double>& rhs,
+    const dealii::AffineConstraints<double>& constraints,
+    const std::vector<dealii::types::global_dof_index>& theta_to_ch_map,
+    const std::vector<dealii::types::global_dof_index>& psi_to_ch_map,
+    dealii::Vector<double>& theta_solution,
+    dealii::Vector<double>& psi_solution)
+{
+    // Default CH parameters (nonsymmetric: GMRES + ILU)
+    LinearSolverParams default_params;
+    default_params.type = LinearSolverParams::Type::GMRES;
+    default_params.preconditioner = LinearSolverParams::Preconditioner::ILU;
+    default_params.rel_tolerance = 1e-8;
+    default_params.abs_tolerance = 1e-12;
+    default_params.max_iterations = 2000;
+    default_params.gmres_restart = 50;
+    default_params.use_iterative = true;
+    default_params.fallback_to_direct = true;
+    default_params.verbose = false;
+
+    solve_ch_system(matrix, rhs, constraints,
+                    theta_to_ch_map, psi_to_ch_map,
+                    theta_solution, psi_solution,
+                    default_params, /*log_output=*/true);
 }

@@ -50,8 +50,19 @@ set(SOURCES
         setup/ns_setup.cc
 
         # Diagnostics
-        diagnostics/ch_mms.cc
         diagnostics/diagnostics.cc
+        diagnostics/ch_diagnostics.cc
+        diagnostics/poisson_diagnostics.cc
+        diagnostics/ns_diagnostics.cc
+
+
+
+        # Method of Manufactured Solution (MMS)
+        mms/ch_mms.cc
+        mms/poisson_mms.cc
+        mms/ns_mms.cc
+
+
 
         # Utilities
         utilities/parameters.cc

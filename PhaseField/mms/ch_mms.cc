@@ -3,7 +3,7 @@
 //
 // Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
 // ============================================================================
-#include "ch_mms.h"
+#include "mms/ch_mms.h"
 
 #include <deal.II/base/quadrature_lib.h>
 #include <deal.II/dofs/dof_handler.h>
@@ -57,11 +57,6 @@ CHMMSErrors compute_ch_mms_errors(
     CHExactPsi<dim> psi_exact;
     theta_exact.set_time(current_time);
     psi_exact.set_time(current_time);
-
-    // Compute θ errors using deal.II VectorTools
-    dealii::Vector<double> theta_diff(theta_dof_handler.n_dofs());
-    dealii::VectorTools::interpolate(theta_dof_handler, theta_exact, theta_diff);
-    theta_diff -= theta_solution;
 
     // L2 norm via integrate_difference
     dealii::Vector<float> theta_L2_per_cell(theta_dof_handler.get_triangulation().n_active_cells());
