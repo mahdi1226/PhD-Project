@@ -125,7 +125,7 @@ struct Parameters
     struct Output
     {
         std::string folder = "../Results";
-        unsigned int frequency = 100;
+        unsigned int frequency = 20;
         bool verbose = false;
     } output;
 

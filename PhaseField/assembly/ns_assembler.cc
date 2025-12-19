@@ -404,7 +404,7 @@ void assemble_ns_system(
             if (use_gravity)
             {
                 const double H_theta = heaviside(theta_old_q / epsilon);
-                const double gravity_factor = r * H_theta;
+                const double gravity_factor = 1.0 + r * H_theta;    // ρ_θ = 1 + r H(θ/ε)
                 F_grav = gravity_factor * g_mag * g_direction;
             }
 
