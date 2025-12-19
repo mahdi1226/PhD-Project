@@ -95,7 +95,7 @@ void assemble_ch_system(
                                (ux_solution.l2_norm() + uy_solution.l2_norm() > 1e-14);
 
     const bool mms_mode = params.enable_mms;
-    CHSourceTheta<dim> source_theta(gamma);
+    CHSourceTheta<dim> source_theta(mobility);
     CHSourcePsi<dim> source_psi(epsilon, dt);
     if (mms_mode)
     {
@@ -168,7 +168,7 @@ void assemble_ch_system(
 
                     // Eq 42a LHS
                     local_matrix_tt(i, j) += (1.0 / dt) * theta_j * Lambda_i * JxW;
-                    local_matrix_tp(i, j) -= gamma * (grad_psi_j * grad_Lambda_i) * JxW;
+                    local_matrix_tp(i, j) -= mobility * (grad_psi_j * grad_Lambda_i) * JxW;
 
                     // Eq 42b LHS
                     local_matrix_pp(i, j) += psi_j * Upsilon_i * JxW;
