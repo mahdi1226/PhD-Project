@@ -100,7 +100,7 @@ void PhaseFieldProblem<dim>::refine_mesh()
 
     // Poisson (only if magnetic enabled)
     std::unique_ptr<dealii::SolutionTransfer<dim, dealii::Vector<double>>> phi_transfer;
-    if (params_.magnetic.enabled)
+    if (params_.enable_magnetic)
     {
         phi_transfer = std::make_unique<dealii::SolutionTransfer<dim, dealii::Vector<double>>>(phi_dof_handler_);
     }
@@ -110,7 +110,7 @@ void PhaseFieldProblem<dim>::refine_mesh()
     std::unique_ptr<dealii::SolutionTransfer<dim, dealii::Vector<double>>> my_transfer;
     std::unique_ptr<dealii::SolutionTransfer<dim, dealii::Vector<double>>> mx_old_transfer;
     std::unique_ptr<dealii::SolutionTransfer<dim, dealii::Vector<double>>> my_old_transfer;
-    if (params_.magnetic.enabled && params_.magnetic.use_dg_transport)
+    if (params_.enable_magnetic && params_.use_dg_transport)
     {
         mx_transfer = std::make_unique<dealii::SolutionTransfer<dim, dealii::Vector<double>>>(mx_dof_handler_);
         my_transfer = std::make_unique<dealii::SolutionTransfer<dim, dealii::Vector<double>>>(my_dof_handler_);
@@ -124,7 +124,7 @@ void PhaseFieldProblem<dim>::refine_mesh()
     std::unique_ptr<dealii::SolutionTransfer<dim, dealii::Vector<double>>> ux_old_transfer;
     std::unique_ptr<dealii::SolutionTransfer<dim, dealii::Vector<double>>> uy_old_transfer;
     std::unique_ptr<dealii::SolutionTransfer<dim, dealii::Vector<double>>> p_transfer;
-    if (params_.ns.enabled)
+    if (params_.enable_ns)
     {
         ux_transfer = std::make_unique<dealii::SolutionTransfer<dim, dealii::Vector<double>>>(ux_dof_handler_);
         uy_transfer = std::make_unique<dealii::SolutionTransfer<dim, dealii::Vector<double>>>(uy_dof_handler_);
@@ -144,13 +144,13 @@ void PhaseFieldProblem<dim>::refine_mesh()
     psi_transfer.prepare_for_coarsening_and_refinement(psi_solution_);
 
     // Poisson (if magnetic)
-    if (params_.magnetic.enabled)
+    if (params_.enable_magnetic)
     {
         phi_transfer->prepare_for_coarsening_and_refinement(phi_solution_);
     }
 
     // Magnetization (if magnetic + DG)
-    if (params_.magnetic.enabled && params_.magnetic.use_dg_transport)
+    if (params_.enable_magnetic && params_.use_dg_transport)
     {
         mx_transfer->prepare_for_coarsening_and_refinement(mx_solution_);
         my_transfer->prepare_for_coarsening_and_refinement(my_solution_);
@@ -159,7 +159,7 @@ void PhaseFieldProblem<dim>::refine_mesh()
     }
 
     // NS (if enabled)
-    if (params_.ns.enabled)
+    if (params_.enable_ns)
     {
         ux_transfer->prepare_for_coarsening_and_refinement(ux_solution_);
         uy_transfer->prepare_for_coarsening_and_refinement(uy_solution_);
@@ -186,13 +186,13 @@ void PhaseFieldProblem<dim>::refine_mesh()
 
     // Reinitialize sparsity patterns and matrices
     setup_ch_system();
-    if (params_.magnetic.enabled)
+    if (params_.enable_magnetic)
     {
         setup_poisson_system();
-        if (params_.magnetic.use_dg_transport)
+        if (params_.use_dg_transport )
             setup_magnetization_system();
     }
-    if (params_.ns.enabled)
+    if (params_.enable_ns)
         setup_ns_system();
 
     // =========================================================================
@@ -219,7 +219,7 @@ void PhaseFieldProblem<dim>::refine_mesh()
     }
 
     // φ (if magnetic)
-    if (params_.magnetic.enabled)
+    if (params_.enable_magnetic)
     {
         dealii::Vector<double> tmp(phi_dof_handler_.n_dofs());
         phi_transfer->interpolate(tmp);
@@ -227,7 +227,7 @@ void PhaseFieldProblem<dim>::refine_mesh()
     }
 
     // M_x, M_y (if magnetic + DG)
-    if (params_.magnetic.enabled && params_.magnetic.use_dg_transport)
+    if (params_.enable_magnetic && params_.use_dg_transport )
     {
         {
             dealii::Vector<double> tmp(mx_dof_handler_.n_dofs());
@@ -252,7 +252,7 @@ void PhaseFieldProblem<dim>::refine_mesh()
     }
 
     // u_x, u_y, p (if NS)
-    if (params_.ns.enabled)
+    if (params_.enable_ns)
     {
         {
             dealii::Vector<double> tmp(ux_dof_handler_.n_dofs());
@@ -288,10 +288,10 @@ void PhaseFieldProblem<dim>::refine_mesh()
     theta_constraints_.distribute(theta_old_solution_);
     psi_constraints_.distribute(psi_solution_);
 
-    if (params_.magnetic.enabled)
+    if (params_.enable_magnetic)
         phi_constraints_.distribute(phi_solution_);
 
-    if (params_.ns.enabled)
+    if (params_.enable_ns)
     {
         ux_constraints_.distribute(ux_solution_);
         ux_constraints_.distribute(ux_old_solution_);
@@ -303,7 +303,7 @@ void PhaseFieldProblem<dim>::refine_mesh()
     if (params_.output.verbose)
     {
         std::cout << "[AMR] New DoFs: theta=" << theta_dof_handler_.n_dofs();
-        if (params_.ns.enabled)
+        if (params_.enable_ns)
             std::cout << ", ux=" << ux_dof_handler_.n_dofs()
                       << ", p=" << p_dof_handler_.n_dofs();
         std::cout << "\n";
@@ -312,7 +312,7 @@ void PhaseFieldProblem<dim>::refine_mesh()
     // =========================================================================
     // Step 9: Rebuild ns_solution_ and restore divergence-free velocity
     // =========================================================================
-    if (params_.ns.enabled)
+    if (params_.enable_ns)
     {
         const unsigned int n_ns = ux_dof_handler_.n_dofs() +
             uy_dof_handler_.n_dofs() +

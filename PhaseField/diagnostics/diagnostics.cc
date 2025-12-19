@@ -8,6 +8,7 @@
 #include "physics/material_properties.h"
 #include "physics/kelvin_force.h"
 #include "diagnostics/ch_diagnostics.h"
+#include "physics/material_properties.h"
 
 #include <deal.II/base/quadrature_lib.h>
 #include <deal.II/fe/fe_values.h>
@@ -249,15 +250,11 @@ void compute_force_magnitudes(
     double F_mag_sq = 0.0;
     double F_grav_sq = 0.0;
 
-    const double lambda = params.ns.lambda;
-    const double epsilon = params.ch.epsilon;
-    const double chi_0 = params.magnetization.chi_0;
-    const double mu_0 = params.ns.mu_0;
-    const double r = params.ns.r;
+
 
     dealii::Tensor<1, dim> g;
     g[0] = 0.0;
-    g[1] = -params.gravity.magnitude;
+    g[1] = -gravity_dimensionless;
 
     (void)r;
 
@@ -299,7 +296,7 @@ void compute_force_magnitudes(
             }
 
             // Gravity/buoyancy
-            if (params.gravity.enabled)
+            if (params.enable_gravity)
             {
                 const double density_factor = 1.0 + r * H_val;
                 dealii::Tensor<1, dim> F_grav;
@@ -342,7 +339,6 @@ DiagnosticData compute_all_diagnostics(
     data.step = step;
     data.time = time;
 
-    const double epsilon = params.ch.epsilon;
     const unsigned int degree = params.fe.degree_velocity;
 
     dealii::QGauss<dim> quadrature(degree + 1);
@@ -368,14 +364,11 @@ DiagnosticData compute_all_diagnostics(
     double F_grav_sq = 0.0;
     double div_u_sq = 0.0;
 
-    const double lambda = params.ns.lambda;
-    const double chi_0 = params.magnetization.chi_0;
-    const double mu_0 = params.ns.mu_0;
-    const double r = params.ns.r;
+
 
     dealii::Tensor<1, dim> g;
     g[0] = 0.0;
-    g[1] = -params.gravity.magnitude;
+    g[1] = g[1] = -gravity_dimensionless;
 
     const bool compute_ns = (ux_dof_handler != nullptr && ux_solution != nullptr);
     const bool compute_mag = (phi_dof_handler != nullptr && phi_solution != nullptr);
@@ -433,7 +426,7 @@ DiagnosticData compute_all_diagnostics(
             }
 
             // Gravity force
-            if (params.gravity.enabled)
+            if (params.enable_gravity)
             {
                 const double density_factor = 1.0 + r * H_val;
                 dealii::Tensor<1, dim> F_grav;

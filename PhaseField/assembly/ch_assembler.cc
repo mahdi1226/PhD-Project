@@ -16,6 +16,7 @@
 #include "ch_assembler.h"
 #include "utilities/parameters.h"
 #include "mms/ch_mms.h"
+#include "physics/material_properties.h"
 
 #include <deal.II/base/quadrature_lib.h>
 #include <deal.II/fe/fe_values.h>
@@ -86,15 +87,14 @@ void assemble_ch_system(
     std::vector<double> ux_values(n_q_points);
     std::vector<double> uy_values(n_q_points);
 
-    const double epsilon = params.ch.epsilon;
-    const double gamma = params.ch.gamma;
+
     const double eta = epsilon;  // η = ε per paper
 
     const bool have_velocity = (ux_solution.size() > 0) &&
                                (uy_solution.size() > 0) &&
                                (ux_solution.l2_norm() + uy_solution.l2_norm() > 1e-14);
 
-    const bool mms_mode = params.mms.enabled;
+    const bool mms_mode = params.enable_mms;
     CHSourceTheta<dim> source_theta(gamma);
     CHSourcePsi<dim> source_psi(epsilon, dt);
     if (mms_mode)

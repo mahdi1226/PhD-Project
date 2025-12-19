@@ -29,6 +29,7 @@
 #include "mms/ch_mms.h"
 #include "mms/poisson_mms.h"
 #include "mms/ns_mms.h"
+#include "physics/material_properties.h"
 
 
 #include <deal.II/numerics/data_out.h>
@@ -50,12 +51,12 @@
 template <int dim>
 void PhaseFieldProblem<dim>::run()
 {
-    const bool mms_mode = params_.mms.enabled;
+    const bool mms_mode = params_.enable_mms;
 
     std::cout << "============================================================\n";
     if (mms_mode)
         std::cout << "  Ferrofluid Solver - MMS VERIFICATION MODE\n";
-    else if (params_.ns.enabled)
+    else if (params_.enable_ns)
         std::cout << "  Ferrofluid Solver (CH + Poisson + NS)\n";
     else
         std::cout << "  Cahn-Hilliard Solver (Standalone Test)\n";
@@ -78,13 +79,13 @@ void PhaseFieldProblem<dim>::run()
     setup_dof_handlers();
     setup_constraints();
     setup_ch_system();
-    if (params_.magnetic.enabled)
+    if (params_.enable_magnetic)
     {
         setup_poisson_system();
-        if (params_.magnetic.use_dg_transport)
+        if (params_.use_dg_transport)
             setup_magnetization_system();
     }
-    if (params_.ns.enabled)
+    if (params_.enable_ns)
         setup_ns_system();
     initialize_solutions();
 
@@ -93,37 +94,36 @@ void PhaseFieldProblem<dim>::run()
 
     // Print parameters
     std::cout << "\n--- Parameters ---\n";
-    std::cout << "  epsilon = " << params_.ch.epsilon << "\n";
-    std::cout << "  gamma   = " << params_.ch.gamma << "\n";
+    std::cout << "  epsilon = " << epsilon << "\n";
+    std::cout << "  gamma   = " << gamma << "\n";
     std::cout << "  dt      = " << params_.time.dt << "\n";
     std::cout << "  t_final = " << params_.time.t_final << "\n";
-    if (params_.magnetic.enabled)
+    if (params_.enable_magnetic)
     {
         std::cout << "  Magnetic: ENABLED\n";
-        std::cout << "  chi_0 (susceptibility) = " << params_.magnetization.chi_0 << "\n";
-        if (params_.magnetic.use_dg_transport)
-            std::cout << "  DG transport: ENABLED (tau_M = " << params_.magnetization.tau_M << ")\n";
+        std::cout << "  chi_0 (susceptibility) = " << chi_0 << "\n";
+        if (params_.use_dg_transport)
+            std::cout << "  DG transport: ENABLED (tau_M = " << tau_M << ")\n";
         else
             std::cout << "  DG transport: disabled (quasi-equilibrium M = chi*H)\n";
     }
-    if (params_.ns.enabled)
+    if (params_.enable_ns)
     {
         std::cout << "  Navier-Stokes: ENABLED\n";
-        std::cout << "  nu_water = " << params_.ns.nu_water << "\n";
-        std::cout << "  nu_ferro = " << params_.ns.nu_ferro << "\n";
-        if (params_.gravity.enabled)
-            std::cout << "  Gravity: ENABLED (g = " << params_.gravity.magnitude << ")\n";
-    }
+        std::cout << "  nu_water = " << nu_water << "\n";
+        std::cout << "  nu_ferro = " << nu_ferro << "\n";
+        if (params_.enable_gravity)
+std::cout << "  Gravity: ENABLED (g = " << gravity_dimensionless << ")\n";    }
     if (mms_mode)
     {
         std::cout << "  MMS mode: ENABLED\n";
-        std::cout << "  t_init  = " << params_.mms.t_init << "\n";
+        std::cout << "  t_init  = " << params_.mms_t_init << "\n";
     }
 
     // ========================================================================
     // Initial field solve (to populate phi for output)
     // ========================================================================
-    if (params_.magnetic.enabled)
+    if (params_.enable_magnetic)
         solve_poisson();
     output_results(0);
 
@@ -142,7 +142,7 @@ void PhaseFieldProblem<dim>::run()
     unsigned int output_counter = 0;
 
     // Checkpoint for mms
-    if (params_.mms.enabled)
+    if (params_.enable_mms)
     {
         auto ic_errors = compute_ch_mms_errors<dim>(
             theta_dof_handler_,
@@ -154,7 +154,7 @@ void PhaseFieldProblem<dim>::run()
             << ", ψ L2 = " << ic_errors.psi_L2 << "\n";
 
         // NS MMS IC check
-        if (params_.ns.enabled)
+        if (params_.enable_ns)
         {
             const double L_y = params_.domain.y_max - params_.domain.y_min;
             auto ns_errors = compute_ns_mms_error<dim>(
@@ -194,7 +194,7 @@ void PhaseFieldProblem<dim>::run()
             // Compute diagnostics
             const double mass = compute_mass();
             const double E_ch = compute_ch_energy();
-            const double E_kin = params_.ns.enabled ? compute_kinetic_energy() : 0.0;
+            const double E_kin = params_.enable_ns ? compute_kinetic_energy() : 0.0;
 
             std::cout << std::setw(8) << timestep_number_
                 << std::setw(12) << std::fixed << std::setprecision(4) << time_
@@ -217,7 +217,7 @@ void PhaseFieldProblem<dim>::run()
 
     std::cout << "[Info] Output saved to: " << params_.output.folder << "\n";
     // NS MMS errors
-    if (params_.ns.enabled)
+    if (params_.enable_ns)
     {
         const double L_y = params_.domain.y_max - params_.domain.y_min;
         auto ns_errors = compute_ns_mms_error<dim>(
@@ -245,13 +245,13 @@ void PhaseFieldProblem<dim>::do_time_step(double dt)
     // Save old solutions BEFORE updating (for lagging)
     theta_old_solution_ = theta_solution_;
 
-    if (params_.ns.enabled)
+    if (params_.enable_ns)
     {
         ux_old_solution_ = ux_solution_;
         uy_old_solution_ = uy_solution_;
     }
 
-    if (params_.magnetic.enabled && params_.magnetic.use_dg_transport)
+    if (params_.enable_magnetic && params_.use_dg_transport)
     {
         mx_old_solution_ = mx_solution_;
         my_old_solution_ = my_solution_;
@@ -259,7 +259,7 @@ void PhaseFieldProblem<dim>::do_time_step(double dt)
 
     const double time_new = time_ + dt;
 
-    if (params_.mms.enabled)
+    if (params_.enable_mms)
         update_mms_boundary_constraints(time_new);
 
     // Step 1: Cahn-Hilliard
@@ -267,17 +267,17 @@ void PhaseFieldProblem<dim>::do_time_step(double dt)
 
     // CH diagnostics
     CHDiagnosticData ch_data = compute_ch_diagnostics<dim>(
-        theta_dof_handler_, theta_solution_, params_.ch.epsilon,
+        theta_dof_handler_, theta_solution_, epsilon,
         timestep_number_, time_ + dt, dt, ch_energy_prev_);
     print_ch_diagnostics(ch_data, params_.output.verbose);
     ch_energy_prev_ = ch_data.energy;
 
     // Step 2: Poisson
-    if (params_.magnetic.enabled)
+    if (params_.enable_magnetic)
         solve_poisson();
 
     // Poisson diagnostics
-    if (params_.magnetic.enabled)
+    if (params_.enable_magnetic)
     {
         auto poisson_diag = compute_poisson_diagnostics<dim>(
             phi_dof_handler_, phi_solution_,
@@ -286,7 +286,7 @@ void PhaseFieldProblem<dim>::do_time_step(double dt)
         poisson_diag.print(timestep_number_, time_);
     }
 
-    if (params_.mms.enabled && params_.magnetic.enabled)
+    if (params_.enable_mms && params_.enable_magnetic)
     {
         auto poisson_error = compute_poisson_mms_error<dim>(
             phi_dof_handler_, phi_solution_, time_,
@@ -295,15 +295,15 @@ void PhaseFieldProblem<dim>::do_time_step(double dt)
     }
 
     // Step 3: Magnetization (DG transport)
-    if (params_.magnetic.enabled && params_.magnetic.use_dg_transport)
+    if (params_.enable_magnetic && params_.use_dg_transport)
         solve_magnetization();
 
     // Step 4: Navier-Stokes (uses theta^{k-1}!)
-    if (params_.ns.enabled)
+    if (params_.enable_ns)
         solve_ns();
 
     // Compute NS MMS errors
-    if (params_.mms.enabled && params_.ns.enabled)
+    if (params_.enable_mms && params_.enable_ns)
     {
         const double L_y = params_.domain.y_max - params_.domain.y_min;
         auto ns_error = compute_ns_mms_error<dim>(
@@ -313,7 +313,7 @@ void PhaseFieldProblem<dim>::do_time_step(double dt)
         ns_error.print(params_.mesh.initial_refinement, get_min_h());
     }
 
-    if (params_.ns.enabled)
+    if (params_.enable_ns)
     {
         auto ns_diag = compute_ns_diagnostics<dim>(
             ux_dof_handler_, uy_dof_handler_, p_dof_handler_,
@@ -333,8 +333,8 @@ void PhaseFieldProblem<dim>::do_time_step(double dt)
 template <int dim>
 void PhaseFieldProblem<dim>::solve_ch()
 {
-    const dealii::Vector<double>& ux_for_ch = params_.ns.enabled ? ux_solution_ : ux_old_solution_;
-    const dealii::Vector<double>& uy_for_ch = params_.ns.enabled ? uy_solution_ : uy_old_solution_;
+    const dealii::Vector<double>& ux_for_ch = params_.enable_ns ? ux_solution_ : ux_old_solution_;
+    const dealii::Vector<double>& uy_for_ch = params_.enable_ns ? uy_solution_ : uy_old_solution_;
 
     ch_matrix_ = 0;
     ch_rhs_ = 0;
@@ -387,7 +387,7 @@ void PhaseFieldProblem<dim>::solve_poisson()
     phi_matrix_ = 0;
     phi_rhs_ = 0;
 
-    if (params_.mms.enabled)
+    if (params_.enable_mms)
     {
         // MMS mode: use manufactured source h_a = μ(θ)∇φ_exact
         assemble_poisson_system_mms_quasi_equilibrium<dim>(
@@ -438,17 +438,17 @@ template <int dim>
 void PhaseFieldProblem<dim>::solve_magnetization()
 {
     // If not using stored magnetization, NS assembler computes χH directly
-    if (!params_.magnetic.use_dg_transport)
+    if (!params_.use_dg_transport)
         return;
 
     // Warn once that this is quasi-equilibrium, not full DG transport
-    if (params_.magnetization.tau_M > 0.0)
+    if (tau_M > 0.0)
     {
         static bool warned = false;
         if (!warned)
         {
             std::cerr << "[Magnetization] WARNING: tau_M = "
-                << params_.magnetization.tau_M << " > 0, but full DG transport\n"
+                << tau_M << " > 0, but full DG transport\n"
                 << "                (Eq. 42c) is not implemented. "
                 << "Using quasi-equilibrium M = χH.\n";
             warned = true;
@@ -486,8 +486,8 @@ void PhaseFieldProblem<dim>::solve_magnetization()
         for (unsigned int q = 0; q < n_q_points; ++q)
         {
             const double theta = theta_values[q];
-            const double chi = compute_susceptibility(theta, params_.ch.epsilon,
-                                                      params_.magnetization.chi_0);
+            const double chi = compute_susceptibility(theta, epsilon,
+                                                      chi_0);
             const dealii::Tensor<1, dim>& H = phi_gradients[q];
 
             mx_avg += chi * H[0] * phi_fe_values.JxW(q);
@@ -522,15 +522,15 @@ void PhaseFieldProblem<dim>::solve_ns()
         p_dof_handler_,
         theta_dof_handler_,
         psi_dof_handler_,
-        params_.magnetic.enabled ? &phi_dof_handler_ : nullptr,
-        params_.magnetic.enabled && params_.magnetic.use_dg_transport ? &mx_dof_handler_ : nullptr,
+        params_.enable_magnetic ? &phi_dof_handler_ : nullptr,
+        params_.enable_magnetic && params_.use_dg_transport ? &mx_dof_handler_ : nullptr,
         ux_old_solution_,
         uy_old_solution_,
         theta_old_solution_,
         psi_solution_,
-        params_.magnetic.enabled ? &phi_solution_ : nullptr,
-        params_.magnetic.enabled && params_.magnetic.use_dg_transport ? &mx_solution_ : nullptr,
-        params_.magnetic.enabled && params_.magnetic.use_dg_transport ? &my_solution_ : nullptr,
+        params_.enable_magnetic ? &phi_solution_ : nullptr,
+        params_.enable_magnetic && params_.use_dg_transport ? &mx_solution_ : nullptr,
+        params_.enable_magnetic && params_.use_dg_transport ? &my_solution_ : nullptr,
         params_,
         params_.time.dt,
         time_,
@@ -687,8 +687,7 @@ double PhaseFieldProblem<dim>::compute_mass() const
 template <int dim>
 double PhaseFieldProblem<dim>::compute_ch_energy() const
 {
-    const double gamma = params_.ch.gamma;
-    const double epsilon = params_.ch.epsilon;
+
 
     dealii::QGauss<dim> quadrature(fe_Q2_.degree + 1);
     dealii::FEValues<dim> fe_values(fe_Q2_, quadrature,
@@ -726,7 +725,7 @@ double PhaseFieldProblem<dim>::compute_ch_energy() const
 template <int dim>
 double PhaseFieldProblem<dim>::compute_kinetic_energy() const
 {
-    if (!params_.ns.enabled)
+    if (!params_.enable_ns)
         return 0.0;
 
     dealii::QGauss<dim> quadrature(fe_Q2_.degree + 1);
@@ -767,10 +766,10 @@ double PhaseFieldProblem<dim>::compute_kinetic_energy() const
 template <int dim>
 double PhaseFieldProblem<dim>::compute_magnetic_energy() const
 {
-    if (!params_.magnetic.enabled)
+    if (!params_.enable_magnetic)
         return 0.0;
 
-    const double mu_0 = params_.ns.mu_0;
+
 
     dealii::QGauss<dim> quadrature(fe_Q2_.degree + 1);
     dealii::FEValues<dim> fe_values(fe_Q2_, quadrature,
@@ -825,7 +824,7 @@ void PhaseFieldProblem<dim>::output_results(unsigned int step) const
     }
 
     // Phi (if magnetic)
-    if (params_.magnetic.enabled)
+    if (params_.enable_magnetic)
     {
         dealii::DataOut<dim> data_out;
         data_out.attach_dof_handler(phi_dof_handler_);
@@ -837,7 +836,7 @@ void PhaseFieldProblem<dim>::output_results(unsigned int step) const
         data_out.write_vtk(output);
 
         // Mx, My (if DG transport)
-        if (params_.magnetic.use_dg_transport)
+        if (params_.use_dg_transport)
         {
             {
                 dealii::DataOut<dim> data_out_mx;
@@ -865,7 +864,7 @@ void PhaseFieldProblem<dim>::output_results(unsigned int step) const
     }
 
     // Velocity and pressure (if NS)
-    if (params_.ns.enabled)
+    if (params_.enable_ns)
     {
         {
             dealii::DataOut<dim> data_out;

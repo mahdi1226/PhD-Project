@@ -12,6 +12,7 @@
 // ============================================================================
 
 #include "assembly/poisson_assembler.h"
+#include "physics/material_properties.h"
 
 #include <deal.II/base/quadrature_lib.h>
 #include <deal.II/base/exceptions.h>
@@ -220,8 +221,6 @@ void assemble_poisson_system_quasi_equilibrium(
 
     std::vector<double> theta_values(n_q_points);
 
-    const double epsilon = params.ch.epsilon;
-    const double chi_0 = params.magnetization.chi_0;
 
     // Debug tracking
     double max_h_a_magnitude = 0.0;
