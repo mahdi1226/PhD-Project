@@ -393,7 +393,7 @@ void PhaseFieldProblem<dim>::solve_poisson()
         assemble_poisson_system_mms_quasi_equilibrium<dim>(
             phi_dof_handler_,
             theta_dof_handler_,
-            theta_solution_,
+            theta_old_solution_,
             params_,
             time_,
             params_.domain.y_max - params_.domain.y_min,
@@ -407,7 +407,7 @@ void PhaseFieldProblem<dim>::solve_poisson()
         assemble_poisson_system<dim>(
             phi_dof_handler_,
             theta_dof_handler_,
-            theta_solution_,
+            theta_old_solution_,
             params_,
             time_,
             phi_matrix_,
