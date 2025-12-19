@@ -47,9 +47,9 @@ dealii::SymmetricTensor<2, dim> compute_symmetric_gradient(
     const dealii::Tensor<1, dim>& grad_uy)
 {
     dealii::SymmetricTensor<2, dim> T;
-    T[0][0] = 2.0 * grad_ux[0];                    // 2 * ∂u_x/∂x
-    T[1][1] = 2.0 * grad_uy[1];                    // 2 * ∂u_y/∂y
-    T[0][1] = grad_ux[1] + grad_uy[0];             // ∂u_x/∂y + ∂u_y/∂x
+    T[0][0] = 2.0 * grad_ux[0]; // 2 * ∂u_x/∂x
+    T[1][1] = 2.0 * grad_uy[1]; // 2 * ∂u_y/∂y
+    T[0][1] = grad_ux[1] + grad_uy[0]; // ∂u_x/∂y + ∂u_y/∂x
     return T;
 }
 
@@ -59,9 +59,9 @@ dealii::SymmetricTensor<2, dim> compute_T_test_x(
     const dealii::Tensor<1, dim>& grad_phi_ux)
 {
     dealii::SymmetricTensor<2, dim> T;
-    T[0][0] = 2.0 * grad_phi_ux[0];     // 2 * ∂φ_ux/∂x
-    T[1][1] = 0.0;                       // no y-component
-    T[0][1] = grad_phi_ux[1];           // ∂φ_ux/∂y + 0
+    T[0][0] = 2.0 * grad_phi_ux[0]; // 2 * ∂φ_ux/∂x
+    T[1][1] = 0.0; // no y-component
+    T[0][1] = grad_phi_ux[1]; // ∂φ_ux/∂y + 0
     return T;
 }
 
@@ -71,9 +71,9 @@ dealii::SymmetricTensor<2, dim> compute_T_test_y(
     const dealii::Tensor<1, dim>& grad_phi_uy)
 {
     dealii::SymmetricTensor<2, dim> T;
-    T[0][0] = 0.0;                       // no x-component
-    T[1][1] = 2.0 * grad_phi_uy[1];     // 2 * ∂φ_uy/∂y
-    T[0][1] = grad_phi_uy[0];           // 0 + ∂φ_uy/∂x
+    T[0][0] = 0.0; // no x-component
+    T[1][1] = 2.0 * grad_phi_uy[1]; // 2 * ∂φ_uy/∂y
+    T[0][1] = grad_phi_uy[0]; // 0 + ∂φ_uy/∂x
     return T;
 }
 
@@ -122,22 +122,22 @@ void assemble_ns_system(
 
     // FEValues for velocity (Q2)
     dealii::FEValues<dim> ux_fe_values(fe_Q2, quadrature,
-        dealii::update_values | dealii::update_gradients |
-        dealii::update_quadrature_points | dealii::update_JxW_values);
+                                       dealii::update_values | dealii::update_gradients |
+                                       dealii::update_quadrature_points | dealii::update_JxW_values);
     dealii::FEValues<dim> uy_fe_values(fe_Q2, quadrature,
-        dealii::update_values | dealii::update_gradients);
+                                       dealii::update_values | dealii::update_gradients);
 
     // FEValues for pressure (Q1)
     dealii::FEValues<dim> p_fe_values(fe_Q1, quadrature,
-        dealii::update_values);
+                                      dealii::update_values);
 
     // FEValues for θ (for lagged θ^{k-1})
     dealii::FEValues<dim> theta_fe_values(theta_dof_handler.get_fe(), quadrature,
-        dealii::update_values);
+                                          dealii::update_values);
 
     // FEValues for ψ (for ∇ψ^k in capillary)
     dealii::FEValues<dim> psi_fe_values(psi_dof_handler.get_fe(), quadrature,
-        dealii::update_gradients);
+                                        dealii::update_gradients);
 
     // FEValues for φ (for H^k = ∇φ^k)
     std::unique_ptr<dealii::FEValues<dim>> phi_fe_values;
@@ -152,9 +152,9 @@ void assemble_ns_system(
     // Need update_gradients for div(M) in Kelvin skew form
     std::unique_ptr<dealii::FEValues<dim>> M_fe_values;
     const bool use_full_kelvin = params.enable_magnetic &&
-                                  M_dof_handler != nullptr &&
-                                  mx_solution != nullptr &&
-                                  my_solution != nullptr;
+        M_dof_handler != nullptr &&
+        mx_solution != nullptr &&
+        my_solution != nullptr;
     if (use_full_kelvin)
     {
         M_fe_values = std::make_unique<dealii::FEValues<dim>>(
@@ -164,9 +164,10 @@ void assemble_ns_system(
 
     // FEFaceValues for B_h^m face terms (velocity)
     dealii::FEFaceValues<dim> ux_fe_face_values(fe_Q2, face_quadrature,
-        dealii::update_values | dealii::update_normal_vectors | dealii::update_JxW_values);
+                                                dealii::update_values | dealii::update_normal_vectors |
+                                                dealii::update_JxW_values);
     dealii::FEFaceValues<dim> uy_fe_face_values(fe_Q2, face_quadrature,
-        dealii::update_values);
+                                                dealii::update_values);
 
     // FEFaceValues for φ (H traces)
     std::unique_ptr<dealii::FEFaceValues<dim>> phi_fe_face_values_here;
@@ -217,13 +218,13 @@ void assemble_ns_system(
     std::vector<double> uy_old_values(n_q_points);
     std::vector<dealii::Tensor<1, dim>> ux_old_gradients(n_q_points);
     std::vector<dealii::Tensor<1, dim>> uy_old_gradients(n_q_points);
-    std::vector<double> theta_old_values(n_q_points);  // LAGGED θ^{k-1}
+    std::vector<double> theta_old_values(n_q_points); // LAGGED θ^{k-1}
     std::vector<dealii::Tensor<1, dim>> psi_gradients(n_q_points);
     std::vector<dealii::Tensor<1, dim>> phi_gradients(n_q_points);
     std::vector<dealii::Tensor<2, dim>> phi_hessians(n_q_points);
     std::vector<double> mx_values(n_q_points);
     std::vector<double> my_values(n_q_points);
-    std::vector<dealii::Tensor<1, dim>> mx_gradients(n_q_points);  // For div(M) = ∂Mx/∂x + ∂My/∂y
+    std::vector<dealii::Tensor<1, dim>> mx_gradients(n_q_points); // For div(M) = ∂Mx/∂x + ∂My/∂y
     std::vector<dealii::Tensor<1, dim>> my_gradients(n_q_points);
 
     // Face values for B_h^m
@@ -235,7 +236,7 @@ void assemble_ns_system(
     // MMS parameters
     const bool mms_mode = params.enable_mms;
     const double L_y = params.domain.y_max - params.domain.y_min;
-    const double nu_mms = nu_water;  // Constant viscosity for MMS
+    const double nu_mms = nu_water; // Constant viscosity for MMS
 
     // ========================================================================
     // Gravity (optional extension, NOT in paper Eq. 42e)
@@ -253,7 +254,7 @@ void assemble_ns_system(
         if (!gravity_warned)
         {
             std::cout << "[NS] WARNING: Gravity is ENABLED. This is NOT part of "
-                      << "paper Eq. 42e and breaks the discrete energy law.\n";
+                << "paper Eq. 42e and breaks the discrete energy law.\n";
             gravity_warned = true;
         }
     }
@@ -281,7 +282,7 @@ void assemble_ns_system(
     // CELL LOOP
     // ========================================================================
     for (; ux_cell != ux_dof_handler.end();
-         ++ux_cell, ++uy_cell, ++p_cell, ++theta_cell, ++psi_cell)
+           ++ux_cell, ++uy_cell, ++p_cell, ++theta_cell, ++psi_cell)
     {
         ux_fe_values.reinit(ux_cell);
         uy_fe_values.reinit(uy_cell);
@@ -308,10 +309,17 @@ void assemble_ns_system(
         }
 
         // Reset local matrices
-        local_ux_ux = 0; local_ux_uy = 0; local_ux_p = 0;
-        local_uy_ux = 0; local_uy_uy = 0; local_uy_p = 0;
-        local_p_ux = 0;  local_p_uy = 0;
-        local_rhs_ux = 0; local_rhs_uy = 0; local_rhs_p = 0;
+        local_ux_ux = 0;
+        local_ux_uy = 0;
+        local_ux_p = 0;
+        local_uy_ux = 0;
+        local_uy_uy = 0;
+        local_uy_p = 0;
+        local_p_ux = 0;
+        local_p_uy = 0;
+        local_rhs_ux = 0;
+        local_rhs_uy = 0;
+        local_rhs_p = 0;
 
         // Get DoF indices
         ux_cell->get_dof_indices(ux_local_dofs);
@@ -395,8 +403,8 @@ void assemble_ns_system(
             F_grav = 0;
             if (use_gravity)
             {
-const double H_theta = heaviside(theta_old_q / epsilon);
-const double gravity_factor = r * H_theta;
+                const double H_theta = heaviside(theta_old_q / epsilon);
+                const double gravity_factor = r * H_theta;
                 F_grav = gravity_factor * g_mag * g_direction;
             }
 
@@ -447,7 +455,7 @@ const double gravity_factor = r * H_theta;
             const bool compute_kelvin = !mms_mode && use_full_kelvin && phi_solution != nullptr;
             if (compute_kelvin)
             {
-                H_field = phi_gradients[q];  // H = ∇φ
+                H_field = phi_gradients[q]; // H = ∇φ
                 const dealii::Tensor<2, dim>& hess_phi = phi_hessians[q];
 
                 // Build M vector from scalar components
@@ -466,7 +474,6 @@ const double gravity_factor = r * H_theta;
             // Track max forces for diagnostics
             max_F_cap = std::max(max_F_cap, F_cap.norm());
             max_F_grav = std::max(max_F_grav, F_grav.norm());
-
 
 
             // DEBUG: Disable forces to isolate div U source
@@ -528,6 +535,30 @@ const double gravity_factor = r * H_theta;
                         kelvin_ux, kelvin_uy);
                     rhs_ux += kelvin_ux;
                     rhs_uy += kelvin_uy;
+                }
+                else if (!mms_mode && params.enable_magnetic && phi_solution != nullptr)
+                {
+                    // Quasi-equilibrium: M = χ_θ H, so F_mag = μ₀ χ_θ (H·∇)H
+                    const double chi_theta = susceptibility(theta_old_q);
+                    const dealii::Tensor<1, dim>& H = phi_gradients[q];
+                    const dealii::Tensor<2, dim>& hess_phi = phi_hessians[q];
+
+                    // (H·∇)H[i] = Σ_j H[j] * hess_phi[i][j]
+                    dealii::Tensor<1, dim> H_grad_H;
+                    for (unsigned int i = 0; i < dim; ++i)
+                    {
+                        H_grad_H[i] = 0.0;
+                        for (unsigned int j = 0; j < dim; ++j)
+                            H_grad_H[i] += H[j] * hess_phi[i][j];
+                    }
+
+                    // F_mag = μ₀ χ_θ (H·∇)H
+                    dealii::Tensor<1, dim> F_mag = mu_0 * chi_theta * H_grad_H;
+
+                    rhs_ux += F_mag[0] * phi_ux_i;
+                    rhs_uy += F_mag[1] * phi_uy_i;
+
+                    max_F_mag = std::max(max_F_mag, F_mag.norm());
                 }
 
                 local_rhs_ux(i) += rhs_ux * JxW;
@@ -723,8 +754,10 @@ const double gravity_factor = r * H_theta;
                         uy_neighbor->get_dof_indices(uy_there_dofs);
 
                         // FEFaceValues for neighbor velocity
-                        dealii::FEFaceValues<dim> ux_fe_face_values_there(fe_Q2, face_quadrature, dealii::update_values);
-                        dealii::FEFaceValues<dim> uy_fe_face_values_there(fe_Q2, face_quadrature, dealii::update_values);
+                        dealii::FEFaceValues<dim>
+                            ux_fe_face_values_there(fe_Q2, face_quadrature, dealii::update_values);
+                        dealii::FEFaceValues<dim>
+                            uy_fe_face_values_there(fe_Q2, face_quadrature, dealii::update_values);
                         ux_fe_face_values_there.reinit(neighbor, neighbor_face_no);
                         uy_fe_face_values_there.reinit(uy_neighbor, neighbor_face_no);
 
@@ -800,10 +833,10 @@ const double gravity_factor = r * H_theta;
         if (call_count % 100 == 0)
         {
             std::cout << "[NS] Forces: |F_cap|=" << max_F_cap
-                      << ", |F_mag|=" << max_F_mag
-                      << ", |F_grav|=" << max_F_grav
-                      << (use_full_kelvin ? " (full B_h^m)" : " (equilibrium)")
-                      << (use_gravity ? " [gravity ON]" : "") << "\n";
+                << ", |F_mag|=" << max_F_mag
+                << ", |F_grav|=" << max_F_grav
+                << (use_full_kelvin ? " (full B_h^m)" : " (equilibrium)")
+                << (use_gravity ? " [gravity ON]" : "") << "\n";
         }
         ++call_count;
     }
