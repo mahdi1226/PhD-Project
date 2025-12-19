@@ -1,11 +1,7 @@
 // ============================================================================
 // solvers/poisson_solver.cc - Magnetostatic Poisson Solver
 //
-// Solves: (∇φ, ∇χ) = (h_a - m, ∇χ)  with Neumann BC
-//
-// The system is SPD. CG + SSOR is efficient and robust.
-//
-// Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
+// UPDATED: Now returns SolverInfo with iterations/residual/time
 // ============================================================================
 
 #include "solvers/poisson_solver.h"
@@ -20,9 +16,9 @@
 #include <chrono>
 
 // ============================================================================
-// Main solver with explicit parameters
+// Main solver with explicit parameters - RETURNS SolverInfo
 // ============================================================================
-void solve_poisson_system(
+SolverInfo solve_poisson_system(
     const dealii::SparseMatrix<double>& matrix,
     const dealii::Vector<double>& rhs,
     dealii::Vector<double>& solution,
@@ -30,6 +26,11 @@ void solve_poisson_system(
     const LinearSolverParams& params,
     bool log_output)
 {
+    SolverInfo info;
+    info.solver_name = "Poisson";
+    info.matrix_size = matrix.m();
+    info.nnz = matrix.n_nonzero_elements();
+
     const double rhs_norm = rhs.l2_norm();
     if (rhs_norm < 1e-14)
     {
@@ -37,7 +38,8 @@ void solve_poisson_system(
         constraints.distribute(solution);
         if (log_output)
             std::cout << "[Poisson] Zero RHS, solution set to zero\n";
-        return;
+        info.converged = true;
+        return info;
     }
 
     if (solution.size() != rhs.size())
@@ -87,12 +89,19 @@ void solve_poisson_system(
         converged = true;
         iterations = 1;
         final_residual = 0.0;
+        info.used_direct = true;
     }
 
     auto end = std::chrono::high_resolution_clock::now();
     double solve_time = std::chrono::duration<double>(end - start).count();
 
     constraints.distribute(solution);
+
+    // Fill SolverInfo
+    info.iterations = iterations;
+    info.residual = final_residual;
+    info.solve_time = solve_time;
+    info.converged = converged;
 
     if (log_output || params.verbose)
     {
@@ -101,12 +110,14 @@ void solve_poisson_system(
                   << ", residual: " << final_residual
                   << ", time: " << solve_time << "s\n";
     }
+
+    return info;
 }
 
 // ============================================================================
 // Legacy interface with default parameters
 // ============================================================================
-void solve_poisson_system(
+SolverInfo solve_poisson_system(
     const dealii::SparseMatrix<double>& matrix,
     const dealii::Vector<double>& rhs,
     dealii::Vector<double>& solution,
@@ -125,6 +136,6 @@ void solve_poisson_system(
     default_params.fallback_to_direct = true;
     default_params.verbose = verbose;
 
-    solve_poisson_system(matrix, rhs, solution, constraints,
-                         default_params, /*log_output=*/true);
+    return solve_poisson_system(matrix, rhs, solution, constraints,
+                                default_params, /*log_output=*/true);
 }

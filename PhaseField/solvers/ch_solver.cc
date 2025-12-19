@@ -1,10 +1,7 @@
 // ============================================================================
 // solvers/ch_solver.cc - Cahn-Hilliard System Solver Implementation
 //
-// Uses GMRES + ILU iterative solver for the nonsymmetric coupled system.
-// Falls back to direct solver if iterative solver fails.
-//
-// Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
+// UPDATED: Now returns SolverInfo with iterations/residual/time
 // ============================================================================
 
 #include "solvers/ch_solver.h"
@@ -19,9 +16,9 @@
 #include <chrono>
 
 // ============================================================================
-// Main solver with explicit parameters
+// Main solver with explicit parameters - RETURNS SolverInfo
 // ============================================================================
-void solve_ch_system(
+SolverInfo solve_ch_system(
     const dealii::SparseMatrix<double>& matrix,
     const dealii::Vector<double>& rhs,
     const dealii::AffineConstraints<double>& constraints,
@@ -32,6 +29,11 @@ void solve_ch_system(
     const LinearSolverParams& params,
     bool log_output)
 {
+    SolverInfo info;
+    info.solver_name = "CH";
+    info.matrix_size = matrix.m();
+    info.nnz = matrix.n_nonzero_elements();
+
     dealii::Vector<double> coupled_solution(rhs.size());
 
     const double rhs_norm = rhs.l2_norm();
@@ -47,7 +49,9 @@ void solve_ch_system(
 
         if (log_output)
             std::cout << "[CH Solver] Zero RHS, solution set to zero\n";
-        return;
+
+        info.converged = true;
+        return info;
     }
 
     auto start = std::chrono::high_resolution_clock::now();
@@ -97,6 +101,7 @@ void solve_ch_system(
         converged = true;
         iterations = 1;
         final_residual = 0.0;
+        info.used_direct = true;
     }
 
     auto end = std::chrono::high_resolution_clock::now();
@@ -111,6 +116,12 @@ void solve_ch_system(
     for (unsigned int i = 0; i < psi_solution.size(); ++i)
         psi_solution[i] = coupled_solution[psi_to_ch_map[i]];
 
+    // Fill SolverInfo
+    info.iterations = iterations;
+    info.residual = final_residual;
+    info.solve_time = solve_time;
+    info.converged = converged;
+
     if (log_output || params.verbose)
     {
         std::cout << "[CH Solver] Size: " << matrix.m()
@@ -119,12 +130,14 @@ void solve_ch_system(
                   << ", residual: " << final_residual
                   << ", time: " << solve_time << "s\n";
     }
+
+    return info;
 }
 
 // ============================================================================
 // Legacy interface with default parameters
 // ============================================================================
-void solve_ch_system(
+SolverInfo solve_ch_system(
     const dealii::SparseMatrix<double>& matrix,
     const dealii::Vector<double>& rhs,
     const dealii::AffineConstraints<double>& constraints,
@@ -145,8 +158,8 @@ void solve_ch_system(
     default_params.fallback_to_direct = true;
     default_params.verbose = false;
 
-    solve_ch_system(matrix, rhs, constraints,
-                    theta_to_ch_map, psi_to_ch_map,
-                    theta_solution, psi_solution,
-                    default_params, /*log_output=*/true);
+    return solve_ch_system(matrix, rhs, constraints,
+                           theta_to_ch_map, psi_to_ch_map,
+                           theta_solution, psi_solution,
+                           default_params, /*log_output=*/true);
 }

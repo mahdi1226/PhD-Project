@@ -1,31 +1,25 @@
 // ============================================================================
 // solvers/ns_solver.h - Navier-Stokes Linear Solver
 //
-// Implements three solvers:
-//   1. Simple GMRES + ILU (baseline)
-//   2. FGMRES + Block Schur preconditioner (following step-56)
-//   3. Direct UMFPACK (fallback)
-//
-// Reference: deal.II step-22, step-56
+// UPDATED: Now returns SolverInfo with iterations/residual/time
 // ============================================================================
 #ifndef NS_SOLVER_H
 #define NS_SOLVER_H
 
 #include <deal.II/lac/sparse_matrix.h>
-#include <deal.II/lac/sparsity_pattern.h>
 #include <deal.II/lac/vector.h>
 #include <deal.II/lac/affine_constraints.h>
 #include <deal.II/dofs/dof_handler.h>
 
-#include <vector>
+#include "solvers/solver_info.h"
 
 // Forward declaration
 struct LinearSolverParams;
 
 /**
- * @brief Simple GMRES + ILU solver (baseline)
+ * @brief Simple GMRES + ILU solver - returns SolverInfo
  */
-void solve_ns_system(
+SolverInfo solve_ns_system(
     const dealii::SparseMatrix<double>& matrix,
     const dealii::Vector<double>& rhs,
     dealii::Vector<double>& solution,
@@ -34,9 +28,9 @@ void solve_ns_system(
     bool log_output = true);
 
 /**
- * @brief Legacy interface (uses default parameters)
+ * @brief Legacy interface (default parameters)
  */
-void solve_ns_system(
+SolverInfo solve_ns_system(
     const dealii::SparseMatrix<double>& matrix,
     const dealii::Vector<double>& rhs,
     dealii::Vector<double>& solution,
@@ -44,9 +38,9 @@ void solve_ns_system(
     bool verbose = false);
 
 /**
- * @brief FGMRES + Block Schur preconditioner (following step-56)
+ * @brief FGMRES + Block Schur preconditioner - returns SolverInfo
  */
-void solve_ns_system_schur(
+SolverInfo solve_ns_system_schur(
     const dealii::SparseMatrix<double>& matrix,
     const dealii::Vector<double>& rhs,
     dealii::Vector<double>& solution,
@@ -59,9 +53,9 @@ void solve_ns_system_schur(
     bool log_output = true);
 
 /**
- * @brief Legacy Schur interface (uses default parameters)
+ * @brief Legacy Schur interface
  */
-void solve_ns_system_schur(
+SolverInfo solve_ns_system_schur(
     const dealii::SparseMatrix<double>& matrix,
     const dealii::Vector<double>& rhs,
     dealii::Vector<double>& solution,
@@ -73,9 +67,9 @@ void solve_ns_system_schur(
     bool verbose = false);
 
 /**
- * @brief Direct solver (UMFPACK)
+ * @brief Direct solver (UMFPACK) - returns SolverInfo
  */
-void solve_ns_system_direct(
+SolverInfo solve_ns_system_direct(
     const dealii::SparseMatrix<double>& matrix,
     const dealii::Vector<double>& rhs,
     dealii::Vector<double>& solution,
@@ -83,7 +77,7 @@ void solve_ns_system_direct(
     bool verbose = false);
 
 /**
- * @brief Extract individual velocity/pressure solutions from coupled vector
+ * @brief Extract individual solutions from coupled NS solution
  */
 void extract_ns_solutions(
     const dealii::Vector<double>& ns_solution,
@@ -95,7 +89,7 @@ void extract_ns_solutions(
     dealii::Vector<double>& p_solution);
 
 /**
- * @brief Assemble pressure mass matrix (for Schur complement preconditioner)
+ * @brief Assemble pressure mass matrix for Schur preconditioner
  */
 template <int dim>
 void assemble_pressure_mass_matrix(

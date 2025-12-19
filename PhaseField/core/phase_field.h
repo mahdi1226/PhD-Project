@@ -32,6 +32,9 @@
 #include <deal.II/lac/affine_constraints.h>
 
 #include "utilities/parameters.h"
+#include "output/metrics_logger.h"
+#include "output/console_logger.h"
+#include "diagnostics/step_data.h"
 
 #include <vector>
 
@@ -204,6 +207,8 @@ private:
     // ========================================================================
     double time_;
     unsigned int timestep_number_;
+    std::unique_ptr<MetricsLogger> metrics_logger_;
+    double E_total_prev_ = 0.0;
 };
 
 #endif // PHASE_FIELD_H
