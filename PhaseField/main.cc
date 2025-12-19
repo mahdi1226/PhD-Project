@@ -45,10 +45,10 @@ int main(int argc, char* argv[])
         std::cout << "\n";
         std::cout << "Configuration:\n";
         std::cout << "  Cahn-Hilliard:  ENABLED\n";
-        std::cout << "  Magnetic:       " << (params.magnetic.enabled ? "ENABLED" : "disabled") << "\n";
-        std::cout << "  Navier-Stokes:  " << (params.ns.enabled ? "ENABLED" : "disabled") << "\n";
-        std::cout << "  MMS mode:       " << (params.mms.enabled ? "ENABLED" : "disabled") << "\n";
-        std::cout << "  Gravity:        " << (params.gravity.enabled ? "ENABLED" : "disabled") << "\n";
+        std::cout << "  Magnetic:       " << (params.enable_magnetic ? "ENABLED" : "disabled") << "\n";
+        std::cout << "  Navier-Stokes:  " << (params.enable_ns ? "ENABLED" : "disabled") << "\n";
+        std::cout << "  MMS mode:       " << (params.enable_mms ? "ENABLED" : "disabled") << "\n";
+        std::cout << "  Gravity:        " << (params.enable_gravity ? "ENABLED" : "disabled") << "\n";
         std::cout << "\n";
 
         // Create and run problem

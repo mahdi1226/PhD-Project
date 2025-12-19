@@ -141,7 +141,7 @@ void assemble_ns_system(
 
     // FEValues for φ (for H^k = ∇φ^k)
     std::unique_ptr<dealii::FEValues<dim>> phi_fe_values;
-    if (params.magnetic.enabled && phi_dof_handler != nullptr)
+    if (params.enable_magnetic && phi_dof_handler != nullptr)
     {
         phi_fe_values = std::make_unique<dealii::FEValues<dim>>(
             phi_dof_handler->get_fe(), quadrature,
@@ -151,7 +151,7 @@ void assemble_ns_system(
     // FEValues for M (DG) - CRITICAL: separate from θ!
     // Need update_gradients for div(M) in Kelvin skew form
     std::unique_ptr<dealii::FEValues<dim>> M_fe_values;
-    const bool use_full_kelvin = params.magnetic.enabled &&
+    const bool use_full_kelvin = params.enable_magnetic &&
                                   M_dof_handler != nullptr &&
                                   mx_solution != nullptr &&
                                   my_solution != nullptr;
@@ -232,22 +232,10 @@ void assemble_ns_system(
     std::vector<double> mx_here(n_face_q_points), mx_there(n_face_q_points);
     std::vector<double> my_here(n_face_q_points), my_there(n_face_q_points);
 
-    // Physical parameters
-    const double lambda = params.ns.lambda;
-    const double epsilon = params.ch.epsilon;
-    const double nu_water = params.ns.nu_water;
-    const double nu_ferro = params.ns.nu_ferro;
-    const double mu_0 = params.ns.mu_0;
-    const double chi_0 = params.magnetization.chi_0;
-    const double grad_div_gamma = params.ns.grad_div;
-
-    // Material properties helper
-    MaterialProperties mat_props(nu_water, nu_ferro, chi_0, epsilon);
-
     // MMS parameters
-    const bool mms_mode = params.mms.enabled;
+    const bool mms_mode = params.enable_mms;
     const double L_y = params.domain.y_max - params.domain.y_min;
-    const double nu_mms = params.ns.nu_water;  // Constant viscosity for MMS
+    const double nu_mms = nu_water;  // Constant viscosity for MMS
 
     // ========================================================================
     // Gravity (optional extension, NOT in paper Eq. 42e)
@@ -255,10 +243,9 @@ void assemble_ns_system(
     // Enable only for physical simulations, not paper replication.
     // Disabled in MMS mode.
     // ========================================================================
-    const bool use_gravity = params.gravity.enabled && !mms_mode;
-    const double g_mag = params.gravity.magnitude;
-    const double r_density = params.ns.r;
-    dealii::Tensor<1, dim> g_direction = params.gravity.direction;
+    const bool use_gravity = params.enable_gravity && !mms_mode;
+    const double g_mag = gravity_dimensionless;
+    dealii::Tensor<1, dim> g_direction = params.gravity_direction;
 
     if (use_gravity)
     {
@@ -284,7 +271,7 @@ void assemble_ns_system(
     typename dealii::DoFHandler<dim>::active_cell_iterator phi_cell;
     typename dealii::DoFHandler<dim>::active_cell_iterator M_cell;
 
-    if (params.magnetic.enabled && phi_dof_handler != nullptr)
+    if (params.enable_magnetic && phi_dof_handler != nullptr)
         phi_cell = phi_dof_handler->begin_active();
 
     if (use_full_kelvin)
@@ -306,7 +293,7 @@ void assemble_ns_system(
         typename dealii::DoFHandler<dim>::active_cell_iterator current_phi_cell;
         typename dealii::DoFHandler<dim>::active_cell_iterator current_M_cell;
 
-        if (params.magnetic.enabled && phi_dof_handler != nullptr)
+        if (params.enable_magnetic && phi_dof_handler != nullptr)
         {
             current_phi_cell = phi_cell;
             phi_fe_values->reinit(phi_cell);
@@ -342,7 +329,7 @@ void assemble_ns_system(
 
         psi_fe_values.get_function_gradients(psi_solution, psi_gradients);
 
-        if (params.magnetic.enabled && phi_dof_handler != nullptr && phi_solution != nullptr)
+        if (params.enable_magnetic && phi_dof_handler != nullptr && phi_solution != nullptr)
         {
             phi_fe_values->get_function_gradients(*phi_solution, phi_gradients);
             phi_fe_values->get_function_hessians(*phi_solution, phi_hessians);
@@ -383,7 +370,7 @@ void assemble_ns_system(
 
             // Phase-dependent viscosity at θ^{k-1} [Eq. 17]
             // Use constant viscosity in MMS mode
-            const double nu = mms_mode ? nu_mms : mat_props.viscosity(theta_old_q);
+            const double nu = mms_mode ? nu_mms : viscosity(theta_old_q);
 
             // ================================================================
             // Capillary force [Eq. 10]: F_cap = (λ/ε)θ^{k-1}∇ψ^k
@@ -408,8 +395,8 @@ void assemble_ns_system(
             F_grav = 0;
             if (use_gravity)
             {
-                const double H_theta = MaterialProperties::heaviside(theta_old_q / epsilon);
-                const double gravity_factor = r_density * H_theta;
+const double H_theta = heaviside(theta_old_q / epsilon);
+const double gravity_factor = r * H_theta;
                 F_grav = gravity_factor * g_mag * g_direction;
             }
 
@@ -485,7 +472,6 @@ void assemble_ns_system(
             // DEBUG: Disable forces to isolate div U source
             const bool DEBUG_NO_CAPILLARY = false;
             const bool DEBUG_NO_GRAVITY = false;
-            const bool DEBUG_NO_KELVIN = false;
 
             if (DEBUG_NO_CAPILLARY) F_cap = 0;
             if (DEBUG_NO_GRAVITY) F_grav = 0;
@@ -596,12 +582,12 @@ void assemble_ns_system(
                     //local_uy_ux(i, j) += (U_dot_grad_phi_ux_j + 0.5 * div_U_old * phi_ux_j) * phi_uy_i * JxW;
 
                     // Grad-div stabilization (optional)
-                    if (grad_div_gamma > 0.0)
+                    if (grad_div > 0.0)
                     {
-                        local_ux_ux(i, j) += grad_div_gamma * grad_phi_ux_i[0] * grad_phi_ux_j[0] * JxW;
-                        local_ux_uy(i, j) += grad_div_gamma * grad_phi_ux_i[0] * grad_phi_uy_j[1] * JxW;
-                        local_uy_ux(i, j) += grad_div_gamma * grad_phi_uy_i[1] * grad_phi_ux_j[0] * JxW;
-                        local_uy_uy(i, j) += grad_div_gamma * grad_phi_uy_i[1] * grad_phi_uy_j[1] * JxW;
+                        local_ux_ux(i, j) += grad_div * grad_phi_ux_i[0] * grad_phi_ux_j[0] * JxW;
+                        local_ux_uy(i, j) += grad_div * grad_phi_ux_i[0] * grad_phi_uy_j[1] * JxW;
+                        local_uy_ux(i, j) += grad_div * grad_phi_uy_i[1] * grad_phi_ux_j[0] * JxW;
+                        local_uy_uy(i, j) += grad_div * grad_phi_uy_i[1] * grad_phi_uy_j[1] * JxW;
                     }
                 }
 

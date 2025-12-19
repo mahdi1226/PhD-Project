@@ -5,6 +5,7 @@
 // ============================================================================
 
 #include "mms/poisson_mms.h"
+#include "physics/material_properties.h"
 
 #include <deal.II/base/quadrature_lib.h>
 #include <deal.II/fe/fe_values.h>
@@ -197,9 +198,6 @@ void assemble_poisson_system_mms_quasi_equilibrium(
     std::vector<dealii::types::global_dof_index> local_dof_indices(dofs_per_cell);
 
     std::vector<double> theta_values(n_q_points);
-
-    const double epsilon = params.ch.epsilon;
-    const double chi_0 = params.magnetization.chi_0;
 
     auto phi_cell = phi_dof_handler.begin_active();
     auto theta_cell = theta_dof_handler.begin_active();

@@ -5,8 +5,8 @@
 // ============================================================================
 
 #include "diagnostics/poisson_diagnostics.h"
-#include "assembly/poisson_assembler.h"  // For compute_applied_field, compute_susceptibility
-
+#include "assembly/poisson_assembler.h"
+#include "physics/material_properties.h"
 #include <deal.II/base/quadrature_lib.h>
 #include <deal.II/fe/fe_values.h>
 
@@ -92,8 +92,6 @@ PoissonDiagnostics compute_poisson_diagnostics(
     std::vector<dealii::Tensor<1, dim>> grad_phi_values(n_q_points);
     std::vector<double> theta_values(n_q_points);
 
-    const double epsilon = params.ch.epsilon;
-    const double chi_0 = params.magnetization.chi_0;
 
     // Accumulated values
     double H_L2_sq = 0.0;

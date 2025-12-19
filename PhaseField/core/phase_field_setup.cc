@@ -13,6 +13,7 @@
 #include "setup/ns_setup.h"
 #include "solvers/ns_solver.h"
 #include "mms/ns_mms.h"
+#include "physics/material_properties.h"
 
 
 #include <deal.II/grid/grid_generator.h>
@@ -130,7 +131,7 @@ void PhaseFieldProblem<dim>::setup_dof_handlers()
     // ========================================================================
     // Poisson (φ) - Q2 elements
     // ========================================================================
-    if (params_.magnetic.enabled)
+    if (params_.enable_magnetic)
     {
         phi_dof_handler_.distribute_dofs(fe_Q2_);
         phi_solution_.reinit(phi_dof_handler_.n_dofs());
@@ -142,7 +143,7 @@ void PhaseFieldProblem<dim>::setup_dof_handlers()
     // CRITICAL: M must be DG for the energy identity B_h^m(H,H,M) = 0.
     // Do NOT use CG or projected fields!
     // ========================================================================
-    if (params_.magnetic.enabled)
+    if (params_.enable_magnetic)
     {
         mx_dof_handler_.distribute_dofs(fe_DG_);
         my_dof_handler_.distribute_dofs(fe_DG_);
@@ -170,7 +171,7 @@ void PhaseFieldProblem<dim>::setup_dof_handlers()
     // ========================================================================
     // NS fields (ux, uy, p) - Q2 velocity, Q1 pressure (Taylor-Hood)
     // ========================================================================
-    if (params_.ns.enabled)
+    if (params_.enable_ns)
     {
         ux_dof_handler_.distribute_dofs(fe_Q2_);
         uy_dof_handler_.distribute_dofs(fe_Q2_);
@@ -197,7 +198,7 @@ void PhaseFieldProblem<dim>::setup_dof_handlers()
         {
             std::cout << "[Setup] DoFs: θ = " << n_theta
                       << ", ψ = " << n_psi;
-            if (params_.magnetic.enabled)
+            if (params_.enable_magnetic)
                 std::cout << ", φ = " << phi_dof_handler_.n_dofs()
                           << ", M = " << mx_dof_handler_.n_dofs();
             std::cout << ", ux = " << n_ux
@@ -217,7 +218,7 @@ void PhaseFieldProblem<dim>::setup_dof_handlers()
         {
             std::cout << "[Setup] DoFs: θ = " << n_theta
                       << ", ψ = " << n_psi;
-            if (params_.magnetic.enabled)
+            if (params_.enable_magnetic)
                 std::cout << ", φ = " << phi_dof_handler_.n_dofs()
                           << ", M = " << mx_dof_handler_.n_dofs();
             std::cout << "\n";
@@ -244,17 +245,17 @@ void PhaseFieldProblem<dim>::setup_constraints()
     dealii::DoFTools::make_hanging_node_constraints(psi_dof_handler_, psi_constraints_);
 
     // For MMS: add Dirichlet BCs at initial time
-    if (params_.mms.enabled)
+    if (params_.enable_mms)
     {
         apply_ch_mms_boundary_constraints<dim>(
             theta_dof_handler_,
             psi_dof_handler_,
             theta_constraints_,
             psi_constraints_,
-            params_.mms.t_init);
+            params_.mms_t_init);
 
         // Set initial time
-        const_cast<double&>(time_) = params_.mms.t_init;
+        const_cast<double&>(time_) = params_.mms_t_init;
     }
 
     theta_constraints_.close();
@@ -460,22 +461,22 @@ void PhaseFieldProblem<dim>::initialize_solutions()
 {
 
     // MMS mode: use exact solutions at t_init
-    if (params_.mms.enabled)
+    if (params_.enable_mms)
     {
         apply_ch_mms_initial_conditions<dim>(
             theta_dof_handler_,
             psi_dof_handler_,
             theta_solution_,
             psi_solution_,
-            params_.mms.t_init);
+            params_.mms_t_init);
 
         theta_old_solution_ = theta_solution_;
 
         // NS MMS IC
-        if (params_.ns.enabled)
+        if (params_.enable_ns)
         {
             const double L_y = params_.domain.y_max - params_.domain.y_min;
-            const double t_init = params_.mms.t_init;
+            const double t_init = params_.mms_t_init;
 
             NSExactVelocityX<dim> exact_ux(t_init, L_y);
             NSExactVelocityY<dim> exact_uy(t_init, L_y);
@@ -491,14 +492,13 @@ void PhaseFieldProblem<dim>::initialize_solutions()
 
         if (params_.output.verbose)
         {
-            std::cout << "[Setup] MMS IC at t = " << params_.mms.t_init << "\n";
+            std::cout << "[Setup] MMS IC at t = " << params_.mms_t_init << "\n";
             std::cout << "[Setup] Initial mass = " << compute_mass() << "\n";
         }
         return;
     }
 
     // Physical IC modes
-    const double epsilon = params_.ch.epsilon;
     const int ic_type = params_.ic.type;
     const double interface_y = params_.ic.pool_depth;
 
@@ -615,7 +615,7 @@ void PhaseFieldProblem<dim>::initialize_solutions()
     // Option (b) is more physical but requires Poisson to be set up first.
     // For simplicity, we use (a) here; M will quickly relax to equilibrium.
     // ========================================================================
-    if (params_.magnetic.enabled)
+    if (params_.enable_magnetic)
     {
         mx_solution_ = 0;
         my_solution_ = 0;

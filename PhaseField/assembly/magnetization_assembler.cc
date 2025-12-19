@@ -20,7 +20,7 @@
 
 #include "assembly/magnetization_assembler.h"
 #include "physics/skew_forms.h"
-
+#include "physics/material_properties.h"
 #include <deal.II/dofs/dof_tools.h>
 #include <deal.II/fe/fe_values.h>
 #include <deal.II/fe/fe_interface_values.h>
@@ -59,7 +59,6 @@ MagnetizationAssembler<dim>::MagnetizationAssembler(
 template <int dim>
 double MagnetizationAssembler<dim>::chi(double theta_val) const
 {
-    const double chi_0 = params_.magnetization.chi_0;
     return chi_0 * (1.0 + theta_val) / 2.0;
 }
 
@@ -176,7 +175,6 @@ void MagnetizationAssembler<dim>::assemble(
 
     // Parameters
     const double tau = dt;
-    const double tau_M = params_.magnetization.tau_M;
 
     // Coefficients: (1/τ + 1/T) for LHS, 1/T and 1/τ for RHS
     const double mass_coeff = (tau_M > 0.0) ? (1.0/tau + 1.0/tau_M) : 1.0/tau;
@@ -436,7 +434,6 @@ void MagnetizationAssembler<dim>::assemble_rhs_only(
     std::vector<dealii::types::global_dof_index> local_dofs(dofs_per_cell);
 
     const double tau = dt;
-const double tau_M = params_.magnetization.tau_M;
     const double relax_coeff = (tau_M > 0.0) ? 1.0/tau_M : 0.0;
     const double old_coeff = 1.0/tau;
 
