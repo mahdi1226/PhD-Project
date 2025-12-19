@@ -22,7 +22,7 @@
 
 // Cahn-Hilliard (Eq. 14a-14b)
 constexpr double epsilon = 0.01;            // interface thickness
-constexpr double gamma = 0.0002;            // mobility
+constexpr double mobility = 0.0002;            // mobility it is gamma : c++/clang naming collision
 
 // Capillary (Eq. 14e)
 constexpr double lambda = 0.05;             // capillary coefficient

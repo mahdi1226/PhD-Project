@@ -95,7 +95,7 @@ void PhaseFieldProblem<dim>::run()
     // Print parameters
     std::cout << "\n--- Parameters ---\n";
     std::cout << "  epsilon = " << epsilon << "\n";
-    std::cout << "  gamma   = " << gamma << "\n";
+    std::cout << "  gamma   = " << mobility << "\n";
     std::cout << "  dt      = " << params_.time.dt << "\n";
     std::cout << "  t_final = " << params_.time.t_final << "\n";
     if (params_.enable_magnetic)
@@ -708,9 +708,9 @@ double PhaseFieldProblem<dim>::compute_ch_energy() const
             const double theta = theta_values[q];
             const double grad_theta_sq = theta_gradients[q] * theta_gradients[q];
 
-            const double E_grad = 0.5 * gamma * epsilon * grad_theta_sq;
+            const double E_grad = 0.5 * mobility * epsilon * grad_theta_sq;
             const double W = 0.25 * (theta * theta - 1.0) * (theta * theta - 1.0);
-            const double E_bulk = (gamma / epsilon) * W;
+            const double E_bulk = (mobility / epsilon) * W;
 
             energy += (E_grad + E_bulk) * fe_values.JxW(q);
         }
