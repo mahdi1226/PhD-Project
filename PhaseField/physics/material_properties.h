@@ -43,7 +43,7 @@ constexpr double gravity = 9.81;            // physical (m/s²)
 constexpr double gravity_dimensionless = 30000.0;  // non-dimensionalized
 
 // Numerical stabilization
-constexpr double grad_div = 0.0;            // grad-div parameter
+constexpr double grad_div = 0.1;            // grad-div parameter
 
 // ============================================================================
 // Material Functions (Eq. 17-18, p.501)

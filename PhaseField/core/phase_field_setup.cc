@@ -14,6 +14,7 @@
 #include "solvers/ns_solver.h"
 #include "mms/ns_mms.h"
 #include "physics/material_properties.h"
+#include "solvers/solver_info.h"
 
 
 #include <deal.II/grid/grid_generator.h>
@@ -383,8 +384,8 @@ void PhaseFieldProblem<dim>::setup_ns_system()
     dealii::DoFTools::make_hanging_node_constraints(uy_dof_handler_, uy_constraints_);
     dealii::DoFTools::make_hanging_node_constraints(p_dof_handler_, p_constraints_);
 
-    // No-slip BCs: u = 0 on all boundaries
-    for (unsigned int boundary_id = 0; boundary_id < 4; ++boundary_id)
+    // No-slip BCs: u = 0 on bottom, left, right (NOT top - free surface)
+    for (unsigned int boundary_id : {0, 1, 3})  // Exclude 2 (top)
     {
         dealii::VectorTools::interpolate_boundary_values(
             ux_dof_handler_,
@@ -397,6 +398,7 @@ void PhaseFieldProblem<dim>::setup_ns_system()
             dealii::Functions::ZeroFunction<dim>(),
             uy_constraints_);
     }
+    // Top (boundary_id = 2): free surface (no Dirichlet BC = natural/stress-free)
 
     // ========================================================================
     // CRITICAL: Pin one pressure DoF to fix the constant!

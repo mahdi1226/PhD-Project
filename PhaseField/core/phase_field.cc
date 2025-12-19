@@ -21,6 +21,7 @@
 #include "solvers/ch_solver.h"
 #include "solvers/poisson_solver.h"
 #include "solvers/ns_solver.h"
+#include "solvers/solver_info.h"
 #include "utilities/tools.h"
 #include "diagnostics/ch_diagnostics.h"
 #include "../mms/mms_runtime.h"
@@ -30,6 +31,9 @@
 #include "mms/poisson_mms.h"
 #include "mms/ns_mms.h"
 #include "physics/material_properties.h"
+#include "solvers/solver_info.h"
+
+
 
 
 #include <deal.II/numerics/data_out.h>
@@ -70,6 +74,9 @@ void PhaseFieldProblem<dim>::run()
 
     // Store output directory for later use
     const_cast<Parameters&>(params_).output.folder = output_dir;
+
+    // Initialize metrics logger
+    metrics_logger_ = std::make_unique<MetricsLogger>(output_dir);
 
     // ========================================================================
     // Setup
@@ -131,6 +138,7 @@ std::cout << "  Gravity: ENABLED (g = " << gravity_dimensionless << ")\n";    }
     // Time loop
     // ========================================================================
     std::cout << "\n--- Time Integration ---\n";
+    ConsoleLogger::print_step_header();
     std::cout << std::setw(8) << "Step"
         << std::setw(12) << "Time"
         << std::setw(14) << "Mass"
@@ -233,15 +241,13 @@ std::cout << "  Gravity: ENABLED (g = " << gravity_dimensionless << ")\n";    }
     }
 }
 
+
 // ============================================================================
 // do_time_step() - Single time step (staggered approach)
 // ============================================================================
 template <int dim>
 void PhaseFieldProblem<dim>::do_time_step(double dt)
 {
-    std::cout << "[DEBUG do_time_step START] use_direct_after_amr_ = "
-        << use_direct_after_amr_ << "\n";
-
     // Save old solutions BEFORE updating (for lagging)
     theta_old_solution_ = theta_solution_;
 
@@ -262,67 +268,167 @@ void PhaseFieldProblem<dim>::do_time_step(double dt)
     if (params_.enable_mms)
         update_mms_boundary_constraints(time_new);
 
+    // ========================================================================
+    // Initialize StepData
+    // ========================================================================
+    StepData step_data;
+    step_data.step = timestep_number_;
+    step_data.time = time_new;
+    step_data.dt = dt;
+
+    // ========================================================================
     // Step 1: Cahn-Hilliard
-    solve_ch();
+    // ========================================================================
+    {
+        ScopedTimer timer(step_data.ch_time);
+        solve_ch();
+    }
 
     // CH diagnostics
     CHDiagnosticData ch_data = compute_ch_diagnostics<dim>(
         theta_dof_handler_, theta_solution_, epsilon,
-        timestep_number_, time_ + dt, dt, ch_energy_prev_);
-    print_ch_diagnostics(ch_data, params_.output.verbose);
+        timestep_number_, time_new, dt, ch_energy_prev_);
+
+    step_data.theta_min = ch_data.theta_min;
+    step_data.theta_max = ch_data.theta_max;
+    step_data.mass = ch_data.mass;
+    step_data.E_CH = ch_data.energy;
+    step_data.dE_CH_dt = ch_data.energy_rate;
+    step_data.ch_bounds_violated = ch_data.bounds_violated;
+    step_data.ch_energy_increasing = ch_data.energy_increasing;
+    // Note: ch_iterations and ch_residual need to come from solver
+    // step_data.ch_iterations = ...;  // TODO: capture from solve_ch()
+    // step_data.ch_residual = ...;
+
     ch_energy_prev_ = ch_data.energy;
 
+    // ========================================================================
     // Step 2: Poisson
-    if (params_.enable_magnetic)
-        solve_poisson();
-
-    // Poisson diagnostics
+    // ========================================================================
     if (params_.enable_magnetic)
     {
-        auto poisson_diag = compute_poisson_diagnostics<dim>(
+        {
+            ScopedTimer timer(step_data.poisson_time);
+            solve_poisson();
+        }
+
+        PoissonDiagnostics poisson_diag = compute_poisson_diagnostics<dim>(
             phi_dof_handler_, phi_solution_,
-            theta_dof_handler_, theta_solution_,
-            params_, time_);
-        poisson_diag.print(timestep_number_, time_);
+            theta_dof_handler_, theta_old_solution_,
+            params_, time_new);
+
+        step_data.phi_min = poisson_diag.phi_min;
+        step_data.phi_max = poisson_diag.phi_max;
+        step_data.H_max = poisson_diag.H_max;
+        step_data.M_max = poisson_diag.M_max;
+        step_data.E_mag = poisson_diag.magnetic_energy;
+        step_data.mu_min = poisson_diag.mu_min;
+        step_data.mu_max = poisson_diag.mu_max;
+        // Note: poisson_iterations and poisson_residual need to come from solver
+        // step_data.poisson_iterations = ...;
+        // step_data.poisson_residual = ...;
     }
 
-    if (params_.enable_mms && params_.enable_magnetic)
-    {
-        auto poisson_error = compute_poisson_mms_error<dim>(
-            phi_dof_handler_, phi_solution_, time_,
-            params_.domain.y_max - params_.domain.y_min);
-        poisson_error.print(params_.mesh.initial_refinement, get_min_h());
-    }
-
+    // ========================================================================
     // Step 3: Magnetization (DG transport)
+    // ========================================================================
     if (params_.enable_magnetic && params_.use_dg_transport)
         solve_magnetization();
 
-    // Step 4: Navier-Stokes (uses theta^{k-1}!)
-    if (params_.enable_ns)
-        solve_ns();
-
-    // Compute NS MMS errors
-    if (params_.enable_mms && params_.enable_ns)
-    {
-        const double L_y = params_.domain.y_max - params_.domain.y_min;
-        auto ns_error = compute_ns_mms_error<dim>(
-            ux_dof_handler_, uy_dof_handler_, p_dof_handler_,
-            ux_solution_, uy_solution_, p_solution_,
-            time_, L_y);
-        ns_error.print(params_.mesh.initial_refinement, get_min_h());
-    }
-
+    // ========================================================================
+    // Step 4: Navier-Stokes
+    // ========================================================================
     if (params_.enable_ns)
     {
-        auto ns_diag = compute_ns_diagnostics<dim>(
+        {
+            ScopedTimer timer(step_data.ns_time);
+            solve_ns();
+        }
+
+        NSDiagnostics ns_diag = compute_ns_diagnostics<dim>(
             ux_dof_handler_, uy_dof_handler_, p_dof_handler_,
             ux_solution_, uy_solution_, p_solution_,
-            params_.time.dt, get_min_h());
-        ns_diag.print(timestep_number_, time_);
+            dt, get_min_h());
+
+        step_data.ux_min = ns_diag.ux_min;
+        step_data.ux_max = ns_diag.ux_max;
+        step_data.uy_min = ns_diag.uy_min;
+        step_data.uy_max = ns_diag.uy_max;
+        step_data.U_max = ns_diag.U_max;
+        step_data.E_kin = ns_diag.kinetic_energy;
+        step_data.divU_L2 = ns_diag.div_U_L2;
+        step_data.divU_Linf = ns_diag.div_U_max;
+        step_data.CFL = ns_diag.cfl;
+        step_data.p_min = ns_diag.p_min;
+        step_data.p_max = ns_diag.p_max;
+
+        // Forces - TODO: capture from NS assembler
+        // step_data.F_cap_max = ...;
+        // step_data.F_mag_max = ...;
+        // step_data.F_grav_max = ...;
     }
 
+    // ========================================================================
+    // Compute derived quantities and total energy
+    // ========================================================================
+    step_data.E_total = step_data.E_CH + step_data.E_kin + step_data.E_mag;
+    if (timestep_number_ > 0 && dt > 0)
+    {
+        step_data.dE_total_dt = (step_data.E_total - E_total_prev_) / dt;
+    }
+    E_total_prev_ = step_data.E_total;
 
+    step_data.compute_derived();  // Sets warning flags
+
+    // ========================================================================
+    // Logging
+    // ========================================================================
+
+    // Always log to CSV
+    if (metrics_logger_)
+    {
+        metrics_logger_->log_step(step_data);
+    }
+
+    // Console output: summary every N steps
+    if (timestep_number_ % params_.output.frequency == 0)
+    {
+        ConsoleLogger::print_step_summary(step_data);
+    }
+
+    // Always print warnings immediately
+    if (step_data.has_warnings())
+    {
+        ConsoleLogger::print_warnings(step_data);
+    }
+
+    // ========================================================================
+    // MMS errors (if enabled) - keep existing behavior
+    // ========================================================================
+    if (params_.enable_mms)
+    {
+        if (params_.enable_magnetic)
+        {
+            auto poisson_error = compute_poisson_mms_error<dim>(
+                phi_dof_handler_, phi_solution_, time_new,
+                params_.domain.y_max - params_.domain.y_min);
+            poisson_error.print(params_.mesh.initial_refinement, get_min_h());
+        }
+
+        if (params_.enable_ns)
+        {
+            const double L_y = params_.domain.y_max - params_.domain.y_min;
+            auto ns_error = compute_ns_mms_error<dim>(
+                ux_dof_handler_, uy_dof_handler_, p_dof_handler_,
+                ux_solution_, uy_solution_, p_solution_,
+                time_new, L_y);
+            ns_error.print(params_.mesh.initial_refinement, get_min_h());
+        }
+    }
+
+    // ========================================================================
+    // Update time
+    // ========================================================================
     time_ = time_new;
     ++timestep_number_;
 }
@@ -541,6 +647,9 @@ void PhaseFieldProblem<dim>::solve_ns()
         ns_matrix_,
         ns_rhs_);
 
+
+
+    SolverInfo ns_info;
     // Use FGMRES + Block Schur preconditioner (following deal.II step-56)
     // Use direct solver if:
     // 1. After AMR (use_direct_after_amr_), OR

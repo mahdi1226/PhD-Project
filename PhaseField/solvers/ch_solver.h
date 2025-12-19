@@ -1,10 +1,7 @@
 // ============================================================================
-// solvers/ch_solver.h - Cahn-Hilliard Coupled System Solver
+// solvers/ch_solver.h - Cahn-Hilliard System Solver
 //
-// Solves the coupled (θ, ψ) system from CH equations.
-// Uses GMRES + ILU (nonsymmetric system) with direct fallback.
-//
-// Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
+// UPDATED: Now returns SolverInfo with iterations/residual/time
 // ============================================================================
 #ifndef CH_SOLVER_H
 #define CH_SOLVER_H
@@ -13,25 +10,17 @@
 #include <deal.II/lac/vector.h>
 #include <deal.II/lac/affine_constraints.h>
 
-#include <vector>
+#include "solvers/solver_info.h"
 
 // Forward declaration
 struct LinearSolverParams;
 
 /**
- * @brief Solve the coupled Cahn-Hilliard system
+ * @brief Solve the coupled CH system and return solver statistics
  *
- * @param matrix           Coupled system matrix
- * @param rhs              Right-hand side
- * @param constraints      Combined constraints for coupled system
- * @param theta_to_ch_map  DoF mapping: θ local → coupled global
- * @param psi_to_ch_map    DoF mapping: ψ local → coupled global
- * @param theta_solution   [OUT] Phase field θ
- * @param psi_solution     [OUT] Chemical potential ψ
- * @param params           Solver parameters
- * @param log_output       Print solver statistics
+ * @return SolverInfo with iterations, residual, time
  */
-void solve_ch_system(
+SolverInfo solve_ch_system(
     const dealii::SparseMatrix<double>& matrix,
     const dealii::Vector<double>& rhs,
     const dealii::AffineConstraints<double>& constraints,
@@ -43,9 +32,9 @@ void solve_ch_system(
     bool log_output = true);
 
 /**
- * @brief Legacy interface (uses default parameters)
+ * @brief Legacy interface (default parameters)
  */
-void solve_ch_system(
+SolverInfo solve_ch_system(
     const dealii::SparseMatrix<double>& matrix,
     const dealii::Vector<double>& rhs,
     const dealii::AffineConstraints<double>& constraints,

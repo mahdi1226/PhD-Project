@@ -96,4 +96,18 @@ void assemble_ns_system(
     dealii::SparseMatrix<double>& ns_matrix,
     dealii::Vector<double>& ns_rhs);
 
+struct NSAssemblyInfo
+{
+    double F_cap_max = 0.0;     // max|F_capillary|
+    double F_mag_max = 0.0;     // max|F_magnetic|
+    double F_grav_max = 0.0;    // max|F_gravity|
+
+    void reset()
+    {
+        F_cap_max = 0.0;
+        F_mag_max = 0.0;
+        F_grav_max = 0.0;
+    }
+};
+
 #endif // NS_ASSEMBLER_H

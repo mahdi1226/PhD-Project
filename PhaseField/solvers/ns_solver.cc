@@ -1,12 +1,7 @@
 // ============================================================================
 // solvers/ns_solver.cc - Navier-Stokes Linear Solver Implementation
 //
-// Implements three solvers:
-//   1. Simple GMRES + ILU (baseline)
-//   2. FGMRES + Block Schur preconditioner (following step-56)
-//   3. Direct UMFPACK (fallback)
-//
-// Reference: deal.II step-22, step-56
+// UPDATED: Now returns SolverInfo with iterations/residual/time
 // ============================================================================
 
 #include "solvers/ns_solver.h"
@@ -27,9 +22,9 @@
 #include <chrono>
 
 // ============================================================================
-// Simple GMRES + ILU solver with parameters
+// Simple GMRES + ILU solver - RETURNS SolverInfo
 // ============================================================================
-void solve_ns_system(
+SolverInfo solve_ns_system(
     const dealii::SparseMatrix<double>& matrix,
     const dealii::Vector<double>& rhs,
     dealii::Vector<double>& solution,
@@ -37,6 +32,11 @@ void solve_ns_system(
     const LinearSolverParams& params,
     bool log_output)
 {
+    SolverInfo info;
+    info.solver_name = "NS";
+    info.matrix_size = matrix.m();
+    info.nnz = matrix.n_nonzero_elements();
+
     if (solution.size() != rhs.size())
         solution.reinit(rhs.size());
 
@@ -47,7 +47,8 @@ void solve_ns_system(
         constraints.distribute(solution);
         if (log_output)
             std::cout << "[NS Solver] Zero RHS\n";
-        return;
+        info.converged = true;
+        return info;
     }
 
     auto start = std::chrono::high_resolution_clock::now();
@@ -63,6 +64,7 @@ void solve_ns_system(
     dealii::SparseILU<double> preconditioner;
     unsigned int iterations = 0;
     double final_residual = 0.0;
+    bool converged = false;
 
     try
     {
@@ -70,6 +72,7 @@ void solve_ns_system(
         solver.solve(matrix, solution, rhs, preconditioner);
         iterations = solver_control.last_step();
         final_residual = solver_control.last_value();
+        converged = true;
     }
     catch (dealii::SolverControl::NoConvergence& e)
     {
@@ -86,6 +89,8 @@ void solve_ns_system(
             direct.vmult(solution, rhs);
             iterations = 1;
             final_residual = 0.0;
+            converged = true;
+            info.used_direct = true;
         }
     }
 
@@ -94,6 +99,12 @@ void solve_ns_system(
 
     constraints.distribute(solution);
 
+    // Fill SolverInfo
+    info.iterations = iterations;
+    info.residual = final_residual;
+    info.solve_time = solve_time;
+    info.converged = converged;
+
     if (log_output || params.verbose)
     {
         std::cout << "[NS Solver] Size: " << matrix.m()
@@ -101,19 +112,20 @@ void solve_ns_system(
                   << ", res: " << final_residual
                   << ", time: " << solve_time << "s\n";
     }
+
+    return info;
 }
 
 // ============================================================================
 // Legacy interface with default parameters
 // ============================================================================
-void solve_ns_system(
+SolverInfo solve_ns_system(
     const dealii::SparseMatrix<double>& matrix,
     const dealii::Vector<double>& rhs,
     dealii::Vector<double>& solution,
     const dealii::AffineConstraints<double>& constraints,
     bool verbose)
 {
-    // Default NS simple parameters
     LinearSolverParams default_params;
     default_params.type = LinearSolverParams::Type::GMRES;
     default_params.preconditioner = LinearSolverParams::Preconditioner::ILU;
@@ -125,14 +137,14 @@ void solve_ns_system(
     default_params.fallback_to_direct = true;
     default_params.verbose = verbose;
 
-    solve_ns_system(matrix, rhs, solution, constraints,
-                    default_params, /*log_output=*/verbose);
+    return solve_ns_system(matrix, rhs, solution, constraints,
+                           default_params, /*log_output=*/verbose);
 }
 
 // ============================================================================
-// FGMRES + Block Schur preconditioner with parameters
+// FGMRES + Block Schur preconditioner - RETURNS SolverInfo
 // ============================================================================
-void solve_ns_system_schur(
+SolverInfo solve_ns_system_schur(
     const dealii::SparseMatrix<double>& matrix,
     const dealii::Vector<double>& rhs,
     dealii::Vector<double>& solution,
@@ -144,6 +156,11 @@ void solve_ns_system_schur(
     const LinearSolverParams& params,
     bool log_output)
 {
+    SolverInfo info;
+    info.solver_name = "NS-Schur";
+    info.matrix_size = matrix.m();
+    info.nnz = matrix.n_nonzero_elements();
+
     if (solution.size() != rhs.size())
         solution.reinit(rhs.size());
 
@@ -154,7 +171,8 @@ void solve_ns_system_schur(
         constraints.distribute(solution);
         if (log_output)
             std::cout << "[NS Schur] Zero RHS\n";
-        return;
+        info.converged = true;
+        return info;
     }
 
     auto start = std::chrono::high_resolution_clock::now();
@@ -173,12 +191,14 @@ void solve_ns_system_schur(
 
     unsigned int iterations = 0;
     double final_residual = 0.0;
+    bool converged = false;
 
     try
     {
         solver.solve(matrix, solution, rhs, preconditioner);
         iterations = solver_control.last_step();
         final_residual = solver_control.last_value();
+        converged = true;
     }
     catch (dealii::SolverControl::NoConvergence& e)
     {
@@ -193,6 +213,8 @@ void solve_ns_system_schur(
             dealii::SparseDirectUMFPACK direct;
             direct.initialize(matrix);
             direct.vmult(solution, rhs);
+            converged = true;
+            info.used_direct = true;
         }
     }
 
@@ -201,6 +223,12 @@ void solve_ns_system_schur(
 
     constraints.distribute(solution);
 
+    // Fill SolverInfo
+    info.iterations = iterations;
+    info.residual = final_residual;
+    info.solve_time = solve_time;
+    info.converged = converged;
+
     if (log_output || params.verbose)
     {
         std::cout << "[NS Schur] FGMRES iters: " << iterations
@@ -208,12 +236,14 @@ void solve_ns_system_schur(
                   << ", S solves: " << preconditioner.n_iterations_S
                   << ", time: " << solve_time << "s\n";
     }
+
+    return info;
 }
 
 // ============================================================================
 // Legacy Schur interface with default parameters
 // ============================================================================
-void solve_ns_system_schur(
+SolverInfo solve_ns_system_schur(
     const dealii::SparseMatrix<double>& matrix,
     const dealii::Vector<double>& rhs,
     dealii::Vector<double>& solution,
@@ -224,7 +254,6 @@ void solve_ns_system_schur(
     const std::vector<dealii::types::global_dof_index>& p_to_ns_map,
     bool verbose)
 {
-    // Default NS Schur parameters
     LinearSolverParams default_params;
     default_params.type = LinearSolverParams::Type::FGMRES;
     default_params.preconditioner = LinearSolverParams::Preconditioner::BlockSchur;
@@ -236,21 +265,28 @@ void solve_ns_system_schur(
     default_params.fallback_to_direct = true;
     default_params.verbose = verbose;
 
-    solve_ns_system_schur(matrix, rhs, solution, constraints,
-                          pressure_mass, ux_to_ns_map, uy_to_ns_map, p_to_ns_map,
-                          default_params, /*log_output=*/true);
+    return solve_ns_system_schur(matrix, rhs, solution, constraints,
+                                 pressure_mass, ux_to_ns_map, uy_to_ns_map, p_to_ns_map,
+                                 default_params, /*log_output=*/true);
 }
 
 // ============================================================================
-// Direct solver (UMFPACK)
+// Direct solver (UMFPACK) - RETURNS SolverInfo
 // ============================================================================
-void solve_ns_system_direct(
+SolverInfo solve_ns_system_direct(
     const dealii::SparseMatrix<double>& matrix,
     const dealii::Vector<double>& rhs,
     dealii::Vector<double>& solution,
     const dealii::AffineConstraints<double>& constraints,
     bool verbose)
 {
+    SolverInfo info;
+    info.solver_name = "NS-Direct";
+    info.matrix_size = matrix.m();
+    info.nnz = matrix.n_nonzero_elements();
+    info.used_direct = true;
+    info.iterations = 1;
+
     if (solution.size() != rhs.size())
         solution.reinit(rhs.size());
 
@@ -265,13 +301,19 @@ void solve_ns_system_direct(
 
     constraints.distribute(solution);
 
+    info.solve_time = solve_time;
+    info.converged = true;
+    info.residual = 0.0;
+
     if (verbose)
         std::cout << "[NS Direct] Size: " << matrix.m()
                   << ", time: " << solve_time << "s\n";
+
+    return info;
 }
 
 // ============================================================================
-// Extract solutions
+// Extract solutions (unchanged)
 // ============================================================================
 void extract_ns_solutions(
     const dealii::Vector<double>& ns_solution,
@@ -298,7 +340,7 @@ void extract_ns_solutions(
 }
 
 // ============================================================================
-// Assemble pressure mass matrix
+// Assemble pressure mass matrix (unchanged)
 // ============================================================================
 template <int dim>
 void assemble_pressure_mass_matrix(
@@ -311,7 +353,6 @@ void assemble_pressure_mass_matrix(
     const dealii::FiniteElement<dim>& fe = p_dof_handler.get_fe();
     const unsigned int dofs_per_cell = fe.n_dofs_per_cell();
 
-    // Create sparsity pattern WITH constraints (critical for AMR!)
     dealii::DynamicSparsityPattern dsp(n_p, n_p);
     dealii::DoFTools::make_sparsity_pattern(
         p_dof_handler,
@@ -343,7 +384,6 @@ void assemble_pressure_mass_matrix(
 
         cell->get_dof_indices(local_dof_indices);
 
-        // Use constraints for proper hanging node handling
         p_constraints.distribute_local_to_global(
             cell_matrix,
             local_dof_indices,
