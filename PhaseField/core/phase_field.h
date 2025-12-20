@@ -17,7 +17,6 @@
 //
 // CRITICAL: θ is LAGGED in NS (θ^{k-1}) for energy stability!
 //
-// Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
 // ============================================================================
 #ifndef PHASE_FIELD_H
 #define PHASE_FIELD_H
@@ -73,7 +72,7 @@ private:
     // ========================================================================
     // Solve methods (in phase_field.cc)
     // ========================================================================
-    void do_time_step(double dt);
+    void time_step(double dt);
     void solve_ch();
     void solve_poisson();
     void solve_magnetization();
@@ -93,15 +92,11 @@ private:
     double compute_kinetic_energy() const;
     double compute_magnetic_energy() const;
     double get_min_h() const;
-    double ch_energy_prev_ = 0.0;
 
 
     // ========================================================================
-    // MMS verification
-    // ========================================================================
-    void compute_mms_errors() const;
-
     // AMR tracking for solver optimization
+    // ========================================================================
     bool first_amr_occurred_ = false;
     bool use_direct_after_amr_ = false;
 
@@ -208,7 +203,9 @@ private:
     double time_;
     unsigned int timestep_number_;
     std::unique_ptr<MetricsLogger> metrics_logger_;
-    double E_total_prev_ = 0.0;
+    double ch_energy_old_ = 0.0;
+    double E_total_old_ = 0.0;
+    double E_internal_old_ = 0.0;
 };
 
 #endif // PHASE_FIELD_H

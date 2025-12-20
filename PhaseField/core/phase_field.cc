@@ -23,15 +23,15 @@
 #include "solvers/ns_solver.h"
 #include "solvers/solver_info.h"
 #include "utilities/tools.h"
+#include "utilities/parameters.h"
+#include "mms/mms_runtime.h"
 #include "diagnostics/ch_diagnostics.h"
-#include "../mms/mms_runtime.h"
 #include "diagnostics/poisson_diagnostics.h"
 #include "diagnostics/ns_diagnostics.h"
 #include "mms/ch_mms.h"
 #include "mms/poisson_mms.h"
 #include "mms/ns_mms.h"
 #include "physics/material_properties.h"
-#include "solvers/solver_info.h"
 
 
 
@@ -181,7 +181,7 @@ std::cout << "  Gravity: ENABLED (g = " << gravity_dimensionless << ")\n";    }
         if (time_ + current_dt > params_.time.t_final)
             current_dt = params_.time.t_final - time_;
 
-        do_time_step(current_dt);
+        time_step(current_dt);
 
         // AMR: Refine mesh every amr_interval steps (Paper Section 6.1)
         if (params_.mesh.use_amr &&
@@ -219,26 +219,48 @@ std::cout << "  Gravity: ENABLED (g = " << gravity_dimensionless << ")\n";    }
     // MMS error computation at final time
     if (mms_mode)
     {
-        std::cout << "\n--- MMS ERROR ANALYSIS ---\n";
-        compute_mms_errors();
+        compute_mms_errors<dim>(
+            theta_dof_handler_, psi_dof_handler_,
+            theta_solution_, psi_solution_,
+            params_.enable_magnetic ? &phi_dof_handler_ : nullptr,
+            params_.enable_magnetic ? &phi_solution_ : nullptr,
+            params_.enable_ns ? &ux_dof_handler_ : nullptr,
+            params_.enable_ns ? &uy_dof_handler_ : nullptr,
+            params_.enable_ns ? &p_dof_handler_ : nullptr,
+            params_.enable_ns ? &ux_solution_ : nullptr,
+            params_.enable_ns ? &uy_solution_ : nullptr,
+            params_.enable_ns ? &p_solution_ : nullptr,
+            time_,
+            params_.domain.y_max - params_.domain.y_min,
+            get_min_h(),
+            params_.mesh.initial_refinement,
+            params_.enable_magnetic,
+            params_.enable_ns);
     }
+
+    // ============================================================================
+    // compute_mms_errors()
+    // ============================================================================
+    compute_mms_errors<dim>(
+           theta_dof_handler_, psi_dof_handler_,
+           theta_solution_, psi_solution_,
+           params_.enable_magnetic ? &phi_dof_handler_ : nullptr,
+           params_.enable_magnetic ? &phi_solution_ : nullptr,
+           params_.enable_ns ? &ux_dof_handler_ : nullptr,
+           params_.enable_ns ? &uy_dof_handler_ : nullptr,
+           params_.enable_ns ? &p_dof_handler_ : nullptr,
+           params_.enable_ns ? &ux_solution_ : nullptr,
+           params_.enable_ns ? &uy_solution_ : nullptr,
+           params_.enable_ns ? &p_solution_ : nullptr,
+           time_,
+           params_.domain.y_max - params_.domain.y_min,
+           get_min_h(),
+           params_.mesh.initial_refinement,
+           params_.enable_magnetic,
+           params_.enable_ns);
+
 
     std::cout << "[Info] Output saved to: " << params_.output.folder << "\n";
-    // NS MMS errors
-    if (params_.enable_ns)
-    {
-        const double L_y = params_.domain.y_max - params_.domain.y_min;
-        auto ns_errors = compute_ns_mms_error<dim>(
-            ux_dof_handler_, uy_dof_handler_, p_dof_handler_,
-            ux_solution_, uy_solution_, p_solution_,
-            time_, L_y);
-
-        std::cout << "\n--- NS MMS Errors ---\n";
-        ns_errors.print(params_.mesh.initial_refinement, get_min_h());
-
-        std::cout << "\nNS Convergence (h, ux_L2, ux_H1, uy_L2, uy_H1, p_L2):\n";
-        ns_errors.print_for_convergence(get_min_h());
-    }
 }
 
 
@@ -246,7 +268,7 @@ std::cout << "  Gravity: ENABLED (g = " << gravity_dimensionless << ")\n";    }
 // do_time_step() - Single time step (staggered approach)
 // ============================================================================
 template <int dim>
-void PhaseFieldProblem<dim>::do_time_step(double dt)
+void PhaseFieldProblem<dim>::time_step(double dt)
 {
     // Save old solutions BEFORE updating (for lagging)
     theta_old_solution_ = theta_solution_;
@@ -287,7 +309,7 @@ void PhaseFieldProblem<dim>::do_time_step(double dt)
     // CH diagnostics
     CHDiagnosticData ch_data = compute_ch_diagnostics<dim>(
         theta_dof_handler_, theta_solution_, epsilon,
-        timestep_number_, time_new, dt, ch_energy_prev_);
+        timestep_number_, time_new, dt, ch_energy_old_);
 
     step_data.theta_min = ch_data.theta_min;
     step_data.theta_max = ch_data.theta_max;
@@ -300,7 +322,7 @@ void PhaseFieldProblem<dim>::do_time_step(double dt)
     // step_data.ch_iterations = ...;  // TODO: capture from solve_ch()
     // step_data.ch_residual = ...;
 
-    ch_energy_prev_ = ch_data.energy;
+    ch_energy_old_ = ch_data.energy;
 
     // ========================================================================
     // Step 2: Poisson
@@ -369,14 +391,18 @@ void PhaseFieldProblem<dim>::do_time_step(double dt)
     }
 
     // ========================================================================
-    // Compute derived quantities and total energy
+    // Compute derived quantities and energy
     // ========================================================================
+    step_data.E_internal = step_data.E_CH + step_data.E_kin;
     step_data.E_total = step_data.E_CH + step_data.E_kin + step_data.E_mag;
+
     if (timestep_number_ > 0 && dt > 0)
     {
-        step_data.dE_total_dt = (step_data.E_total - E_total_prev_) / dt;
+        step_data.dE_total_dt = (step_data.E_total - E_total_old_) / dt;
+        step_data.dE_internal_dt = (step_data.E_internal - E_internal_old_) / dt;
     }
-    E_total_prev_ = step_data.E_total;
+    E_total_old_ = step_data.E_total;
+    E_internal_old_ = step_data.E_internal;
 
     step_data.compute_derived();  // Sets warning flags
 
@@ -689,6 +715,10 @@ void PhaseFieldProblem<dim>::solve_ns()
         ux_solution_,
         uy_solution_,
         p_solution_);
+
+    // Subtract mean pressure (free-surface BC needs pressure reference)
+    const double mean_p = p_solution_.mean_value();
+    p_solution_.add(-mean_p);
 
     ux_constraints_.distribute(ux_solution_);
     uy_constraints_.distribute(uy_solution_);
@@ -1007,27 +1037,6 @@ void PhaseFieldProblem<dim>::output_results(unsigned int step) const
         }
     }
 }
-
-// ============================================================================
-// compute_mms_errors()
-// ============================================================================
-template <int dim>
-void PhaseFieldProblem<dim>::compute_mms_errors() const
-{
-    auto errors = compute_ch_mms_errors<dim>(
-        theta_dof_handler_,
-        psi_dof_handler_,
-        theta_solution_,
-        psi_solution_,
-        time_);
-
-    errors.print();
-
-    std::cout << "\nConvergence data (tab-separated for plotting):\n";
-    std::cout << "h\ttheta_L2\ttheta_H1\tpsi_L2\n";
-    errors.print_for_convergence();
-}
-
 // ============================================================================
 // Explicit instantiation
 // ============================================================================
