@@ -61,6 +61,7 @@ set(SOURCES
         mms/ch_mms.cc
         mms/poisson_mms.cc
         mms/ns_mms.cc
+        mms/mms_runtime.cc
 
 
 

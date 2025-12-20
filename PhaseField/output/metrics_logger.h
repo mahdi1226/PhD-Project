@@ -64,11 +64,11 @@ public:
      */
     void log_step(const StepData& data)
     {
-        // Compute energy rate of change
-        double dE_dt = 0.0;
+        // Energy rates are already in StepData
+        double dE_total_dt = 0.0;
         if (step_count_ > 0 && data.dt > 0)
         {
-            dE_dt = (data.E_total - E_total_prev_) / data.dt;
+            dE_total_dt = (data.E_total - E_total_prev_) / data.dt;
         }
         E_total_prev_ = data.E_total;
 
@@ -114,9 +114,11 @@ public:
             << data.F_mag_max << ","
             << data.F_grav_max << ","
             << data.ns_time << ","
-            // Total energy
+            // Energy
+            << data.E_internal << ","
             << data.E_total << ","
-            << dE_dt << ","
+            << data.dE_internal_dt << ","
+            << dE_total_dt << ","
             // Interface
             << data.interface_y_min << ","
             << data.interface_y_max << ","
@@ -131,8 +133,10 @@ public:
             << data.E_CH << ","
             << data.E_kin << ","
             << data.E_mag << ","
+            << data.E_internal << ","
             << data.E_total << ","
-            << dE_dt
+            << data.dE_internal_dt << ","
+            << dE_total_dt
             << "\n";
 
         // Log warnings automatically
@@ -148,10 +152,10 @@ public:
                 "divU large: L2=" + std::to_string(data.divU_L2) +
                 ", Linf=" + std::to_string(data.divU_Linf));
         }
-        if (dE_dt > 1e-4)  // Significant energy increase
+        if (data.dE_internal_dt > 1e-4)  // Significant INTERNAL energy increase
         {
             log_warning(data.step, data.time,
-                "energy increasing: dE/dt=" + std::to_string(dE_dt));
+                "internal energy increasing: dE_internal/dt=" + std::to_string(data.dE_internal_dt));
         }
 
         ++step_count_;
@@ -256,13 +260,13 @@ private:
             << "ux_min,ux_max,uy_min,uy_max,U_max,E_kin,"
             << "divU_L2,divU_Linf,CFL,p_min,p_max,"
             << "F_cap_max,F_mag_max,F_grav_max,ns_time,"
-            << "E_total,dE_total_dt,"
+            << "E_internal,E_total,dE_internal_dt,dE_total_dt,"
             << "interface_y_min,interface_y_max,interface_y_mean"
             << "\n";
 
         // Energy header
         energy_file_
-            << "step,time,E_CH,E_kin,E_mag,E_total,dE_total_dt"
+            << "step,time,E_CH,E_kin,E_mag,E_internal,E_total,dE_internal_dt,dE_total_dt"
             << "\n";
 
         // Warnings header

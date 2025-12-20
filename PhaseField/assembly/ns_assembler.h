@@ -41,6 +41,23 @@
 #include <vector>
 
 /**
+ * @brief Force magnitudes computed during NS assembly
+ */
+struct NSAssemblyInfo
+{
+    double F_cap_max = 0.0;     // max|F_capillary|
+    double F_mag_max = 0.0;     // max|F_magnetic|
+    double F_grav_max = 0.0;    // max|F_gravity|
+
+    void reset()
+    {
+        F_cap_max = 0.0;
+        F_mag_max = 0.0;
+        F_grav_max = 0.0;
+    }
+};
+
+/**
  * @brief Assemble the Navier-Stokes system (Paper Eq. 42e)
  *
  * Assembles the coupled (ux, uy, p) system with all forces.
@@ -69,6 +86,7 @@
  * @param ns_constraints    Combined constraints (hanging nodes + BCs)
  * @param ns_matrix         [OUT] Assembled system matrix
  * @param ns_rhs            [OUT] Assembled RHS vector
+ * @param assembly_info     [OUT] Optional: force magnitudes for diagnostics
  */
 template <int dim>
 void assemble_ns_system(
@@ -95,19 +113,5 @@ void assemble_ns_system(
     const dealii::AffineConstraints<double>& ns_constraints,
     dealii::SparseMatrix<double>& ns_matrix,
     dealii::Vector<double>& ns_rhs);
-
-struct NSAssemblyInfo
-{
-    double F_cap_max = 0.0;     // max|F_capillary|
-    double F_mag_max = 0.0;     // max|F_magnetic|
-    double F_grav_max = 0.0;    // max|F_gravity|
-
-    void reset()
-    {
-        F_cap_max = 0.0;
-        F_mag_max = 0.0;
-        F_grav_max = 0.0;
-    }
-};
 
 #endif // NS_ASSEMBLER_H

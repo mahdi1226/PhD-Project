@@ -84,8 +84,10 @@ struct StepData
     // ========================================================================
     // Total energy (Eq. 44)
     // ========================================================================
-    double E_total = 0.0;           // E_CH + E_kin + E_mag
-    double dE_total_dt = 0.0;       // Should be ≤ 0 for stability
+    double E_internal = 0.0;        // E_CH + E_kin (internal, should dissipate)
+    double E_total = 0.0;           // E_CH + E_kin + E_mag (includes external input)
+    double dE_internal_dt = 0.0;    // Should be ≤ 0 for stability (no external input)
+    double dE_total_dt = 0.0;       // Can be > 0 due to magnetic field ramping
 
     // ========================================================================
     // Interface tracking (for Rosensweig)
@@ -99,7 +101,7 @@ struct StepData
     // ========================================================================
     bool theta_bounds_violated = false;
     bool divU_large = false;
-    bool energy_increasing = false;
+    bool energy_increasing = false;  // Internal energy (E_CH + E_kin) increasing
 
     // ========================================================================
     // Helper methods
@@ -108,10 +110,12 @@ struct StepData
     /// Compute derived quantities
     void compute_derived()
     {
+        E_internal = E_CH + E_kin;
         E_total = E_CH + E_kin + E_mag;
         theta_bounds_violated = (theta_min < -1.001 || theta_max > 1.001);
-        divU_large = (divU_L2 > 1.0);
-        energy_increasing = (dE_total_dt > 1e-6);
+        divU_large = (divU_L2 > 0.1);
+        // Only warn if INTERNAL energy increases (magnetic energy is external input)
+        energy_increasing = (dE_internal_dt > 1e-6);
     }
 
     /// Check if any warnings
