@@ -8,33 +8,13 @@
 #ifndef PARAMETERS_H
 #define PARAMETERS_H
 
+#include "solvers/solver_info.h"  // LinearSolverParams
+
 #include <deal.II/base/point.h>
 #include <deal.II/base/tensor.h>
 #include <vector>
 #include <string>
 #include <iostream>
-
-// ============================================================================
-// Linear Solver Configuration
-// ============================================================================
-struct LinearSolverParams
-{
-    enum class Type { CG, GMRES, FGMRES, Direct };
-    Type type = Type::GMRES;
-
-    enum class Preconditioner { None, Jacobi, SSOR, ILU, BlockSchur };
-    Preconditioner preconditioner = Preconditioner::ILU;
-
-    double rel_tolerance = 1e-8;
-    double abs_tolerance = 1e-12;
-    unsigned int max_iterations = 2000;
-    unsigned int gmres_restart = 50;
-    double ssor_omega = 1.2;
-
-    bool use_iterative = true;
-    bool fallback_to_direct = true;
-    bool verbose = false;
-};
 
 // ============================================================================
 // Runtime Parameters (Numerics / Configuration)
@@ -73,7 +53,6 @@ struct Parameters
         double ramp_time = 1.6;
     } dipoles;
 
-
     // ========================================================================
     // Time-stepping
     // ========================================================================
@@ -91,7 +70,6 @@ struct Parameters
         double perturbation = 0.0;
         int perturbation_modes = 0;
     } ic;
-
 
     // ========================================================================
     // Mesh / AMR
@@ -125,7 +103,7 @@ struct Parameters
     struct Output
     {
         std::string folder = "../Results";
-        unsigned int frequency = 50;
+        unsigned int frequency = 25;
         bool verbose = false;
     } output;
 
@@ -145,6 +123,11 @@ struct Parameters
     dealii::Tensor<1, 2> gravity_direction;
 
     // ========================================================================
+    // Picard iteration settings
+    // ========================================================================
+    unsigned int picard_iterations = 3;
+
+    // ========================================================================
     // Solver parameters
     // ========================================================================
     struct Solvers
@@ -161,6 +144,13 @@ struct Parameters
             LinearSolverParams::Preconditioner::SSOR,
             1e-8, 1e-12, 2000, 50, 1.2,
             true, true, false
+        };
+
+        LinearSolverParams magnetization = {
+            LinearSolverParams::Type::Direct,
+            LinearSolverParams::Preconditioner::None,
+            1e-8, 1e-12, 1000, 50, 1.2,
+            false, true, false  // Direct solver for small DG system
         };
 
         LinearSolverParams ns = {

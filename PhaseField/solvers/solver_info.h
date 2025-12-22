@@ -1,13 +1,36 @@
 // ============================================================================
-// solvers/solver_info.h - Solver Statistics
+// solvers/solver_info.h - Solver Parameters and Statistics
 //
-// Struct to capture iterations, residual, and timing from linear solvers.
-// Used by CH, Poisson, and NS solvers to return diagnostic info.
+// LinearSolverParams: Configuration for linear solvers
+// SolverInfo: Statistics returned from linear solvers
+// Used by CH, Poisson, NS, and Magnetization solvers.
 // ============================================================================
 #ifndef SOLVER_INFO_H
 #define SOLVER_INFO_H
 
 #include <string>
+
+/**
+ * @brief Linear solver configuration parameters
+ */
+struct LinearSolverParams
+{
+    enum class Type { CG, GMRES, FGMRES, Direct };
+    Type type = Type::GMRES;
+
+    enum class Preconditioner { None, Jacobi, SSOR, ILU, BlockSchur };
+    Preconditioner preconditioner = Preconditioner::ILU;
+
+    double rel_tolerance = 1e-8;
+    double abs_tolerance = 1e-12;
+    unsigned int max_iterations = 2000;
+    unsigned int gmres_restart = 50;
+    double ssor_omega = 1.2;
+
+    bool use_iterative = true;
+    bool fallback_to_direct = true;
+    bool verbose = false;
+};
 
 /**
  * @brief Solver statistics returned from linear solvers
