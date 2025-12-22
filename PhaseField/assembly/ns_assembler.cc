@@ -244,20 +244,9 @@ void assemble_ns_system(
     // Enable only for physical simulations, not paper replication.
     // Disabled in MMS mode.
     // ========================================================================
-    const bool use_gravity = false;
+    const bool use_gravity = params.enable_gravity && !mms_mode;
     const double g_mag = gravity_dimensionless;
     dealii::Tensor<1, dim> g_direction = params.gravity_direction;
-
-    if (use_gravity)
-    {
-        static bool gravity_warned = false;
-        if (!gravity_warned)
-        {
-            std::cout << "[NS] WARNING: Gravity is ENABLED. This is NOT part of "
-                << "paper Eq. 42e and breaks the discrete energy law.\n";
-            gravity_warned = true;
-        }
-    }
 
     // Diagnostic tracking
     double max_F_cap = 0.0, max_F_mag = 0.0, max_F_grav = 0.0;
@@ -404,10 +393,9 @@ void assemble_ns_system(
             if (use_gravity)
             {
                 const double H_theta = heaviside(theta_old_q / epsilon);
-                const double gravity_factor = 1.0 + r * H_theta;    // ρ_θ = 1 + r H(θ/ε)
-                F_grav = gravity_factor * g_mag * g_direction;
+                const double buoyancy_factor = r * H_theta;
+                F_grav = buoyancy_factor * g_mag * g_direction;
             }
-
             // ================================================================
             // MMS source term: f = ∂U/∂t + (U·∇)U - ν∇²U + ∇p
             // Only active in MMS mode
