@@ -244,7 +244,7 @@ void assemble_ns_system(
     // Enable only for physical simulations, not paper replication.
     // Disabled in MMS mode.
     // ========================================================================
-    const bool use_gravity = params.enable_gravity && !mms_mode;
+    const bool use_gravity = false;
     const double g_mag = gravity_dimensionless;
     dealii::Tensor<1, dim> g_direction = params.gravity_direction;
 

@@ -45,7 +45,7 @@ void Parameters::setup_rosensweig()
     enable_gravity = true;
 
     // Output
-    output.frequency = 50;
+    output.frequency = 25;
 }
 
 void Parameters::setup_hedgehog()
@@ -75,7 +75,7 @@ void Parameters::setup_hedgehog()
     enable_gravity = true;
 
     // Output
-    output.frequency = 50;
+    output.frequency = 25;
 }
 
 Parameters Parameters::parse_command_line(int argc, char* argv[])

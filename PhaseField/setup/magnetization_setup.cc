@@ -97,10 +97,10 @@ void initialize_magnetization_dg(
             // Compute χ(θ) = χ₀(1+θ)/2
             const double chi = susceptibility(theta_q, chi_0);
 
-            // Compute H = -∇φ
+            // Compute H = ∇φ
             dealii::Tensor<1, dim> H;
             for (unsigned int d = 0; d < dim; ++d)
-                H[d] = -grad_phi_q[d];
+                H[d] = grad_phi_q[d];
 
             // Target: M = χ(θ) H
             const double target_Mx = chi * H[0];

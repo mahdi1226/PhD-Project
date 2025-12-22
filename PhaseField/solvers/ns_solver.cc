@@ -164,9 +164,12 @@ SolverInfo solve_ns_system_schur(
     if (solution.size() != rhs.size())
         solution.reinit(rhs.size());
 
+
+
     const double rhs_norm = rhs.l2_norm();
     if (rhs_norm < 1e-14)
     {
+
         solution = 0;
         constraints.distribute(solution);
         if (log_output)
@@ -221,11 +224,18 @@ SolverInfo solve_ns_system_schur(
     auto end = std::chrono::high_resolution_clock::now();
     double solve_time = std::chrono::duration<double>(end - start).count();
 
+    // Enforce constraints on the final solution
     constraints.distribute(solution);
+
+    // Compute true residual: ||Ax - b|| / ||b||
+    dealii::Vector<double> residual(rhs.size());
+    matrix.vmult(residual, solution);
+    residual -= rhs;
+    const double true_residual = residual.l2_norm() / rhs_norm;
 
     // Fill SolverInfo
     info.iterations = iterations;
-    info.residual = final_residual;
+    info.residual = true_residual;
     info.solve_time = solve_time;
     info.converged = converged;
 
@@ -234,6 +244,8 @@ SolverInfo solve_ns_system_schur(
         std::cout << "[NS Schur] FGMRES iters: " << iterations
                   << ", A solves: " << preconditioner.n_iterations_A
                   << ", S solves: " << preconditioner.n_iterations_S
+                  << ", FGMRES res: " << final_residual
+                  << ", true res: " << true_residual
                   << ", time: " << solve_time << "s\n";
     }
 
