@@ -641,6 +641,14 @@ void PhaseFieldProblem<dim>::solve_ns()
     ns_matrix_ = 0;
     ns_rhs_ = 0;
 
+    Assert(ux_old_solution_.size() == ux_dof_handler_.n_dofs(), dealii::ExcInternalError());
+    Assert(uy_old_solution_.size() == uy_dof_handler_.n_dofs(), dealii::ExcInternalError());
+    Assert(theta_old_solution_.size() == theta_dof_handler_.n_dofs(), dealii::ExcInternalError());
+    Assert(psi_solution_.size() == psi_dof_handler_.n_dofs(), dealii::ExcInternalError());
+    if (params_.enable_magnetic) {
+        Assert(phi_solution_.size() == phi_dof_handler_.n_dofs(), dealii::ExcInternalError());
+    }
+
     assemble_ns_system<dim>(
         ux_dof_handler_,
         uy_dof_handler_,
@@ -668,11 +676,25 @@ void PhaseFieldProblem<dim>::solve_ns()
 
 
     SolverInfo ns_info;
+
+    {
+        double rhs_vel = 0, rhs_p = 0;
+        const unsigned int n_vel = ux_to_ns_map_.size() + uy_to_ns_map_.size();
+        for (unsigned int i = 0; i < n_vel; ++i)
+            rhs_vel += ns_rhs_[i] * ns_rhs_[i];
+        for (unsigned int i = n_vel; i < ns_rhs_.size(); ++i)
+            rhs_p += ns_rhs_[i] * ns_rhs_[i];
+
+        std::cout << "[DIRECT RHS] vel=" << std::sqrt(rhs_vel)
+                  << ", p=" << std::sqrt(rhs_p) << "\n";
+    }
+
+
     // Use FGMRES + Block Schur preconditioner (following deal.II step-56)
     // Use direct solver if:
     // 1. After AMR (use_direct_after_amr_), OR
     // 2. User requested direct solver (--direct flag)
-    if (use_direct_after_amr_ || !params_.solvers.ns.use_iterative)
+    if (direct_solve_countdown_ > 0 || !params_.solvers.ns.use_iterative)
     {
         solve_ns_system_direct(
             ns_matrix_,
@@ -681,21 +703,52 @@ void PhaseFieldProblem<dim>::solve_ns()
             ns_combined_constraints_,
             params_.output.verbose);
 
-        // Only reset if it was the AMR flag (not user preference)
-        if (use_direct_after_amr_)
-            use_direct_after_amr_ = false;
+        // Decrement counter (only if not user preference)
+        if (direct_solve_countdown_ > 0)
+        {
+            --direct_solve_countdown_;
+            if (params_.output.verbose && direct_solve_countdown_ == 0)
+                std::cout << "[NS] AMR direct solve period complete, switching to Schur\n";
+        }
     }
     else
     {
+        // Decompose residual: check A*x and RHS separately
+        {
+            dealii::Vector<double> Ax(ns_rhs_.size());
+            ns_matrix_.vmult(Ax, ns_solution_);
+
+            double Ax_vel = 0, Ax_p = 0;
+            double rhs_vel = 0, rhs_p = 0;
+            const unsigned int n_vel = ux_to_ns_map_.size() + uy_to_ns_map_.size();
+
+            for (unsigned int i = 0; i < n_vel; ++i) {
+                Ax_vel += Ax[i] * Ax[i];
+                rhs_vel += ns_rhs_[i] * ns_rhs_[i];
+            }
+            for (unsigned int i = n_vel; i < Ax.size(); ++i) {
+                Ax_p += Ax[i] * Ax[i];
+                rhs_p += ns_rhs_[i] * ns_rhs_[i];
+            }
+        }
+
+        if (!schur_preconditioner_)
+        {
+            schur_preconditioner_ = std::make_unique<BlockSchurPreconditioner>(
+                ns_matrix_, pressure_mass_matrix_,
+                ux_to_ns_map_, uy_to_ns_map_, p_to_ns_map_,
+                true);
+        }
+        else
+        {
+            schur_preconditioner_->update(ns_matrix_, pressure_mass_matrix_);
+        }
+
         solve_ns_system_schur(
-            ns_matrix_,
-            ns_rhs_,
-            ns_solution_,
-            ns_combined_constraints_,
-            pressure_mass_matrix_,
-            ux_to_ns_map_,
-            uy_to_ns_map_,
-            p_to_ns_map_,
+            ns_matrix_, ns_rhs_, ns_solution_, ns_combined_constraints_,
+            *schur_preconditioner_,
+            params_.solvers.ns.max_iterations,
+            params_.solvers.ns.rel_tolerance,
             params_.output.verbose);
     }
 

@@ -13,6 +13,8 @@
 
 #include <iostream>
 #include <memory>
+#include <limits>
+#include <algorithm>
 
 template <int dim>
 void PhaseFieldProblem<dim>::refine_mesh()
@@ -20,6 +22,10 @@ void PhaseFieldProblem<dim>::refine_mesh()
     // =========================================================================
     // Check if AMR is enabled
     // =========================================================================
+    // Validate parameters (even if AMR disabled, catch config errors)
+    Assert(params_.mesh.interface_coarsen_threshold > 0.0 &&
+           params_.mesh.interface_coarsen_threshold < 1.0,
+           dealii::ExcMessage("interface_coarsen_threshold must be in (0,1)"));
     if (!params_.mesh.use_amr)
     {
         return;
@@ -29,35 +35,32 @@ void PhaseFieldProblem<dim>::refine_mesh()
         std::cout << "[AMR] Starting mesh refinement...\n";
 
     // =========================================================================
-    // Step 1: Compute refinement indicators based on |∇θ|
-    // Paper Eq. 99: η_T = h_T * ||∂θ/∂n||_{∂T}
-    // We use gradient approximation as a simpler alternative
+    // Step 1: Compute refinement indicators based on |∇ψ|
+    // Paper Eq. 99 uses jump-based indicator; we use gradient approximation
+    // ψ has sharper gradients at interface than θ
     // =========================================================================
     dealii::Vector<float> indicators(triangulation_.n_active_cells());
 
     dealii::DerivativeApproximation::approximate_gradient(
-        theta_dof_handler_,
-        theta_solution_,
+        psi_dof_handler_,
+        psi_solution_, // ψ has sharper gradients at interface
         indicators);
 
     // Scale by cell diameter (Kelly-type indicator)
-    unsigned int cell_idx = 0;
-    for (const auto& cell : theta_dof_handler_.active_cell_iterators())
+    for (const auto& cell : psi_dof_handler_.active_cell_iterators())
     {
-        indicators[cell_idx] *= cell->diameter();
-        ++cell_idx;
+        const auto idx = cell->active_cell_index();
+        AssertIndexRange(idx, indicators.size());
+        indicators[idx] *= cell->diameter();
     }
-
     // =========================================================================
-    // Step 2: Mark cells for refinement (no coarsening for stability)
-    // Paper uses Dörfler marking with both refinement and coarsening,
-    // but we disable coarsening for simplicity and stability
+    // Step 2: Mark cells for refinement and coarsening
     // =========================================================================
     dealii::GridRefinement::refine_and_coarsen_fixed_fraction(
         triangulation_,
         indicators,
-        params_.mesh.amr_upper_fraction, // Refine top 30%
-        0.0); // No coarsening (paper allows it, but risky for stability)
+        params_.mesh.amr_upper_fraction,   // 0.3
+        params_.mesh.amr_lower_fraction);  // 0.1
 
     // Enforce min/max refinement levels
     for (const auto& cell : triangulation_.active_cell_iterators())
@@ -66,24 +69,48 @@ void PhaseFieldProblem<dim>::refine_mesh()
             cell->clear_refine_flag();
         if (cell->level() <= static_cast<int>(params_.mesh.amr_min_level))
             cell->clear_coarsen_flag();
-        cell->clear_coarsen_flag(); // Always clear coarsen for stability
     }
 
-    // Check if any refinement will happen
-    bool any_refinement = false;
+    // Protect interface region from coarsening
+    // Note: We refine based on |∇ψ| (sharper gradients) but protect based on θ
+    // (clear ±1 bounds for interface detection)
+    std::vector<dealii::types::global_dof_index> dof_indices(
+        theta_dof_handler_.get_fe().n_dofs_per_cell());
+
+    for (const auto& cell : theta_dof_handler_.active_cell_iterators())
+    {
+        if (cell->coarsen_flag_set())
+        {
+            cell->get_dof_indices(dof_indices);
+
+            double min_abs_theta = std::numeric_limits<double>::max();
+            for (const auto idx : dof_indices)
+            {
+                // Clamp to handle overshoot (θ can exceed ±1 slightly)
+                const double v = std::min(std::abs(theta_solution_[idx]), 1.0);
+                min_abs_theta = std::min(min_abs_theta, v);
+            }
+
+            if (min_abs_theta < params_.mesh.interface_coarsen_threshold)
+                cell->clear_coarsen_flag();
+        }
+    }
+
+    // Check if any mesh changes will happen
+    bool any_change = false;
     for (const auto& cell : triangulation_.active_cell_iterators())
     {
-        if (cell->refine_flag_set())
+        if (cell->refine_flag_set() || cell->coarsen_flag_set())
         {
-            any_refinement = true;
+            any_change = true;
             break;
         }
     }
 
-    if (!any_refinement)
+    if (!any_change)
     {
         if (params_.output.verbose)
-            std::cout << "[AMR] No refinement needed\n";
+            std::cout << "[AMR] No mesh changes needed\n";
         return;
     }
 
@@ -189,7 +216,7 @@ void PhaseFieldProblem<dim>::refine_mesh()
     if (params_.enable_magnetic)
     {
         setup_poisson_system();
-        if (params_.use_dg_transport )
+        if (params_.use_dg_transport)
             setup_magnetization_system();
     }
     if (params_.enable_ns)
@@ -211,6 +238,16 @@ void PhaseFieldProblem<dim>::refine_mesh()
         theta_old_solution_ = tmp;
     }
 
+    // =========================================================================
+    // Enforce maximum principle for phase field after interpolation
+    // (Interpolation can create Gibbs-like oscillations near interface)
+    // =========================================================================
+    for (unsigned int i = 0; i < theta_solution_.size(); ++i)
+    {
+        theta_solution_(i) = std::max(-1.0, std::min(1.0, theta_solution_(i)));
+        theta_old_solution_(i) = std::max(-1.0, std::min(1.0, theta_old_solution_(i)));
+    }
+
     // ψ (always)
     {
         dealii::Vector<double> tmp(psi_dof_handler_.n_dofs());
@@ -227,7 +264,7 @@ void PhaseFieldProblem<dim>::refine_mesh()
     }
 
     // M_x, M_y (if magnetic + DG)
-    if (params_.enable_magnetic && params_.use_dg_transport )
+    if (params_.enable_magnetic && params_.use_dg_transport)
     {
         {
             dealii::Vector<double> tmp(mx_dof_handler_.n_dofs());
@@ -305,7 +342,7 @@ void PhaseFieldProblem<dim>::refine_mesh()
         std::cout << "[AMR] New DoFs: theta=" << theta_dof_handler_.n_dofs();
         if (params_.enable_ns)
             std::cout << ", ux=" << ux_dof_handler_.n_dofs()
-                      << ", p=" << p_dof_handler_.n_dofs();
+                << ", p=" << p_dof_handler_.n_dofs();
         std::cout << "\n";
     }
 
@@ -317,6 +354,15 @@ void PhaseFieldProblem<dim>::refine_mesh()
         const unsigned int n_ns = ux_dof_handler_.n_dofs() +
             uy_dof_handler_.n_dofs() +
             p_dof_handler_.n_dofs();
+
+        // Verify maps were rebuilt correctly
+        Assert(ux_to_ns_map_.size() == ux_dof_handler_.n_dofs(),
+               dealii::ExcMessage("ux_to_ns_map size mismatch after AMR"));
+        Assert(uy_to_ns_map_.size() == uy_dof_handler_.n_dofs(),
+               dealii::ExcMessage("uy_to_ns_map size mismatch after AMR"));
+        Assert(p_to_ns_map_.size() == p_dof_handler_.n_dofs(),
+               dealii::ExcMessage("p_to_ns_map size mismatch after AMR"));
+
         ns_solution_.reinit(n_ns);
 
         for (unsigned int i = 0; i < ux_to_ns_map_.size(); ++i)
@@ -337,22 +383,36 @@ void PhaseFieldProblem<dim>::refine_mesh()
         if (params_.output.verbose)
             std::cout << "[AMR] Restoring divergence-free velocity...\n";
 
+        // DEBUG: Verify sizes before solve
+        const unsigned int n_ns_expected = ux_dof_handler_.n_dofs() +
+            uy_dof_handler_.n_dofs() + p_dof_handler_.n_dofs();
+
+        Assert(ns_solution_.size() == n_ns_expected, dealii::ExcInternalError());
+        Assert(ns_matrix_.m() == n_ns_expected, dealii::ExcInternalError());
+        Assert(ns_rhs_.size() == n_ns_expected, dealii::ExcInternalError());
+        Assert(ux_to_ns_map_.size() == ux_dof_handler_.n_dofs(), dealii::ExcInternalError());
+        Assert(uy_to_ns_map_.size() == uy_dof_handler_.n_dofs(), dealii::ExcInternalError());
+        Assert(p_to_ns_map_.size() == p_dof_handler_.n_dofs(), dealii::ExcInternalError());
+
+
         // Set old = current -> time derivative term becomes zero
         ux_old_solution_ = ux_solution_;
         uy_old_solution_ = uy_solution_;
 
-        // Force direct solver for this correction solve
-        use_direct_after_amr_ = true;
+        // Paper recommends K ≥ 9 direct solves after AMR for stability.
+        // Don't reset if already counting down (frequent AMR case)
+        direct_solve_countdown_ = std::max(direct_solve_countdown_, 9);  //Only 3 direct solves
 
-        // Solve NS - this enforces div(U) = 0
+        // Invalidate Schur preconditioner (must rebuild with new mesh)
+        schur_preconditioner_.reset();
+
+        // Solve NS to restore consistency with incompressibility constraint
+        // (interpolated velocity after AMR is generally not divergence-free)
         solve_ns();
 
         // Update old solutions with the corrected (div-free) velocity
         ux_old_solution_ = ux_solution_;
         uy_old_solution_ = uy_solution_;
-
-        // Reset flag - next regular solve can try Schur
-        use_direct_after_amr_ = false;
 
         if (params_.output.verbose)
             std::cout << "[AMR] Divergence-free velocity restored\n";

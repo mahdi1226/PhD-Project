@@ -34,10 +34,16 @@ void setup_ns_coupled_system(
     const unsigned int n_p = p_dof_handler.n_dofs();
     const unsigned int n_total = n_ux + n_uy + n_p;
 
+
     // ========================================================================
     // Step 1: Build index maps
     // ========================================================================
     // Layout: [ux | uy | p]
+    // Clear first to ensure clean state (critical for AMR rebuilds)
+    ux_to_ns_map.clear();
+    uy_to_ns_map.clear();
+    p_to_ns_map.clear();
+
     ux_to_ns_map.resize(n_ux);
     uy_to_ns_map.resize(n_uy);
     p_to_ns_map.resize(n_p);
@@ -70,12 +76,12 @@ void setup_ns_coupled_system(
     dealii::DynamicSparsityPattern dsp_Q2(n_ux, n_ux);
     dealii::DoFTools::make_sparsity_pattern(ux_dof_handler, dsp_Q2,
                                     ux_constraints,
-                                    /*keep_constrained_dofs=*/true);
+                                    /*keep_constrained_dofs=*/false);
 
     dealii::DynamicSparsityPattern dsp_Q1(n_p, n_p);
     dealii::DoFTools::make_sparsity_pattern(p_dof_handler, dsp_Q1,
                                     p_constraints,
-                                    /*keep_constrained_dofs=*/true);
+                                    /*keep_constrained_dofs=*/false);
 
     // Q2-Q1 coupling (velocity-pressure)
     // For Taylor-Hood, we need the coupling between Q2 velocity and Q1 pressure

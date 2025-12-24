@@ -65,10 +65,14 @@ struct Parameters
 
     struct IC
     {
-        int type = 0;
+        int type = 0;              // 0 = flat pool, 1 = circular droplet
         double pool_depth = 0.2;
         double perturbation = 0.0;
         int perturbation_modes = 0;
+        // Droplet parameters (used when type = 1)
+        double droplet_center_x = 0.5;
+        double droplet_center_y = 0.5;
+        double droplet_radius = 0.25;
     } ic;
 
     // ========================================================================
@@ -83,6 +87,7 @@ struct Parameters
         unsigned int amr_interval = 5;
         double amr_upper_fraction = 0.3;
         double amr_lower_fraction = 0.1;
+        double interface_coarsen_threshold = 0.8;
     } mesh;
 
     // ========================================================================
@@ -166,6 +171,7 @@ struct Parameters
     // ========================================================================
     void setup_rosensweig();
     void setup_hedgehog();
+    void setup_droplet();
 
     // ========================================================================
     // Command line parsing
