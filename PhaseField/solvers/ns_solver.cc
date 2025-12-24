@@ -1,12 +1,9 @@
 // ============================================================================
 // solvers/ns_solver.cc - Navier-Stokes Linear Solver Implementation
-//
-// UPDATED: Now returns SolverInfo with iterations/residual/time
 // ============================================================================
 
 #include "solvers/ns_solver.h"
 #include "solvers/ns_block_preconditioner.h"
-#include "utilities/parameters.h"
 
 #include <deal.II/lac/solver_gmres.h>
 #include <deal.II/lac/solver_cg.h>
@@ -22,18 +19,19 @@
 #include <chrono>
 
 // ============================================================================
-// Simple GMRES + ILU solver - RETURNS SolverInfo
+// GMRES + ILU solver
 // ============================================================================
 SolverInfo solve_ns_system(
     const dealii::SparseMatrix<double>& matrix,
     const dealii::Vector<double>& rhs,
     dealii::Vector<double>& solution,
     const dealii::AffineConstraints<double>& constraints,
-    const LinearSolverParams& params,
-    bool log_output)
+    unsigned int max_iterations,
+    double rel_tolerance,
+    bool verbose)
 {
     SolverInfo info;
-    info.solver_name = "NS";
+    info.solver_name = "NS-GMRES";
     info.matrix_size = matrix.m();
     info.nnz = matrix.n_nonzero_elements();
 
@@ -45,117 +43,73 @@ SolverInfo solve_ns_system(
     {
         solution = 0;
         constraints.distribute(solution);
-        if (log_output)
-            std::cout << "[NS Solver] Zero RHS\n";
+        if (verbose)
+            std::cout << "[NS GMRES] Zero RHS\n";
         info.converged = true;
         return info;
     }
 
     auto start = std::chrono::high_resolution_clock::now();
 
-    const double tol = std::max(params.abs_tolerance,
-                                params.rel_tolerance * rhs_norm);
-    dealii::SolverControl solver_control(params.max_iterations, tol);
-
-    typename dealii::SolverGMRES<dealii::Vector<double>>::AdditionalData gmres_data;
-    gmres_data.max_n_tmp_vectors = params.gmres_restart + 2;
+    const double tol = rel_tolerance * rhs_norm;
+    dealii::SolverControl solver_control(max_iterations, tol);
     dealii::SolverGMRES<dealii::Vector<double>> solver(solver_control);
 
     dealii::SparseILU<double> preconditioner;
-    unsigned int iterations = 0;
-    double final_residual = 0.0;
-    bool converged = false;
+    preconditioner.initialize(matrix);
 
     try
     {
-        preconditioner.initialize(matrix);
         solver.solve(matrix, solution, rhs, preconditioner);
-        iterations = solver_control.last_step();
-        final_residual = solver_control.last_value();
-        converged = true;
+        info.iterations = solver_control.last_step();
+        info.residual = solver_control.last_value();
+        info.converged = true;
     }
     catch (dealii::SolverControl::NoConvergence& e)
     {
-        iterations = e.last_step;
-        final_residual = e.last_residual;
-        std::cerr << "[NS Solver] GMRES: " << iterations << " iters, "
-                  << "res = " << final_residual << " (tol = " << tol << ")\n";
+        info.iterations = e.last_step;
+        info.residual = e.last_residual;
+        std::cerr << "[NS GMRES] Did not converge: " << info.iterations
+                  << " iters, res = " << info.residual << "\n";
+        std::cerr << "[NS GMRES] Falling back to UMFPACK.\n";
 
-        if (params.fallback_to_direct)
-        {
-            std::cerr << "[NS Solver] Falling back to UMFPACK.\n";
-            dealii::SparseDirectUMFPACK direct;
-            direct.initialize(matrix);
-            direct.vmult(solution, rhs);
-            iterations = 1;
-            final_residual = 0.0;
-            converged = true;
-            info.used_direct = true;
-        }
+        dealii::SparseDirectUMFPACK direct;
+        direct.initialize(matrix);
+        direct.vmult(solution, rhs);
+        info.converged = true;
+        info.used_direct = true;
     }
 
     auto end = std::chrono::high_resolution_clock::now();
-    double solve_time = std::chrono::duration<double>(end - start).count();
+    info.solve_time = std::chrono::duration<double>(end - start).count();
 
-    constraints.distribute(solution);
+   // constraints.distribute(solution);
 
-    // Fill SolverInfo
-    info.iterations = iterations;
-    info.residual = final_residual;
-    info.solve_time = solve_time;
-    info.converged = converged;
-
-    if (log_output || params.verbose)
+    if (verbose)
     {
-        std::cout << "[NS Solver] Size: " << matrix.m()
-                  << ", iters: " << iterations
-                  << ", res: " << final_residual
-                  << ", time: " << solve_time << "s\n";
+        std::cout << "[NS GMRES] Size: " << matrix.m()
+                  << ", iters: " << info.iterations
+                  << ", res: " << info.residual
+                  << ", time: " << info.solve_time << "s\n";
     }
 
     return info;
 }
 
 // ============================================================================
-// Legacy interface with default parameters
-// ============================================================================
-SolverInfo solve_ns_system(
-    const dealii::SparseMatrix<double>& matrix,
-    const dealii::Vector<double>& rhs,
-    dealii::Vector<double>& solution,
-    const dealii::AffineConstraints<double>& constraints,
-    bool verbose)
-{
-    LinearSolverParams default_params;
-    default_params.type = LinearSolverParams::Type::GMRES;
-    default_params.preconditioner = LinearSolverParams::Preconditioner::ILU;
-    default_params.rel_tolerance = 1e-3;
-    default_params.abs_tolerance = 1e-6;
-    default_params.max_iterations = 3000;
-    default_params.gmres_restart = 150;
-    default_params.use_iterative = true;
-    default_params.fallback_to_direct = true;
-    default_params.verbose = verbose;
-
-    return solve_ns_system(matrix, rhs, solution, constraints,
-                           default_params, /*log_output=*/verbose);
-}
-
-// ============================================================================
-// FGMRES + Block Schur preconditioner - RETURNS SolverInfo
+// FGMRES + Block Schur preconditioner
 // ============================================================================
 SolverInfo solve_ns_system_schur(
     const dealii::SparseMatrix<double>& matrix,
     const dealii::Vector<double>& rhs,
     dealii::Vector<double>& solution,
     const dealii::AffineConstraints<double>& constraints,
-    const dealii::SparseMatrix<double>& pressure_mass,
-    const std::vector<dealii::types::global_dof_index>& ux_to_ns_map,
-    const std::vector<dealii::types::global_dof_index>& uy_to_ns_map,
-    const std::vector<dealii::types::global_dof_index>& p_to_ns_map,
-    const LinearSolverParams& params,
-    bool log_output)
+    BlockSchurPreconditioner& preconditioner,
+    unsigned int max_iterations,
+    double rel_tolerance,
+    bool verbose)
 {
+
     SolverInfo info;
     info.solver_name = "NS-Schur";
     info.matrix_size = matrix.m();
@@ -164,15 +118,13 @@ SolverInfo solve_ns_system_schur(
     if (solution.size() != rhs.size())
         solution.reinit(rhs.size());
 
-
-
     const double rhs_norm = rhs.l2_norm();
+
     if (rhs_norm < 1e-14)
     {
-
         solution = 0;
         constraints.distribute(solution);
-        if (log_output)
+        if (verbose)
             std::cout << "[NS Schur] Zero RHS\n";
         info.converged = true;
         return info;
@@ -180,110 +132,63 @@ SolverInfo solve_ns_system_schur(
 
     auto start = std::chrono::high_resolution_clock::now();
 
-    const double tol = std::max(params.abs_tolerance,
-                                params.rel_tolerance * rhs_norm);
-    dealii::SolverControl solver_control(params.max_iterations, tol);
+    // Reset iteration counters
+    preconditioner.n_iterations_A = 0;
+    preconditioner.n_iterations_S = 0;
 
+    const double tol = rel_tolerance * rhs_norm;
+    dealii::SolverControl solver_control(max_iterations, tol);
     dealii::SolverFGMRES<dealii::Vector<double>> solver(solver_control);
-
-    const bool do_solve_A = true;
-    BlockSchurPreconditioner preconditioner(
-        matrix, pressure_mass,
-        ux_to_ns_map, uy_to_ns_map, p_to_ns_map,
-        do_solve_A);
-
-    unsigned int iterations = 0;
-    double final_residual = 0.0;
-    bool converged = false;
 
     try
     {
         solver.solve(matrix, solution, rhs, preconditioner);
-        iterations = solver_control.last_step();
-        final_residual = solver_control.last_value();
-        converged = true;
+        info.iterations = solver_control.last_step();
+        info.residual = solver_control.last_value();
+        info.converged = true;
     }
     catch (dealii::SolverControl::NoConvergence& e)
     {
-        iterations = e.last_step;
-        final_residual = e.last_residual;
-        std::cerr << "[NS Schur] FGMRES: " << iterations << " iters, "
-                  << "res = " << final_residual << " (tol = " << tol << ")\n";
+        info.iterations = e.last_step;
+        info.residual = e.last_residual;
+        std::cerr << "[NS Schur] FGMRES did not converge: " << info.iterations
+                  << " iters, res = " << info.residual << "\n";
+        std::cerr << "[NS Schur] Falling back to UMFPACK.\n";
 
-        if (params.fallback_to_direct)
-        {
-            std::cerr << "[NS Schur] Falling back to UMFPACK.\n";
-            dealii::SparseDirectUMFPACK direct;
-            direct.initialize(matrix);
-            direct.vmult(solution, rhs);
-            converged = true;
-            info.used_direct = true;
-        }
+        dealii::SparseDirectUMFPACK direct;
+        direct.initialize(matrix);
+        direct.vmult(solution, rhs);
+        info.converged = true;
+        info.used_direct = true;
     }
 
     auto end = std::chrono::high_resolution_clock::now();
-    double solve_time = std::chrono::duration<double>(end - start).count();
+    info.solve_time = std::chrono::duration<double>(end - start).count();
 
-    // Enforce constraints on the final solution
-    constraints.distribute(solution);
+    //constraints.distribute(solution);
 
-    // Compute true residual: ||Ax - b|| / ||b||
+    // Compute true residual
     dealii::Vector<double> residual(rhs.size());
     matrix.vmult(residual, solution);
     residual -= rhs;
     const double true_residual = residual.l2_norm() / rhs_norm;
 
-    // Fill SolverInfo
-    info.iterations = iterations;
-    info.residual = true_residual;
-    info.solve_time = solve_time;
-    info.converged = converged;
-
-    if (log_output || params.verbose)
+    if (verbose)
     {
-        std::cout << "[NS Schur] FGMRES iters: " << iterations
+        std::cout << "[NS Schur] FGMRES iters: " << info.iterations
                   << ", A solves: " << preconditioner.n_iterations_A
                   << ", S solves: " << preconditioner.n_iterations_S
-                  << ", FGMRES res: " << final_residual
+                  << ", res: " << info.residual
                   << ", true res: " << true_residual
-                  << ", time: " << solve_time << "s\n";
+                  << ", time: " << info.solve_time << "s\n";
     }
 
+    info.residual = true_residual;
     return info;
 }
 
 // ============================================================================
-// Legacy Schur interface with default parameters
-// ============================================================================
-SolverInfo solve_ns_system_schur(
-    const dealii::SparseMatrix<double>& matrix,
-    const dealii::Vector<double>& rhs,
-    dealii::Vector<double>& solution,
-    const dealii::AffineConstraints<double>& constraints,
-    const dealii::SparseMatrix<double>& pressure_mass,
-    const std::vector<dealii::types::global_dof_index>& ux_to_ns_map,
-    const std::vector<dealii::types::global_dof_index>& uy_to_ns_map,
-    const std::vector<dealii::types::global_dof_index>& p_to_ns_map,
-    bool verbose)
-{
-    LinearSolverParams default_params;
-    default_params.type = LinearSolverParams::Type::FGMRES;
-    default_params.preconditioner = LinearSolverParams::Preconditioner::BlockSchur;
-    default_params.rel_tolerance = 1e-6;
-    default_params.abs_tolerance = 1e-10;
-    default_params.max_iterations = 1500;
-    default_params.gmres_restart = 100;
-    default_params.use_iterative = true;
-    default_params.fallback_to_direct = true;
-    default_params.verbose = verbose;
-
-    return solve_ns_system_schur(matrix, rhs, solution, constraints,
-                                 pressure_mass, ux_to_ns_map, uy_to_ns_map, p_to_ns_map,
-                                 default_params, /*log_output=*/true);
-}
-
-// ============================================================================
-// Direct solver (UMFPACK) - RETURNS SolverInfo
+// Direct solver (UMFPACK)
 // ============================================================================
 SolverInfo solve_ns_system_direct(
     const dealii::SparseMatrix<double>& matrix,
@@ -309,23 +214,22 @@ SolverInfo solve_ns_system_direct(
     direct.vmult(solution, rhs);
 
     auto end = std::chrono::high_resolution_clock::now();
-    double solve_time = std::chrono::duration<double>(end - start).count();
+    info.solve_time = std::chrono::duration<double>(end - start).count();
 
-    constraints.distribute(solution);
+    //constraints.distribute(solution);
 
-    info.solve_time = solve_time;
     info.converged = true;
     info.residual = 0.0;
 
     if (verbose)
         std::cout << "[NS Direct] Size: " << matrix.m()
-                  << ", time: " << solve_time << "s\n";
+                  << ", time: " << info.solve_time << "s\n";
 
     return info;
 }
 
 // ============================================================================
-// Extract solutions (unchanged)
+// Extract solutions
 // ============================================================================
 void extract_ns_solutions(
     const dealii::Vector<double>& ns_solution,
@@ -352,7 +256,7 @@ void extract_ns_solutions(
 }
 
 // ============================================================================
-// Assemble pressure mass matrix (unchanged)
+// Assemble pressure mass matrix
 // ============================================================================
 template <int dim>
 void assemble_pressure_mass_matrix(
@@ -366,11 +270,7 @@ void assemble_pressure_mass_matrix(
     const unsigned int dofs_per_cell = fe.n_dofs_per_cell();
 
     dealii::DynamicSparsityPattern dsp(n_p, n_p);
-    dealii::DoFTools::make_sparsity_pattern(
-        p_dof_handler,
-        dsp,
-        p_constraints,
-        /*keep_constrained_dofs=*/ false);
+    dealii::DoFTools::make_sparsity_pattern(p_dof_handler, dsp, p_constraints, false);
     sparsity.copy_from(dsp);
     mass_matrix.reinit(sparsity);
 
@@ -395,11 +295,7 @@ void assemble_pressure_mass_matrix(
                                          fe_values.JxW(q);
 
         cell->get_dof_indices(local_dof_indices);
-
-        p_constraints.distribute_local_to_global(
-            cell_matrix,
-            local_dof_indices,
-            mass_matrix);
+        p_constraints.distribute_local_to_global(cell_matrix, local_dof_indices, mass_matrix);
     }
 
     std::cout << "[Pressure Mass] Assembled: " << n_p << " DoFs\n";
@@ -411,6 +307,7 @@ template void assemble_pressure_mass_matrix<2>(
     const dealii::AffineConstraints<double>&,
     dealii::SparsityPattern&,
     dealii::SparseMatrix<double>&);
+
 template void assemble_pressure_mass_matrix<3>(
     const dealii::DoFHandler<3>&,
     const dealii::AffineConstraints<double>&,

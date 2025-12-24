@@ -5,6 +5,7 @@
 // ============================================================================
 
 #include "utilities/parameters.h"
+#include <array>
 #include <cstring>
 
 void Parameters::setup_rosensweig()
@@ -50,7 +51,8 @@ void Parameters::setup_rosensweig()
 
 void Parameters::setup_hedgehog()
 {
-    // Domain (Section 6.3)
+    // Domain (Section 6.3, p.527)
+    // Same rectangular domain as Rosensweig: Ω = (0,1) × (0,0.6)
     domain.x_min = 0.0;
     domain.x_max = 1.0;
     domain.y_min = 0.0;
@@ -58,6 +60,30 @@ void Parameters::setup_hedgehog()
     domain.initial_cells_x = 15;
     domain.initial_cells_y = 9;
     ic.pool_depth = 0.11;
+
+    // Dipoles (Section 6.3, p.527-528)
+    // 42 dipoles arranged in 3 rows × 14 columns
+    // Approximating a bar magnet of 0.4 width × 0.5 height
+    // Rows at y = -0.5, -0.75, -1.0
+    // X-positions: equi-distributed from x = 0.3 to x = 0.7 (centered on domain)
+    dipoles.positions.clear();
+    const double x_min_dipole = 0.3;
+    const double x_max_dipole = 0.7;
+    const double x_spacing = (x_max_dipole - x_min_dipole) / 13.0;
+    const std::array<double, 3> y_rows = {-0.5, -0.75, -1.0};
+
+    for (double y : y_rows)
+    {
+        for (int j = 0; j < 14; ++j)
+        {
+            double x = x_min_dipole + j * x_spacing;
+            dipoles.positions.push_back(dealii::Point<2>(x, y));
+        }
+    }
+
+    dipoles.direction = {0.0, 1.0};
+    dipoles.intensity_max = 6000.0;
+    dipoles.ramp_time = 1.6;
 
     // Time-stepping
     time.dt = 0.00025;
@@ -78,6 +104,47 @@ void Parameters::setup_hedgehog()
     output.frequency = 25;
 }
 
+void Parameters::setup_droplet()
+{
+    // Domain: unit square
+    domain.x_min = 0.0;
+    domain.x_max = 1.0;
+    domain.y_min = 0.0;
+    domain.y_max = 1.0;
+    domain.initial_cells_x = 10;
+    domain.initial_cells_y = 10;
+
+    // Initial condition: circular droplet
+    ic.type = 1;  // 1 = circular droplet
+    ic.droplet_center_x = 0.5;
+    ic.droplet_center_y = 0.5;
+    ic.droplet_radius = 0.25;
+
+    // No dipoles (field-free test case)
+    dipoles.positions.clear();
+    dipoles.direction = {0.0, 1.0};
+    dipoles.intensity_max = 0.0;
+    dipoles.ramp_time = 0.0;
+
+    // Time-stepping (larger dt for faster testing)
+    time.dt = 1e-3;
+    time.t_final = 1.0;
+    time.max_steps = 1000;
+
+    // Mesh
+    mesh.initial_refinement = 5;
+    mesh.use_amr = true;
+    mesh.amr_interval = 5;
+
+    // Subsystems: NS only, no magnetic or gravity
+    enable_magnetic = false;
+    enable_ns = true;
+    enable_gravity = false;
+
+    // Output
+    output.frequency = 10;
+}
+
 Parameters Parameters::parse_command_line(int argc, char* argv[])
 {
     Parameters params;
@@ -89,16 +156,30 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             params.setup_rosensweig();
         else if (std::strcmp(argv[i], "--hedgehog") == 0)
             params.setup_hedgehog();
+        else if (std::strcmp(argv[i], "--droplet") == 0)
+            params.setup_droplet();
 
         // Overrides
         else if (std::strcmp(argv[i], "--refinement") == 0 || std::strcmp(argv[i], "-r") == 0)
-            params.mesh.initial_refinement = std::stoul(argv[++i]);
+        {
+            if (++i >= argc) { std::cerr << "--refinement requires a value\n"; std::exit(1); }
+            params.mesh.initial_refinement = std::stoul(argv[i]);
+        }
         else if (std::strcmp(argv[i], "--dt") == 0)
-            params.time.dt = std::stod(argv[++i]);
+        {
+            if (++i >= argc) { std::cerr << "--dt requires a value\n"; std::exit(1); }
+            params.time.dt = std::stod(argv[i]);
+        }
         else if (std::strcmp(argv[i], "--t_final") == 0)
-            params.time.t_final = std::stod(argv[++i]);
+        {
+            if (++i >= argc) { std::cerr << "--t_final requires a value\n"; std::exit(1); }
+            params.time.t_final = std::stod(argv[i]);
+        }
         else if (std::strcmp(argv[i], "--max_steps") == 0)
-            params.time.max_steps = std::stoul(argv[++i]);
+        {
+            if (++i >= argc) { std::cerr << "--max_steps requires a value\n"; std::exit(1); }
+            params.time.max_steps = std::stoul(argv[i]);
+        }
 
         // AMR
         else if (std::strcmp(argv[i], "--amr") == 0)
@@ -106,7 +187,10 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
         else if (std::strcmp(argv[i], "--no_amr") == 0)
             params.mesh.use_amr = false;
         else if (std::strcmp(argv[i], "--amr_interval") == 0)
-            params.mesh.amr_interval = std::stoul(argv[++i]);
+        {
+            if (++i >= argc) { std::cerr << "--amr_interval requires a value\n"; std::exit(1); }
+            params.mesh.amr_interval = std::stoul(argv[i]);
+        }
 
         // Solver
         else if (std::strcmp(argv[i], "--direct") == 0)
@@ -129,11 +213,13 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
         {
             std::cout << "Ferrofluid Phase Field Solver\n";
             std::cout << "Reference: Nochetto et al. CMAME 309 (2016) 497-531\n\n";
-            std::cout << "Usage: " << argv[0] << " --rosensweig|--hedgehog [options]\n\n";
+            std::cout << "Usage: " << argv[0] << " --rosensweig|--hedgehog|--droplet [options]\n";
+            std::cout << "  (Presets set defaults; later options override them)\n\n";
 
             std::cout << "PRESETS (pick one):\n";
             std::cout << "  --rosensweig    Rosensweig instability (Section 6.2)\n";
-            std::cout << "  --hedgehog      Hedgehog instability (Section 6.3)\n\n";
+            std::cout << "  --hedgehog      Hedgehog instability (Section 6.3)\n";
+            std::cout << "  --droplet       Simple droplet (no magnetic, no gravity)\n\n";
 
             std::cout << "OVERRIDES:\n";
             std::cout << "  --refinement N  Mesh refinement level\n";
@@ -178,6 +264,11 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             std::cout << " (every " << params.mesh.amr_interval << " steps)";
         std::cout << "\n";
         std::cout << "  Solver: " << (params.solvers.ns.use_iterative ? "Iterative" : "Direct") << "\n";
+        std::cout << "  Subsystems: "
+                  << (params.enable_magnetic ? "Magnetic " : "")
+                  << (params.enable_ns ? "NS " : "")
+                  << (params.enable_gravity ? "Gravity " : "")
+                  << (params.enable_mms ? "MMS " : "") << "\n";
         std::cout << "=====================\n";
     }
 

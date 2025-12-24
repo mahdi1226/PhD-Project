@@ -1,7 +1,5 @@
 // ============================================================================
 // solvers/ns_solver.h - Navier-Stokes Linear Solver
-//
-// UPDATED: Now returns SolverInfo with iterations/residual/time
 // ============================================================================
 #ifndef NS_SOLVER_H
 #define NS_SOLVER_H
@@ -12,62 +10,35 @@
 #include <deal.II/dofs/dof_handler.h>
 
 #include "solvers/solver_info.h"
-
-// Forward declaration
-struct LinearSolverParams;
+#include "solvers/ns_block_preconditioner.h"
 
 /**
- * @brief Simple GMRES + ILU solver - returns SolverInfo
+ * @brief Simple GMRES + ILU solver
  */
 SolverInfo solve_ns_system(
     const dealii::SparseMatrix<double>& matrix,
     const dealii::Vector<double>& rhs,
     dealii::Vector<double>& solution,
     const dealii::AffineConstraints<double>& constraints,
-    const LinearSolverParams& params,
-    bool log_output = true);
-
-/**
- * @brief Legacy interface (default parameters)
- */
-SolverInfo solve_ns_system(
-    const dealii::SparseMatrix<double>& matrix,
-    const dealii::Vector<double>& rhs,
-    dealii::Vector<double>& solution,
-    const dealii::AffineConstraints<double>& constraints,
+    unsigned int max_iterations = 3000,
+    double rel_tolerance = 1e-6,
     bool verbose = false);
 
 /**
- * @brief FGMRES + Block Schur preconditioner - returns SolverInfo
+ * @brief FGMRES + Block Schur preconditioner (preconditioner passed in for caching)
  */
 SolverInfo solve_ns_system_schur(
     const dealii::SparseMatrix<double>& matrix,
     const dealii::Vector<double>& rhs,
     dealii::Vector<double>& solution,
     const dealii::AffineConstraints<double>& constraints,
-    const dealii::SparseMatrix<double>& pressure_mass,
-    const std::vector<dealii::types::global_dof_index>& ux_to_ns_map,
-    const std::vector<dealii::types::global_dof_index>& uy_to_ns_map,
-    const std::vector<dealii::types::global_dof_index>& p_to_ns_map,
-    const LinearSolverParams& params,
-    bool log_output = true);
-
-/**
- * @brief Legacy Schur interface
- */
-SolverInfo solve_ns_system_schur(
-    const dealii::SparseMatrix<double>& matrix,
-    const dealii::Vector<double>& rhs,
-    dealii::Vector<double>& solution,
-    const dealii::AffineConstraints<double>& constraints,
-    const dealii::SparseMatrix<double>& pressure_mass,
-    const std::vector<dealii::types::global_dof_index>& ux_to_ns_map,
-    const std::vector<dealii::types::global_dof_index>& uy_to_ns_map,
-    const std::vector<dealii::types::global_dof_index>& p_to_ns_map,
+    BlockSchurPreconditioner& preconditioner,
+    unsigned int max_iterations = 1000,
+    double rel_tolerance = 1e-6,
     bool verbose = false);
 
 /**
- * @brief Direct solver (UMFPACK) - returns SolverInfo
+ * @brief Direct solver (UMFPACK)
  */
 SolverInfo solve_ns_system_direct(
     const dealii::SparseMatrix<double>& matrix,

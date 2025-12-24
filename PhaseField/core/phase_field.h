@@ -32,6 +32,7 @@
 
 #include "utilities/parameters.h"
 #include "output/metrics_logger.h"
+#include "solvers/ns_block_preconditioner.h"
 #include "output/console_logger.h"
 #include "diagnostics/step_data.h"
 
@@ -98,7 +99,7 @@ private:
     // AMR tracking for solver optimization
     // ========================================================================
     bool first_amr_occurred_ = false;
-    bool use_direct_after_amr_ = false;
+    int direct_solve_countdown_ = 0;  // Use direct solver for this many more solves
 
     // Parameters
     const Parameters& params_;
@@ -179,6 +180,7 @@ private:
     std::vector<dealii::types::global_dof_index> ux_to_ns_map_;
     std::vector<dealii::types::global_dof_index> uy_to_ns_map_;
     std::vector<dealii::types::global_dof_index> p_to_ns_map_;
+    std::unique_ptr<BlockSchurPreconditioner> schur_preconditioner_;
 
     // ========================================================================
     // Pressure mass matrix (for Schur complement preconditioner)

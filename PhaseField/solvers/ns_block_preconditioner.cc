@@ -11,41 +11,6 @@
 #include <iostream>
 
 // ============================================================================
-// InverseMatrix implementation
-// ============================================================================
-template <typename MatrixType, typename PreconditionerType>
-InverseMatrix<MatrixType, PreconditionerType>::InverseMatrix(
-    const MatrixType& matrix,
-    const PreconditionerType& preconditioner,
-    const double solver_tolerance,
-    const unsigned int max_iterations)
-    : last_iterations(0)
-    , matrix_(&matrix)
-    , preconditioner_(&preconditioner)
-    , solver_tolerance_(solver_tolerance)
-    , max_iterations_(max_iterations)
-{
-}
-
-template <typename MatrixType, typename PreconditionerType>
-void InverseMatrix<MatrixType, PreconditionerType>::vmult(
-    dealii::Vector<double>& dst,
-    const dealii::Vector<double>& src) const
-{
-    dealii::SolverControl solver_control(max_iterations_,
-                                         solver_tolerance_ * src.l2_norm());
-    dealii::SolverCG<dealii::Vector<double>> cg(solver_control);
-
-    dst = 0;
-    cg.solve(*matrix_, dst, src, *preconditioner_);
-    last_iterations = solver_control.last_step();
-}
-
-// Explicit instantiations
-template class InverseMatrix<dealii::SparseMatrix<double>, dealii::SparseILU<double>>;
-template class InverseMatrix<dealii::SparseMatrix<double>, dealii::PreconditionSSOR<dealii::SparseMatrix<double>>>;
-
-// ============================================================================
 // BlockSchurPreconditioner implementation
 // ============================================================================
 BlockSchurPreconditioner::BlockSchurPreconditioner(
@@ -57,9 +22,9 @@ BlockSchurPreconditioner::BlockSchurPreconditioner(
     bool do_solve_A)
     : n_iterations_A(0)
     , n_iterations_S(0)
-    , system_matrix_(system_matrix)
-    , pressure_mass_(pressure_mass)
-    , ux_map_(ux_to_ns_map)
+    , system_matrix_ptr_(&system_matrix)
+    , pressure_mass_ptr_(&pressure_mass)
+    , ux_map_(ux_to_ns_map)      // Copy maps
     , uy_map_(uy_to_ns_map)
     , p_map_(p_to_ns_map)
     , n_ux_(ux_to_ns_map.size())
@@ -67,7 +32,6 @@ BlockSchurPreconditioner::BlockSchurPreconditioner(
     , n_p_(p_to_ns_map.size())
     , n_vel_(ux_to_ns_map.size() + uy_to_ns_map.size())
     , n_total_(ux_to_ns_map.size() + uy_to_ns_map.size() + p_to_ns_map.size())
-    , preconditioners_initialized_(false)
     , do_solve_A_(do_solve_A)
 {
     // Build reverse mappings for O(1) lookups
@@ -81,15 +45,13 @@ BlockSchurPreconditioner::BlockSchurPreconditioner(
     for (unsigned int i = 0; i < n_p_; ++i)
         global_to_p_[p_map_[i]] = i;
 
-    // ========================================================================
-    // Extract velocity block and build its sparsity pattern
-    // ========================================================================
+    // Build velocity block sparsity pattern
     dealii::DynamicSparsityPattern dsp(n_vel_, n_vel_);
 
     for (unsigned int i = 0; i < n_ux_; ++i)
     {
         const unsigned int row = ux_map_[i];
-        for (auto it = system_matrix_.begin(row); it != system_matrix_.end(row); ++it)
+        for (auto it = system_matrix_ptr_->begin(row); it != system_matrix_ptr_->end(row); ++it)
         {
             const int col_local = global_to_vel_[it->column()];
             if (col_local >= 0)
@@ -99,7 +61,7 @@ BlockSchurPreconditioner::BlockSchurPreconditioner(
     for (unsigned int i = 0; i < n_uy_; ++i)
     {
         const unsigned int row = uy_map_[i];
-        for (auto it = system_matrix_.begin(row); it != system_matrix_.end(row); ++it)
+        for (auto it = system_matrix_ptr_->begin(row); it != system_matrix_ptr_->end(row); ++it)
         {
             const int col_local = global_to_vel_[it->column()];
             if (col_local >= 0)
@@ -110,11 +72,49 @@ BlockSchurPreconditioner::BlockSchurPreconditioner(
     velocity_sparsity_.copy_from(dsp);
     velocity_block_.reinit(velocity_sparsity_);
 
-    // Copy values
+    // Extract values and initialize preconditioners
+    extract_velocity_block();
+    A_preconditioner_.initialize(velocity_block_);
+
+    // Verify maps don't exceed n_total_
+    for (unsigned int i = 0; i < n_ux_; ++i)
+        AssertIndexRange(ux_map_[i], n_total_);
+    for (unsigned int i = 0; i < n_uy_; ++i)
+        AssertIndexRange(uy_map_[i], n_total_);
+    for (unsigned int i = 0; i < n_p_; ++i)
+        AssertIndexRange(p_map_[i], n_total_);
+
+    S_preconditioner_.initialize(*pressure_mass_ptr_);
+
+    std::cout << "[Schur Preconditioner] Initialized: "
+              << "A = " << n_vel_ << "x" << n_vel_
+              << ", S = " << n_p_ << "x" << n_p_ << "\n";
+}
+
+void BlockSchurPreconditioner::update(
+    const dealii::SparseMatrix<double>& system_matrix,
+    const dealii::SparseMatrix<double>& pressure_mass)
+{
+    // Update pointers to current matrices
+    system_matrix_ptr_ = &system_matrix;
+    pressure_mass_ptr_ = &pressure_mass;
+
+    // Re-extract velocity block values (sparsity unchanged)
+    extract_velocity_block();
+
+    // Rebuild ILU preconditioners with new values
+    A_preconditioner_.initialize(velocity_block_);
+    S_preconditioner_.initialize(*pressure_mass_ptr_);
+}
+
+void BlockSchurPreconditioner::extract_velocity_block()
+{
+    velocity_block_ = 0;
+
     for (unsigned int i = 0; i < n_ux_; ++i)
     {
         const unsigned int row = ux_map_[i];
-        for (auto it = system_matrix_.begin(row); it != system_matrix_.end(row); ++it)
+        for (auto it = system_matrix_ptr_->begin(row); it != system_matrix_ptr_->end(row); ++it)
         {
             const int col_local = global_to_vel_[it->column()];
             if (col_local >= 0)
@@ -124,28 +124,24 @@ BlockSchurPreconditioner::BlockSchurPreconditioner(
     for (unsigned int i = 0; i < n_uy_; ++i)
     {
         const unsigned int row = uy_map_[i];
-        for (auto it = system_matrix_.begin(row); it != system_matrix_.end(row); ++it)
+        for (auto it = system_matrix_ptr_->begin(row); it != system_matrix_ptr_->end(row); ++it)
         {
             const int col_local = global_to_vel_[it->column()];
             if (col_local >= 0)
                 velocity_block_.set(n_ux_ + i, col_local, it->value());
         }
     }
-
-    // Initialize preconditioners
-    A_preconditioner_.initialize(velocity_block_);
-    S_preconditioner_.initialize(pressure_mass_);
-    preconditioners_initialized_ = true;
-
-    std::cout << "[Schur Preconditioner] Initialized: "
-              << "A = " << n_vel_ << "x" << n_vel_
-              << ", S = " << n_p_ << "x" << n_p_ << "\n";
 }
 
 void BlockSchurPreconditioner::vmult(
     dealii::Vector<double>& dst,
     const dealii::Vector<double>& src) const
 {
+    Assert(src.size() == n_total_,
+           dealii::ExcDimensionMismatch(src.size(), n_total_));
+    Assert(dst.size() == n_total_,
+           dealii::ExcDimensionMismatch(dst.size(), n_total_));
+
     dealii::Vector<double> r_vel(n_vel_), r_p(n_p_);
     extract_velocity(src, r_vel);
     extract_pressure(src, r_p);
@@ -160,7 +156,7 @@ void BlockSchurPreconditioner::vmult(
         dealii::SolverCG<dealii::Vector<double>> cg(solver_control);
 
         z_p = 0;
-        cg.solve(pressure_mass_, z_p, r_p, S_preconditioner_);
+        cg.solve(*pressure_mass_ptr_, z_p, r_p, S_preconditioner_);
         n_iterations_S += solver_control.last_step();
 
         z_p *= -1.0;
@@ -251,7 +247,7 @@ void BlockSchurPreconditioner::apply_BT(
     {
         const unsigned int row = ux_map_[i];
         double sum = 0.0;
-        for (auto it = system_matrix_.begin(row); it != system_matrix_.end(row); ++it)
+        for (auto it = system_matrix_ptr_->begin(row); it != system_matrix_ptr_->end(row); ++it)
         {
             const int j = global_to_p_[it->column()];
             if (j >= 0)
@@ -264,7 +260,7 @@ void BlockSchurPreconditioner::apply_BT(
     {
         const unsigned int row = uy_map_[i];
         double sum = 0.0;
-        for (auto it = system_matrix_.begin(row); it != system_matrix_.end(row); ++it)
+        for (auto it = system_matrix_ptr_->begin(row); it != system_matrix_ptr_->end(row); ++it)
         {
             const int j = global_to_p_[it->column()];
             if (j >= 0)
