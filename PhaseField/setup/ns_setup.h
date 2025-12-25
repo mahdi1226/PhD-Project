@@ -11,7 +11,7 @@
 //   [ A_uyux  A_uyuy  B_uyp ] × [ uy ]
 //   [ B_pux   B_puy   0     ]   [ p  ]
 //
-// Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
+// Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531-
 // ============================================================================
 #ifndef NS_SETUP_H
 #define NS_SETUP_H
