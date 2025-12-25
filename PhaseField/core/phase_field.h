@@ -204,6 +204,9 @@ private:
     // ========================================================================
     double time_;
     unsigned int timestep_number_;
+    // For adaptive time stepping
+    StepData last_step_data_;              // Store diagnostics for run() to access
+    unsigned int last_ns_gmres_iters_ = 0; // Track NS solver iterations
     std::unique_ptr<MetricsLogger> metrics_logger_;
     double ch_energy_old_ = 0.0;
     double E_total_old_ = 0.0;
