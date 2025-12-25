@@ -147,7 +147,18 @@ void PhaseFieldProblem<dim>::run()
         << std::setw(14) << "E_kin" << "\n";
     std::cout << std::string(62, '-') << "\n";
 
-    const double dt = params_.time.dt;
+    // ========================================================================
+    // Adaptive time stepping parameters
+    // ========================================================================
+    const double dt_default = params_.time.dt;
+    const double dt_min = 0.1 * dt_default;
+    const double dt_max = 2.0 * dt_default;
+    const double cfl_target = 0.5;
+    const unsigned int gmres_struggling_threshold = 1200;  // 80% of 1500 max
+    const unsigned int gmres_easy_threshold = 50;
+    const double energy_rate_threshold = 1e8;
+
+    double current_dt = dt_default;
     unsigned int output_counter = 0;
 
     // Checkpoint for mms
@@ -178,11 +189,86 @@ void PhaseFieldProblem<dim>::run()
 
     while (time_ < params_.time.t_final - 1e-12)
     {
-        double current_dt = dt;
+        // Adjust for final time
         if (time_ + current_dt > params_.time.t_final)
             current_dt = params_.time.t_final - time_;
 
         time_step(current_dt);
+
+        // ====================================================================
+        // Adaptive dt logic (after time_step computes diagnostics)
+        // Only active when NS is enabled and not in MMS mode
+        // ====================================================================
+        if (params_.enable_ns && !mms_mode)
+        {
+            double dt_new = current_dt;
+            bool dt_changed = false;
+            std::string reason;
+
+            // 1. CFL-based adjustment
+            const double cfl_current = last_step_data_.CFL;
+            if (cfl_current > 1e-10)
+            {
+                double dt_cfl = current_dt * (cfl_target / cfl_current);
+                dt_cfl = std::clamp(dt_cfl, dt_min, dt_max);
+                if (dt_cfl < dt_new)
+                {
+                    dt_new = dt_cfl;
+                    reason = "CFL=" + std::to_string(cfl_current);
+                }
+            }
+
+            // 2. Solver struggling → reduce dt
+            if (last_ns_gmres_iters_ > gmres_struggling_threshold)
+            {
+                double dt_solver = std::max(dt_min, 0.5 * current_dt);
+                if (dt_solver < dt_new)
+                {
+                    dt_new = dt_solver;
+                    reason = "GMRES=" + std::to_string(last_ns_gmres_iters_);
+                    dt_changed = true;
+                }
+            }
+            // Solver easy → can increase (only if below default)
+            else if (last_ns_gmres_iters_ < gmres_easy_threshold &&
+                     last_ns_gmres_iters_ > 0 &&
+                     current_dt < dt_default)
+            {
+                dt_new = std::min(dt_default, 1.2 * current_dt);
+                if (dt_new > current_dt)
+                {
+                    reason = "GMRES easy (" + std::to_string(last_ns_gmres_iters_) + ")";
+                    dt_changed = true;
+                }
+            }
+
+            // 3. Energy explosion guard
+            if (std::abs(last_step_data_.dE_total_dt) > energy_rate_threshold)
+            {
+                double dt_energy = std::max(dt_min, 0.5 * current_dt);
+                if (dt_energy < dt_new)
+                {
+                    dt_new = dt_energy;
+                    reason = "dE/dt=" + std::to_string(last_step_data_.dE_total_dt);
+                    dt_changed = true;
+                }
+            }
+
+            // Apply bounds
+            dt_new = std::clamp(dt_new, dt_min, dt_max);
+
+            // Update dt for next step if changed significantly
+            if (std::abs(dt_new - current_dt) / current_dt > 0.01)
+            {
+                if (params_.output.verbose)
+                {
+                    std::cout << "[Adaptive dt] " << std::scientific
+                              << current_dt << " -> " << dt_new
+                              << " (" << reason << ")\n";
+                }
+                current_dt = dt_new;
+            }
+        }
 
         // AMR: Refine mesh every amr_interval steps (Paper Section 6.1)
         if (params_.mesh.use_amr &&
@@ -191,7 +277,6 @@ void PhaseFieldProblem<dim>::run()
         {
             refine_mesh();
         }
-        // ==============================
 
         // Output periodically
         if (timestep_number_ % params_.output.frequency == 0 ||
@@ -245,7 +330,6 @@ void PhaseFieldProblem<dim>::run()
     std::cout << "[Info] Output saved to: " << params_.output.folder << "\n";
 }
 
-
 // ============================================================================
 // do_time_step() - Single time step (staggered approach)
 // ============================================================================
@@ -292,6 +376,9 @@ void PhaseFieldProblem<dim>::time_step(double dt)
     // ========================================================================
     const unsigned int n_picard = params_.picard_iterations; // Default: 3
 
+    // Reset iteration counter for this time step
+    last_ns_gmres_iters_ = 0;
+
     for (unsigned int picard = 0; picard < n_picard; ++picard)
     {
         // ====================================================================
@@ -312,7 +399,7 @@ void PhaseFieldProblem<dim>::time_step(double dt)
         // Block 3: Navier-Stokes (42e-42f)
         // ====================================================================
         if (params_.enable_ns)
-            solve_ns();
+            solve_ns();  // This will update last_ns_gmres_iters_
     }
 
     // ========================================================================
@@ -396,6 +483,11 @@ void PhaseFieldProblem<dim>::time_step(double dt)
 
     if (step_data.has_warnings())
         ConsoleLogger::print_warnings(step_data);
+
+    // ========================================================================
+    // Store step data for adaptive dt (accessible by run())
+    // ========================================================================
+    last_step_data_ = step_data;
 
     // ========================================================================
     // Update time
@@ -684,9 +776,6 @@ void PhaseFieldProblem<dim>::solve_ns()
             rhs_vel += ns_rhs_[i] * ns_rhs_[i];
         for (unsigned int i = n_vel; i < ns_rhs_.size(); ++i)
             rhs_p += ns_rhs_[i] * ns_rhs_[i];
-
-        std::cout << "[DIRECT RHS] vel=" << std::sqrt(rhs_vel)
-                  << ", p=" << std::sqrt(rhs_p) << "\n";
     }
 
 
@@ -713,25 +802,6 @@ void PhaseFieldProblem<dim>::solve_ns()
     }
     else
     {
-        // Decompose residual: check A*x and RHS separately
-        {
-            dealii::Vector<double> Ax(ns_rhs_.size());
-            ns_matrix_.vmult(Ax, ns_solution_);
-
-            double Ax_vel = 0, Ax_p = 0;
-            double rhs_vel = 0, rhs_p = 0;
-            const unsigned int n_vel = ux_to_ns_map_.size() + uy_to_ns_map_.size();
-
-            for (unsigned int i = 0; i < n_vel; ++i) {
-                Ax_vel += Ax[i] * Ax[i];
-                rhs_vel += ns_rhs_[i] * ns_rhs_[i];
-            }
-            for (unsigned int i = n_vel; i < Ax.size(); ++i) {
-                Ax_p += Ax[i] * Ax[i];
-                rhs_p += ns_rhs_[i] * ns_rhs_[i];
-            }
-        }
-
         if (!schur_preconditioner_)
         {
             schur_preconditioner_ = std::make_unique<BlockSchurPreconditioner>(
@@ -744,12 +814,15 @@ void PhaseFieldProblem<dim>::solve_ns()
             schur_preconditioner_->update(ns_matrix_, pressure_mass_matrix_);
         }
 
-        solve_ns_system_schur(
+        SolverInfo schur_info = solve_ns_system_schur(
             ns_matrix_, ns_rhs_, ns_solution_, ns_combined_constraints_,
             *schur_preconditioner_,
             params_.solvers.ns.max_iterations,
             params_.solvers.ns.rel_tolerance,
             params_.output.verbose);
+
+        last_ns_gmres_iters_ = std::max(last_ns_gmres_iters_,
+            static_cast<unsigned int>(schur_info.iterations));
     }
 
     extract_ns_solutions(
@@ -838,7 +911,6 @@ void PhaseFieldProblem<dim>::update_mms_boundary_constraints(double time)
 
     ch_combined_constraints_.close();
 }
-
 
 // ============================================================================
 // compute_mass() - Total mass integral of theta

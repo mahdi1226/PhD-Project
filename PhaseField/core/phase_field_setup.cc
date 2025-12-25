@@ -38,9 +38,9 @@
 template <int dim>
 PhaseFieldProblem<dim>::PhaseFieldProblem(const Parameters& params)
     : params_(params)
-    , fe_Q2_(params.fe.degree_velocity)   // Q2 for velocity, phase fields
-    , fe_Q1_(params.fe.degree_pressure)   // Q1 for pressure
-    , fe_DG_(0)                           // DG0 for magnetization
+    , fe_Q2_(params.fe.degree_velocity)        // Q2 for velocity, phase fields
+    , fe_Q1_(params.fe.degree_pressure)        // Q1 for pressure
+    , fe_DG_(params.fe.degree_magnetization)   // DG for magnetization (default: DG0)
     , theta_dof_handler_(triangulation_)
     , psi_dof_handler_(triangulation_)
     , phi_dof_handler_(triangulation_)
@@ -49,7 +49,7 @@ PhaseFieldProblem<dim>::PhaseFieldProblem(const Parameters& params)
     , ux_dof_handler_(triangulation_)
     , uy_dof_handler_(triangulation_)
     , p_dof_handler_(triangulation_)
-    , time_(0.0)
+    , time_(params.mms_t_init)                 // Supports MMS with non-zero initial time
     , timestep_number_(0)
 {
 }

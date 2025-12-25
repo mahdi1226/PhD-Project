@@ -35,19 +35,74 @@ void PhaseFieldProblem<dim>::refine_mesh()
         std::cout << "[AMR] Starting mesh refinement...\n";
 
     // =========================================================================
-    // Step 1: Compute refinement indicators based on |∇ψ|
-    // Paper Eq. 99 uses jump-based indicator; we use gradient approximation
-    // ψ has sharper gradients at interface than θ
+    // Step 1: Compute refinement indicators using multi-field approach
+    // Combines phase field (ψ), velocity (ux, uy), and magnetic potential (φ)
+    // to capture interface, flow, and magnetic field gradients
     // =========================================================================
-    dealii::Vector<float> indicators(triangulation_.n_active_cells());
+    const unsigned int n_cells = triangulation_.n_active_cells();
+    dealii::Vector<float> indicators(n_cells);
 
-    dealii::DerivativeApproximation::approximate_gradient(
-        psi_dof_handler_,
-        psi_solution_, // ψ has sharper gradients at interface
-        indicators);
+    // --- OLD METHOD (single field: ψ only) ---
+    // dealii::DerivativeApproximation::approximate_gradient(
+    //     psi_dof_handler_,
+    //     psi_solution_,
+    //     indicators);
+    // for (const auto& cell : psi_dof_handler_.active_cell_iterators())
+    // {
+    //     const auto idx = cell->active_cell_index();
+    //     indicators[idx] *= cell->diameter();
+    // }
+    // --- END OLD METHOD ---
+
+    // --- NEW METHOD: Multi-field indicator (ψ + velocity + magnetic) ---
+    {
+        // Phase field indicator (ψ - chemical potential, sharp at interface)
+        dealii::Vector<float> psi_ind(n_cells);
+        dealii::DerivativeApproximation::approximate_gradient(
+            psi_dof_handler_,
+            psi_solution_,
+            psi_ind);
+
+        // Start with phase field as baseline
+        for (unsigned int i = 0; i < n_cells; ++i)
+            indicators[i] = psi_ind[i];
+
+        // Velocity indicators (if NS enabled)
+        if (params_.enable_ns)
+        {
+            dealii::Vector<float> ux_ind(n_cells);
+            dealii::Vector<float> uy_ind(n_cells);
+
+            dealii::DerivativeApproximation::approximate_gradient(
+                ux_dof_handler_,
+                ux_solution_,
+                ux_ind);
+            dealii::DerivativeApproximation::approximate_gradient(
+                uy_dof_handler_,
+                uy_solution_,
+                uy_ind);
+
+            for (unsigned int i = 0; i < n_cells; ++i)
+                indicators[i] = std::max({indicators[i], ux_ind[i], uy_ind[i]});
+        }
+
+        // Magnetic potential indicator (if magnetic enabled)
+        if (params_.enable_magnetic)
+        {
+            dealii::Vector<float> phi_ind(n_cells);
+            dealii::DerivativeApproximation::approximate_gradient(
+                phi_dof_handler_,
+                phi_solution_,
+                phi_ind);
+
+            for (unsigned int i = 0; i < n_cells; ++i)
+                indicators[i] = std::max(indicators[i], phi_ind[i]);
+        }
+    }
+    // --- END NEW METHOD ---
 
     // Scale by cell diameter (Kelly-type indicator)
-    for (const auto& cell : psi_dof_handler_.active_cell_iterators())
+    for (const auto& cell : triangulation_.active_cell_iterators())
     {
         const auto idx = cell->active_cell_index();
         AssertIndexRange(idx, indicators.size());
