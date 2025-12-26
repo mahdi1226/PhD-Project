@@ -571,9 +571,9 @@ void PhaseFieldProblem<dim>::initialize_solutions()
         // ================================================================
         // Circular droplet (testing only)
         // ================================================================
-        const double cx = 0.5 * (params_.domain.x_min + params_.domain.x_max);
-        const double cy = 0.5 * (params_.domain.y_min + params_.domain.y_max);
-        const double radius = 0.2;
+        const double cx = params_.ic.droplet_center_x;
+        const double cy = params_.ic.droplet_center_y;
+        const double radius = params_.ic.droplet_radius;
 
         class DropletIC : public dealii::Function<dim>
         {

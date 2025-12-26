@@ -82,8 +82,11 @@ void Parameters::setup_hedgehog()
     }
 
     dipoles.direction = {0.0, 1.0};
-    dipoles.intensity_max = 6000.0;
-    dipoles.ramp_time = 1.6;
+    // FIXED: Paper Section 6.3 specifies αs = 4.3 (NOT 6000!)
+    // "αs is increased linearly in time from αs = 0 at time t = 0,
+    //  to its maximum value αs = 4.3 at time t = 4.2"
+    dipoles.intensity_max = 4.3;
+    dipoles.ramp_time = 4.2;
 
     // Time-stepping
     time.dt = 0.00025;
@@ -115,7 +118,7 @@ void Parameters::setup_droplet()
     domain.initial_cells_y = 10;
 
     // Initial condition: circular droplet
-    ic.type = 1;  // 1 = circular droplet
+    ic.type = 2;
     ic.droplet_center_x = 0.5;
     ic.droplet_center_y = 0.5;
     ic.droplet_radius = 0.25;
