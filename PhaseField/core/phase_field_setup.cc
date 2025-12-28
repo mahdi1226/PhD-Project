@@ -166,6 +166,11 @@ void PhaseFieldProblem<dim>::setup_dof_handlers()
         {
             std::cout << "[Setup] Magnetization DoFs: " << n_M << " (DG"
                       << fe_DG_.degree << ")\n";
+            // Verify FE space compatibility for energy stability
+            std::cout << "[Setup] M space: DG" << fe_DG_.degree
+                      << " (need DG" << (fe_Q2_.degree - 1) << " for ∇X_h ⊂ M_h)\n";
+            Assert(fe_DG_.degree >= fe_Q2_.degree - 1,
+                   dealii::ExcMessage("Magnetization degree too low for energy stability!"));
         }
     }
 

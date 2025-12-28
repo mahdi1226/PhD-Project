@@ -416,6 +416,33 @@ void PhaseFieldProblem<dim>::time_step(double dt)
     // Diagnostics (after Picard converged)
     // ========================================================================
 
+    // Energy stability monitoring (Paper Proposition 4.1)
+    // Total energy should be bounded; increases only during dipole ramp
+    if (params_.output.verbose && params_.enable_magnetic)
+    {
+        double E_CH = compute_ch_energy();
+        double E_kin = compute_kinetic_energy();
+        double E_mag = compute_magnetic_energy();
+        double E_total = E_CH + E_kin + E_mag;
+
+        static double E_total_prev = E_total;
+        double dE = E_total - E_total_prev;
+
+        // Only warn if energy increases AFTER ramp is complete
+        // During ramp, energy increase is expected (external forcing)
+        bool ramp_complete = (time_ > params_.dipoles.ramp_time);
+
+        if (dE > 1e-6 && timestep_number_ > 1 && ramp_complete)
+        {
+            std::cout << "[WARNING] Energy increased by " << std::scientific
+                      << dE << " at step " << timestep_number_
+                      << " t=" << time_ << " (post-ramp)\n";
+            std::cout << "          E_CH=" << E_CH << " E_kin=" << E_kin
+                      << " E_mag=" << E_mag << "\n";
+        }
+        E_total_prev = E_total;
+    }
+
     // CH diagnostics (uses params_.physics.epsilon internally)
     CHDiagnosticData ch_data = compute_ch_diagnostics<dim>(
         theta_dof_handler_, theta_solution_, params_,

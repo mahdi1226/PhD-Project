@@ -109,7 +109,7 @@ struct Parameters
         // Magnetic (Section 6.2)
         double chi_0 = 0.5;         // susceptibility (Rosensweig: 0.5, Hedgehog: 0.9)
         double mu_0 = 1.0;          // permeability of free space
-        double tau_M = 0.0;         // magnetization relaxation time
+        double tau_M = 1e-6;         // magnetization relaxation time
 
         // Density / Gravity (Eq. 19)
         double rho = 1.0;           // reference density
@@ -126,7 +126,7 @@ struct Parameters
         unsigned int degree_velocity = 2;
         unsigned int degree_pressure = 1;
         unsigned int degree_potential = 2;
-        unsigned int degree_magnetization = 0;
+        unsigned int degree_magnetization = 1;
     } fe;
 
     // ========================================================================
@@ -146,7 +146,7 @@ struct Parameters
     bool enable_ns = true;
     bool enable_gravity = true;
     bool enable_mms = false;
-    bool use_dg_transport = false;
+    bool use_dg_transport = true;
 
     // MMS
     double mms_t_init = 0.0;
