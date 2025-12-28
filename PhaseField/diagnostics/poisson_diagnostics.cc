@@ -125,9 +125,10 @@ PoissonDiagnostics compute_poisson_diagnostics(
             const dealii::Tensor<1, dim>& H = grad_phi_values[q];
             const double H_norm = H.norm();
 
-            // θ and derived quantities
+            // θ and derived quantities - use params.physics, NOT globals!
             const double theta_q = theta_values[q];
-            const double chi_theta = compute_susceptibility(theta_q, epsilon, chi_0);
+            const double chi_theta = susceptibility(theta_q,
+                params.physics.epsilon, params.physics.chi_0);
             const double mu_theta = 1.0 + chi_theta;
 
             // M = χ(θ)H (quasi-equilibrium)

@@ -1,25 +1,47 @@
 // ============================================================================
-// setup/magnetization_setup.h - Magnetization Initialization (DG)
+// setup/magnetization_setup.h - Magnetization DG System Setup (PAPER_MATCH v2)
+//
+// Free functions for magnetization system setup:
+//   - Sparsity pattern (DG flux pattern for upwind)
+//   - Initialization (L² projection of M⁰ = χ(θ⁰)H⁰)
+//
+// FIX: Added Parameters to initialize_magnetization_equilibrium() to use
+//      params.physics.epsilon and params.physics.chi_0 instead of globals.
 //
 // Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
 // Section 5, Eq. 56: M_h = {M ∈ L²(Ω) | M|_T ∈ [P_{ℓ-1}(T)]^d, ∀T ∈ T_h}
 // Section 5.1, Eq. 41: Initial condition M⁰ = I_{M_h}(χ(θ⁰) H⁰)
-//
-// ARCHITECTURE:
-//   - ONE scalar DoFHandler for DG space (same for Mx and My)
-//   - FE_DGP(ℓ-1) where ℓ = velocity degree (typically FE_DGP(1) for Q2 velocity)
-//   - Sparsity pattern and system matrix created by MagnetizationAssembler
-//   - This file provides ONLY the initialization (L² projection for M⁰)
-//
 // ============================================================================
 #ifndef MAGNETIZATION_SETUP_H
 #define MAGNETIZATION_SETUP_H
 
 #include <deal.II/dofs/dof_handler.h>
+#include <deal.II/lac/sparsity_pattern.h>
 #include <deal.II/lac/vector.h>
 
+#include "utilities/parameters.h"
+
 /**
- * @brief Initialize magnetization M⁰ = χ(θ⁰) H⁰ via L² projection
+ * @brief Set up sparsity pattern for magnetization DG system
+ *
+ * Creates flux sparsity pattern for DG elements, which includes
+ * face coupling needed for upwind fluxes in the transport equation.
+ *
+ * Note: Mx and My share the same sparsity pattern since they use
+ * the same DG space and transport operator structure.
+ *
+ * @param M_dof_handler    DoFHandler for M (DG, scalar - same for Mx and My)
+ * @param M_sparsity       [OUT] Sparsity pattern (flux pattern for DG)
+ * @param verbose          Print setup info
+ */
+template <int dim>
+void setup_magnetization_sparsity(
+    const dealii::DoFHandler<dim>& M_dof_handler,
+    dealii::SparsityPattern& M_sparsity,
+    bool verbose = false);
+
+/**
+ * @brief Initialize magnetization M⁰ = χ(θ⁰)H⁰ via L² projection
  *
  * Paper Eq. 41: Initial condition for magnetization at quasi-static equilibrium.
  *
@@ -29,36 +51,27 @@
  * Since DG mass matrix is block-diagonal over cells, this reduces to
  * independent cell-wise solves (no global system needed).
  *
+ * IMPORTANT: Uses params.physics.epsilon and params.physics.chi_0
+ * to compute susceptibility correctly for each preset.
+ *
  * @param M_dof_handler     DoFHandler for M (DG, scalar - same for Mx and My)
  * @param theta_dof_handler DoFHandler for θ (CG)
  * @param phi_dof_handler   DoFHandler for φ (CG)
  * @param theta_solution    Initial phase field θ⁰
  * @param phi_solution      Initial magnetic potential φ⁰
- * @param chi_0             Susceptibility parameter χ₀
+ * @param params            Simulation parameters (for physics.epsilon, physics.chi_0)
  * @param Mx_solution       [OUT] Initial Mx⁰
  * @param My_solution       [OUT] Initial My⁰
  */
 template <int dim>
-void initialize_magnetization_dg(
+void initialize_magnetization_equilibrium(
     const dealii::DoFHandler<dim>& M_dof_handler,
     const dealii::DoFHandler<dim>& theta_dof_handler,
     const dealii::DoFHandler<dim>& phi_dof_handler,
     const dealii::Vector<double>& theta_solution,
     const dealii::Vector<double>& phi_solution,
-    double chi_0,
+    const Parameters& params,
     dealii::Vector<double>& Mx_solution,
     dealii::Vector<double>& My_solution);
-
-/**
- * @brief Compute χ(θ) = χ₀(1+θ)/2 at a point
- *
- * θ ∈ [-1, 1]:
- *   θ = +1 (ferrofluid): χ = χ₀
- *   θ = -1 (non-magnetic): χ = 0
- */
-inline double susceptibility(double theta, double chi_0)
-{
-    return chi_0 * (1.0 + theta) / 2.0;
-}
 
 #endif // MAGNETIZATION_SETUP_H

@@ -61,6 +61,7 @@ struct Parameters
         double dt = 5e-4;
         double t_final = 2.0;
         unsigned int max_steps = 4000;
+        bool use_adaptive_dt = true;
     } time;
 
     struct IC
@@ -91,6 +92,32 @@ struct Parameters
     } mesh;
 
     // ========================================================================
+    // Physical parameters (Paper Section 6.2-6.3)
+    // These vary between Rosensweig and Hedgehog!
+    // ========================================================================
+    struct Physics
+    {
+        // Cahn-Hilliard (Eq. 14a-14b)
+        double epsilon = 0.01;      // interface thickness (Rosensweig: 0.01, Hedgehog: 0.005)
+        double mobility = 0.0002;   // γ mobility coefficient
+        double lambda = 0.05;       // capillary coefficient (Rosensweig: 0.05, Hedgehog: 0.025)
+
+        // Viscosity (Eq. 17)
+        double nu_water = 1.0;      // non-magnetic phase viscosity
+        double nu_ferro = 2.0;      // ferrofluid phase viscosity
+
+        // Magnetic (Section 6.2)
+        double chi_0 = 0.5;         // susceptibility (Rosensweig: 0.5, Hedgehog: 0.9)
+        double mu_0 = 1.0;          // permeability of free space
+        double tau_M = 0.0;         // magnetization relaxation time
+
+        // Density / Gravity (Eq. 19)
+        double rho = 1.0;           // reference density
+        double r = 0.1;             // density ratio
+        double gravity = 30000.0;   // non-dimensionalized gravity
+    } physics;
+
+    // ========================================================================
     // Finite element degrees
     // ========================================================================
     struct FE
@@ -108,7 +135,7 @@ struct Parameters
     struct Output
     {
         std::string folder = "../Results";
-        unsigned int frequency = 25;
+        unsigned int frequency = 10;
         bool verbose = false;
     } output;
 
@@ -172,6 +199,8 @@ struct Parameters
     void setup_rosensweig();
     void setup_hedgehog();
     void setup_droplet();
+    void setup_dome();                               // Dome configuration
+    bool use_reduced_magnetic_field = false;        // Dome set-up h = h_a only
 
     // ========================================================================
     // Command line parsing

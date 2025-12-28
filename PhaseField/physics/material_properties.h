@@ -3,10 +3,12 @@
 //
 // Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
 //
-// ALL physical constants are here. ONE place, ONE value.
-// If compiler complains about redefinition, GOOD - remove the duplicate.
+// RUNTIME PARAMETERS: Physical constants are now in Parameters::Physics struct.
+// Use params_.physics.epsilon, params_.physics.chi_0, etc.
 //
-// For Hedgehog (Section 6.3), change: epsilon=0.005, chi_0=0.9, lambda=0.025
+// Paper values:
+//   Rosensweig (6.2): epsilon=0.01,  chi_0=0.5, lambda=0.05
+//   Hedgehog (6.3):   epsilon=0.005, chi_0=0.9, lambda=0.025
 //
 // CRITICAL FOR ENERGY STABILITY (Eq. 43, Theorem 4.1):
 // All material coefficients MUST be evaluated at θ^{k-1} (the OLD/FROZEN value)
@@ -17,22 +19,27 @@
 #include <cmath>
 
 // ============================================================================
-// Physical Constants (Section 6.2, p.520-522)
+// DEFAULT Physical Constants (Section 6.2 - Rosensweig defaults)
+// These are FALLBACKS. Prefer using params_.physics.* for runtime values.
 // ============================================================================
 
-// Cahn-Hilliard (Eq. 14a-14b)
-constexpr double epsilon = 0.01;            // interface thickness
-constexpr double mobility = 0.0002;            // mobility it is gamma : c++/clang naming collision
+// Cahn-Hilliard (Eq. 14a-14b) - DEFAULTS
+constexpr double epsilon_default = 0.01;        // interface thickness
+constexpr double mobility_default = 0.0002;     // mobility (γ)
+constexpr double lambda_default = 0.05;         // capillary coefficient
 
-// Capillary (Eq. 14e)
-constexpr double lambda = 0.05;             // capillary coefficient
+// For backward compatibility (deprecated - use params_.physics.*)
+constexpr double epsilon = 0.01;
+constexpr double mobility = 0.0002;
+constexpr double lambda = 0.05;
 
 // Viscosity (Eq. 17, p.501)
 constexpr double nu_water = 1.0;            // non-magnetic phase
 constexpr double nu_ferro = 2.0;            // ferrofluid phase
 
-// Magnetic (Section 6.2, p.520)
-constexpr double chi_0 = 0.5;               // susceptibility (must be <= 4)
+// Magnetic (Section 6.2, p.520) - DEFAULTS
+constexpr double chi_0_default = 0.5;       // susceptibility
+constexpr double chi_0 = 0.5;               // backward compatibility
 constexpr double mu_0 = 1.0;                // permeability of free space
 constexpr double tau_M = 0.0;               // magnetization relaxation time
 
@@ -49,6 +56,9 @@ constexpr double grad_div = 0.0;            // grad-div parameter
 // Material Functions (Eq. 17-18, p.501)
 //
 // CRITICAL: Always pass theta_OLD for energy stability (Eq. 43)
+//
+// Parameter-aware versions take epsilon/chi_0 as arguments.
+// Legacy versions use global constants (for backward compatibility).
 // ============================================================================
 
 /** Smoothed Heaviside H(x) = 1/(1+exp(-x)) */
@@ -66,28 +76,52 @@ inline double heaviside_derivative(double x)
     return H * (1.0 - H);
 }
 
-/** ν_θ = ν_w + (ν_f - ν_w) H(θ/ε) */
+/** ν_θ = ν_w + (ν_f - ν_w) H(θ/ε) - PARAMETER VERSION */
+inline double viscosity(double theta, double eps)
+{
+    return nu_water + (nu_ferro - nu_water) * heaviside(theta / eps);
+}
+
+/** ν_θ = ν_w + (ν_f - ν_w) H(θ/ε) - LEGACY (uses global epsilon) */
 inline double viscosity(double theta)
 {
-    return nu_water + (nu_ferro - nu_water) * heaviside(theta / epsilon);
+    return viscosity(theta, epsilon);
 }
 
-/** χ_θ = χ₀ H(θ/ε) */
+/** χ_θ = χ₀ H(θ/ε) - PARAMETER VERSION */
+inline double susceptibility(double theta, double eps, double chi0)
+{
+    return chi0 * heaviside(theta / eps);
+}
+
+/** χ_θ = χ₀ H(θ/ε) - LEGACY (uses global constants) */
 inline double susceptibility(double theta)
 {
-    return chi_0 * heaviside(theta / epsilon);
+    return susceptibility(theta, epsilon, chi_0);
 }
 
-/** μ_θ = 1 + χ_θ */
+/** μ_θ = 1 + χ_θ - PARAMETER VERSION */
+inline double permeability(double theta, double eps, double chi0)
+{
+    return 1.0 + susceptibility(theta, eps, chi0);
+}
+
+/** μ_θ = 1 + χ_θ - LEGACY */
 inline double permeability(double theta)
 {
     return 1.0 + susceptibility(theta);
 }
 
-/** ρ_θ = 1 + r H(θ/ε) */
+/** ρ_θ = 1 + r H(θ/ε) - PARAMETER VERSION */
+inline double density_ratio(double theta, double eps)
+{
+    return 1.0 + r * heaviside(theta / eps);
+}
+
+/** ρ_θ = 1 + r H(θ/ε) - LEGACY */
 inline double density_ratio(double theta)
 {
-    return 1.0 + r * heaviside(theta / epsilon);
+    return density_ratio(theta, epsilon);
 }
 
 // ============================================================================
@@ -133,5 +167,10 @@ inline double double_well_second_derivative(double theta)
     else
         return 3.0 * theta * theta - 1.0;
 }
+
+// ============================================================================
+// NOTE: compute_susceptibility is defined in poisson_assembler.h
+// Do not duplicate it here to avoid linker errors.
+// ============================================================================
 
 #endif // MATERIAL_PROPERTIES_H

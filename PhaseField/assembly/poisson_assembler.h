@@ -62,9 +62,18 @@ inline double compute_permeability(double theta, double epsilon, double chi_0)
 // ============================================================================
 // Compute applied magnetic field h_a at a point (2D) [Eq. 97-98]
 //
-// h_a = Σ_s α_s ∇φ_s
+// h_a = Σ_s α_s ∇_x φ_s
 //
 // where φ_s(x) = d·(x_s - x) / |x_s - x|²  (2D dipole potential)
+//
+// Let r = x_s - x. Then φ = d·r / |r|²
+// Taking gradient with respect to evaluation point x:
+//   ∇_x φ = ∇_x [d·r / |r|²]
+//         = d · ∇_x(r)/|r|² + (d·r) · ∇_x(1/|r|²)
+//         = d · (-I)/|r|² + (d·r) · (-2r/|r|⁴)
+//         = -d/|r|² + 2(d·r)r/|r|⁴
+//
+// SIGN FIX: Original code had opposite sign!
 // ============================================================================
 template <int dim>
 dealii::Tensor<1, dim> compute_applied_field(
@@ -89,12 +98,12 @@ dealii::Tensor<1, dim> compute_applied_field(
     h_a[0] = 0.0;
     h_a[1] = 0.0;
 
-    // Sum contributions from all dipoles: h_a = Σ α ∇φ_s
+    // Sum contributions from all dipoles: h_a = Σ α ∇_x φ_s
     // φ_s = d·r / |r|²  where r = x_s - x
-    // ∇φ_s = d/|r|² - 2(d·r)r/|r|⁴
+    // ∇_x φ_s = -d/|r|² + 2(d·r)r/|r|⁴
     for (const auto& dipole_pos : params.dipoles.positions)
     {
-        const double rx = dipole_pos[0] - p[0];  // x_s - x
+        const double rx = dipole_pos[0] - p[0];  // r = x_s - x
         const double ry = dipole_pos[1] - p[1];
         const double r_sq = rx * rx + ry * ry;
 
@@ -105,9 +114,9 @@ dealii::Tensor<1, dim> compute_applied_field(
         const double r_sq_sq = r_sq * r_sq;
         const double d_dot_r = d_x * rx + d_y * ry;
 
-        // ∇φ_s = d/|r|² - 2(d·r)r/|r|⁴
-        h_a[0] += alpha * (d_x / r_sq - 2.0 * d_dot_r * rx / r_sq_sq);
-        h_a[1] += alpha * (d_y / r_sq - 2.0 * d_dot_r * ry / r_sq_sq);
+        // ∇_x φ_s = -d/|r|² + 2(d·r)r/|r|⁴
+        h_a[0] += alpha * (-d_x / r_sq + 2.0 * d_dot_r * rx / r_sq_sq);
+        h_a[1] += alpha * (-d_y / r_sq + 2.0 * d_dot_r * ry / r_sq_sq);
     }
 
     return h_a;
