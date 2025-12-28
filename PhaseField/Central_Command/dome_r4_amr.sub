@@ -1,0 +1,23 @@
+#!/bin/bash
+#SBATCH --job-name=dome_r4_amr
+#SBATCH --output=dome_r4_amr_%j.out
+#SBATCH --error=dome_r4_amr_%j.err
+#SBATCH --partition=general
+#SBATCH --time=18:00:00
+#SBATCH --mem=64G
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mail-type=BEGIN,END,FAIL
+
+module load dealii/9.7.1_gcc_12.3.0_mvapich
+
+cd /share/ceph/scratch/mg6f4/dealii_runs/dome_r4_amr
+
+/home/mg6f4/PhD-Project/PhaseField/build-release/ferrofluid \
+  --dome \
+  --refinement 4 \
+  --amr \
+  --amr_interval 5 \
+  --no_adaptive_dt \
+  --direct \
+  --verbose
