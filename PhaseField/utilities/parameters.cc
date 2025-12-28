@@ -309,6 +309,11 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
         else if (std::strcmp(argv[i], "--direct") == 0)
             params.solvers.ns.use_iterative = false;
 
+        else if (std::strcmp(argv[i], "--dg_transport") == 0)
+            params.use_dg_transport = true;
+        else if (std::strcmp(argv[i], "--no_dg_transport") == 0)
+            params.use_dg_transport = false;
+
         // Debugging
         else if (std::strcmp(argv[i], "--mms") == 0)
             params.enable_mms = true;
@@ -355,7 +360,9 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             std::cout << "  --no_adaptive_dt      Disable adaptive time stepping (paper default)\n\n";
 
             std::cout << "SOLVER:\n";
-            std::cout << "  --direct              Use direct solver (recommended)\n\n";
+            std::cout << "  --direct              Use direct solver (recommended)\n";
+            std::cout << "  --dg_transport        Enable DG magnetization transport\n";      // ADD
+            std::cout << "  --no_dg_transport     Disable DG transport (quasi-equilibrium)\n"; // ADD
 
             std::cout << "DEBUGGING:\n";
             std::cout << "  --mms                 MMS verification mode\n";

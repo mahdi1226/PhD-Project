@@ -41,7 +41,7 @@ constexpr double nu_ferro = 2.0;            // ferrofluid phase
 constexpr double chi_0_default = 0.5;       // susceptibility
 constexpr double chi_0 = 0.5;               // backward compatibility
 constexpr double mu_0 = 1.0;                // permeability of free space
-constexpr double tau_M = 0.0;               // magnetization relaxation time
+constexpr double tau_M = 1e-6;               // magnetization relaxation time
 
 // Density / Gravity (Eq. 19, p.501)
 constexpr double rho = 1.0;                 // reference density
