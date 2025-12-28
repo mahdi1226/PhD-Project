@@ -1,7 +1,11 @@
 // ============================================================================
-// diagnostics/ch_diagnostics.h - Cahn-Hilliard Diagnostics
+// diagnostics/ch_diagnostics.h - Cahn-Hilliard Diagnostics (PAPER_MATCH v2)
 //
 // Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
+//
+// FIXES:
+//   - Uses params.physics.epsilon instead of global constant
+//   - Energy formula: E = ε/2|∇θ|² + (1/ε)W(θ) (NO mobility factor)
 //
 // Diagnostics:
 //   - θ bounds: should stay in [-1, 1]
@@ -15,6 +19,8 @@
 #include <deal.II/dofs/dof_handler.h>
 #include <deal.II/lac/vector.h>
 #include <deal.II/fe/fe_q.h>
+
+#include "utilities/parameters.h"
 
 #include <string>
 #include <fstream>
@@ -35,7 +41,8 @@ struct CHDiagnosticData
     // Mass
     double mass = 0.0;           // ∫θ dΩ
 
-    // Energy
+    // Energy (Eq. 42 in paper - NO mobility factor!)
+    // E_CH = ∫[ε/2|∇θ|² + (1/ε)W(θ)] dΩ
     double energy = 0.0;         // E_CH
     double energy_prev = 0.0;    // E_CH from previous step
     double energy_rate = 0.0;    // (E - E_prev) / dt
@@ -67,26 +74,29 @@ double compute_mass(
     const dealii::Vector<double>& theta_solution);
 
 // ============================================================================
-// Compute CH energy
+// Compute CH energy (Eq. 42 in paper)
 //
-// E_CH = ∫[ε/2 |∇θ|² + (1/ε) F(θ)] dΩ
+// E_CH = ∫[ε/2 |∇θ|² + (1/ε) W(θ)] dΩ
 //
-// where F(θ) = (1/4)(θ² - 1)² is the double-well potential
+// where W(θ) = (1/4)(θ² - 1)² is the double-well potential
+//
+// NOTE: Mobility γ does NOT appear in energy formula!
+//       It only appears in the evolution equation: ∂θ/∂t = γ Δψ
 // ============================================================================
 template <int dim>
 double compute_ch_energy(
     const dealii::DoFHandler<dim>& theta_dof_handler,
     const dealii::Vector<double>& theta_solution,
-    double epsilon);
+    const Parameters& params);
 
 // ============================================================================
-// Compute all CH diagnostics
+// Compute all CH diagnostics (UPDATED to use Parameters)
 // ============================================================================
 template <int dim>
 CHDiagnosticData compute_ch_diagnostics(
     const dealii::DoFHandler<dim>& theta_dof_handler,
     const dealii::Vector<double>& theta_solution,
-    double epsilon,
+    const Parameters& params,
     unsigned int step,
     double time,
     double dt,

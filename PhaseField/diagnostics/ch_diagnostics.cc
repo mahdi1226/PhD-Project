@@ -1,11 +1,14 @@
 // ============================================================================
-// diagnostics/ch_diagnostics.cc - Cahn-Hilliard Diagnostics Implementation
+// diagnostics/ch_diagnostics.cc - Cahn-Hilliard Diagnostics (PAPER_MATCH v2)
 //
 // Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
+//
+// FIXES:
+//   - Uses params.physics.epsilon instead of global constant
+//   - Energy formula matches paper Eq. 42 (NO mobility factor)
 // ============================================================================
 
 #include "diagnostics/ch_diagnostics.h"
-#include "physics/material_properties.h"
 
 #include <deal.II/base/quadrature_lib.h>
 #include <deal.II/fe/fe_values.h>
@@ -66,14 +69,21 @@ double compute_mass(
 }
 
 // ============================================================================
-// Compute CH energy
+// Compute CH energy (Eq. 42 in paper)
+//
+// E_CH = ∫[ε/2 |∇θ|² + (1/ε) W(θ)] dΩ
+//
+// NOTE: Mobility γ does NOT appear here! Only in evolution equation.
 // ============================================================================
 template <int dim>
 double compute_ch_energy(
     const dealii::DoFHandler<dim>& theta_dof_handler,
     const dealii::Vector<double>& theta_solution,
-    double epsilon)
+    const Parameters& params)
 {
+    // Use runtime parameters, not global constants!
+    const double epsilon = params.physics.epsilon;
+
     const auto& fe = theta_dof_handler.get_fe();
     dealii::QGauss<dim> quadrature(fe.degree + 1);
     dealii::FEValues<dim> fe_values(fe, quadrature,
@@ -98,13 +108,16 @@ double compute_ch_energy(
             const double theta = theta_values[q];
             const double grad_theta_sq = theta_gradients[q].norm_square();
 
-            // F(θ) = (1/4)(θ² - 1)²
+            // W(θ) = (1/4)(θ² - 1)²  (double-well potential)
             const double theta_sq = theta * theta;
-            const double F_theta = 0.25 * (theta_sq - 1.0) * (theta_sq - 1.0);
+            const double W_theta = 0.25 * (theta_sq - 1.0) * (theta_sq - 1.0);
 
-            // E = ε/2 |∇θ|² + (1/ε) F(θ)
-            energy += (0.5 * epsilon * grad_theta_sq +
-                       (1.0 / epsilon) * F_theta) * fe_values.JxW(q);
+            // E_CH = ε/2 |∇θ|² + (1/ε) W(θ)
+            // NOTE: NO mobility factor here! Paper Eq. 42
+            const double E_grad = 0.5 * epsilon * grad_theta_sq;
+            const double E_bulk = (1.0 / epsilon) * W_theta;
+
+            energy += (E_grad + E_bulk) * fe_values.JxW(q);
         }
     }
 
@@ -112,13 +125,13 @@ double compute_ch_energy(
 }
 
 // ============================================================================
-// Compute all CH diagnostics
+// Compute all CH diagnostics (UPDATED signature - uses Parameters)
 // ============================================================================
 template <int dim>
 CHDiagnosticData compute_ch_diagnostics(
     const dealii::DoFHandler<dim>& theta_dof_handler,
     const dealii::Vector<double>& theta_solution,
-    double epsilon,
+    const Parameters& params,
     unsigned int step,
     double time,
     double dt,
@@ -136,8 +149,8 @@ CHDiagnosticData compute_ch_diagnostics(
     // Mass
     data.mass = compute_mass<dim>(theta_dof_handler, theta_solution);
 
-    // Energy
-    data.energy = compute_ch_energy<dim>(theta_dof_handler, theta_solution, epsilon);
+    // Energy (using params.physics.epsilon)
+    data.energy = compute_ch_energy<dim>(theta_dof_handler, theta_solution, params);
 
     // Energy rate
     if (step > 0 && dt > 0.0)
@@ -225,12 +238,12 @@ template double compute_mass<2>(
 template double compute_ch_energy<2>(
     const dealii::DoFHandler<2>&,
     const dealii::Vector<double>&,
-    double);
+    const Parameters&);
 
 template CHDiagnosticData compute_ch_diagnostics<2>(
     const dealii::DoFHandler<2>&,
     const dealii::Vector<double>&,
-    double,
+    const Parameters&,
     unsigned int,
     double,
     double,

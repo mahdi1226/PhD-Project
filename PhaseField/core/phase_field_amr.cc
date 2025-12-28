@@ -7,9 +7,10 @@
 
 #include "core/phase_field.h"
 
+#include <deal.II/base/quadrature_lib.h>       // QGauss
 #include <deal.II/grid/grid_refinement.h>
 #include <deal.II/numerics/solution_transfer.h>
-#include <deal.II/numerics/derivative_approximation.h>
+#include <deal.II/numerics/error_estimator.h>  // KellyErrorEstimator (Paper Eq. 99)
 
 #include <iostream>
 #include <memory>
@@ -35,81 +36,27 @@ void PhaseFieldProblem<dim>::refine_mesh()
         std::cout << "[AMR] Starting mesh refinement...\n";
 
     // =========================================================================
-    // Step 1: Compute refinement indicators using multi-field approach
-    // Combines phase field (ψ), velocity (ux, uy), and magnetic potential (φ)
-    // to capture interface, flow, and magnetic field gradients
+    // Step 1: Compute refinement indicators using Kelly error estimator
+    //
+    // Paper Eq. 99: η²_T = h_T ∫_{∂T} [[∂Θ/∂n]]² dS
+    //
+    // This measures the jump in normal derivative of θ across cell faces.
+    // KellyErrorEstimator::estimate() computes exactly this indicator.
+    // The h_T scaling is built into KellyErrorEstimator.
     // =========================================================================
-    const unsigned int n_cells = triangulation_.n_active_cells();
-    dealii::Vector<float> indicators(n_cells);
+    dealii::Vector<float> indicators(triangulation_.n_active_cells());
 
-    // --- OLD METHOD (single field: ψ only) ---
-    // dealii::DerivativeApproximation::approximate_gradient(
-    //     psi_dof_handler_,
-    //     psi_solution_,
-    //     indicators);
-    // for (const auto& cell : psi_dof_handler_.active_cell_iterators())
-    // {
-    //     const auto idx = cell->active_cell_index();
-    //     indicators[idx] *= cell->diameter();
-    // }
-    // --- END OLD METHOD ---
+    // Use θ (phase field) for error estimation, as specified in Paper Eq. 99
+    dealii::KellyErrorEstimator<dim>::estimate(
+        theta_dof_handler_,
+        dealii::QGauss<dim - 1>(theta_dof_handler_.get_fe().degree + 1),
+        {},                    // No Neumann boundaries for error estimation
+        theta_solution_,
+        indicators);
 
-    // --- NEW METHOD: Multi-field indicator (ψ + velocity + magnetic) ---
-    {
-        // Phase field indicator (ψ - chemical potential, sharp at interface)
-        dealii::Vector<float> psi_ind(n_cells);
-        dealii::DerivativeApproximation::approximate_gradient(
-            psi_dof_handler_,
-            psi_solution_,
-            psi_ind);
-
-        // Start with phase field as baseline
-        for (unsigned int i = 0; i < n_cells; ++i)
-            indicators[i] = psi_ind[i];
-
-        // Velocity indicators (if NS enabled)
-        if (params_.enable_ns)
-        {
-            dealii::Vector<float> ux_ind(n_cells);
-            dealii::Vector<float> uy_ind(n_cells);
-
-            dealii::DerivativeApproximation::approximate_gradient(
-                ux_dof_handler_,
-                ux_solution_,
-                ux_ind);
-            dealii::DerivativeApproximation::approximate_gradient(
-                uy_dof_handler_,
-                uy_solution_,
-                uy_ind);
-
-            for (unsigned int i = 0; i < n_cells; ++i)
-                indicators[i] = std::max({indicators[i], ux_ind[i], uy_ind[i]});
-        }
-
-        // Magnetic potential indicator (if magnetic enabled)
-        if (params_.enable_magnetic)
-        {
-            dealii::Vector<float> phi_ind(n_cells);
-            dealii::DerivativeApproximation::approximate_gradient(
-                phi_dof_handler_,
-                phi_solution_,
-                phi_ind);
-
-            for (unsigned int i = 0; i < n_cells; ++i)
-                indicators[i] = std::max(indicators[i], phi_ind[i]);
-        }
-    }
-    // --- END NEW METHOD ---
-
-    // Scale by cell diameter (Kelly-type indicator)
-    for (const auto& cell : triangulation_.active_cell_iterators())
-    {
-        const auto idx = cell->active_cell_index();
-        AssertIndexRange(idx, indicators.size());
-        indicators[idx] *= cell->diameter();
-    }
     // =========================================================================
     // Step 2: Mark cells for refinement and coarsening
+    // Using Dörfler/bulk-chasing marking strategy (Paper Section 6.1)
     // =========================================================================
     dealii::GridRefinement::refine_and_coarsen_fixed_fraction(
         triangulation_,
@@ -127,8 +74,7 @@ void PhaseFieldProblem<dim>::refine_mesh()
     }
 
     // Protect interface region from coarsening
-    // Note: We refine based on |∇ψ| (sharper gradients) but protect based on θ
-    // (clear ±1 bounds for interface detection)
+    // Cells where |θ| < threshold (near interface) should not be coarsened
     std::vector<dealii::types::global_dof_index> dof_indices(
         theta_dof_handler_.get_fe().n_dofs_per_cell());
 
@@ -456,7 +402,7 @@ void PhaseFieldProblem<dim>::refine_mesh()
 
         // Paper recommends K ≥ 9 direct solves after AMR for stability.
         // Don't reset if already counting down (frequent AMR case)
-        direct_solve_countdown_ = std::max(direct_solve_countdown_, 9);  //Only 3 direct solves
+        direct_solve_countdown_ = std::max(direct_solve_countdown_, 9);
 
         // Invalidate Schur preconditioner (must rebuild with new mesh)
         schur_preconditioner_.reset();

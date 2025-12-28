@@ -1,8 +1,11 @@
 // ============================================================================
 // assemblers/magnetization_assembler.cc - DG Magnetization Equation Assembler
+//                                          (PAPER_MATCH v2)
 //
 // Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
 // Eq. 42c, Eq. 57
+//
+// FIX: chi() now uses params_.physics.chi_0 instead of global chi_0.
 //
 // Assembles the scalar DG magnetization system using skew_forms.h.
 //
@@ -54,12 +57,12 @@ MagnetizationAssembler<dim>::MagnetizationAssembler(
 }
 
 // ============================================================================
-// Susceptibility function: χ(θ) = χ₀(1+θ)/2
+// Susceptibility function: χ(θ) = χ₀(1+θ)/2 - uses params_.physics.chi_0!
 // ============================================================================
 template <int dim>
 double MagnetizationAssembler<dim>::chi(double theta_val) const
 {
-    return chi_0 * (1.0 + theta_val) / 2.0;
+    return params_.physics.chi_0 * (1.0 + theta_val) / 2.0;
 }
 
 // ============================================================================

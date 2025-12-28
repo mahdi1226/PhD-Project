@@ -383,7 +383,7 @@ void assemble_ns_system(
             F_cap = 0;
             if (!mms_mode)
             {
-                const double coeff = lambda / epsilon;
+                const double coeff = params.physics.lambda / params.physics.epsilon;
                 F_cap[0] = coeff * theta_old_q * grad_psi[0];
                 F_cap[1] = coeff * theta_old_q * grad_psi[1];
             }
@@ -397,7 +397,7 @@ void assemble_ns_system(
             F_grav = 0;
             if (use_gravity)
             {
-                const double H_theta = heaviside(theta_old_q / epsilon);
+                const double H_theta = heaviside(theta_old_q / params.physics.epsilon);
                 const double buoyancy_factor = r * H_theta;
                 F_grav = buoyancy_factor * g_mag * g_direction;
             }
@@ -525,7 +525,9 @@ void assemble_ns_system(
                 else if (!mms_mode && params.enable_magnetic && phi_solution != nullptr)
                 {
                     // Quasi-equilibrium: M = χ_θ H, so F_mag = μ₀ χ_θ (H·∇)H
-                    const double chi_theta = susceptibility(theta_old_q);
+                    // Use params.physics.epsilon and params.physics.chi_0!
+                    const double chi_theta = susceptibility(theta_old_q,
+                        params.physics.epsilon, params.physics.chi_0);
                     const dealii::Tensor<1, dim>& H = phi_gradients[q];
                     const dealii::Tensor<2, dim>& hess_phi = phi_hessians[q];
 
@@ -641,83 +643,42 @@ void assemble_ns_system(
         // ====================================================================
         // Assemble cell contributions into global matrix
         // ====================================================================
-        // ====================================================================
-// Assemble cell contributions into global matrix using distribute_local_to_global
-// This properly handles hanging node constraints after AMR
-// ====================================================================
+        for (unsigned int i = 0; i < dofs_per_cell_Q2; ++i)
+        {
+            const auto gi = ux_to_ns_map[ux_local_dofs[i]];
+            ns_rhs(gi) += local_rhs_ux(i);
 
-// Build combined local DoF indices for the coupled system
-const unsigned int total_local_dofs = 2 * dofs_per_cell_Q2 + dofs_per_cell_Q1;
-std::vector<dealii::types::global_dof_index> combined_local_dofs(total_local_dofs);
+            for (unsigned int j = 0; j < dofs_per_cell_Q2; ++j)
+                ns_matrix.add(gi, ux_to_ns_map[ux_local_dofs[j]], local_ux_ux(i, j));
+            for (unsigned int j = 0; j < dofs_per_cell_Q2; ++j)
+                ns_matrix.add(gi, uy_to_ns_map[uy_local_dofs[j]], local_ux_uy(i, j));
+            for (unsigned int j = 0; j < dofs_per_cell_Q1; ++j)
+                ns_matrix.add(gi, p_to_ns_map[p_local_dofs[j]], local_ux_p(i, j));
+        }
 
-// Map local to global NS indices: [ux DoFs | uy DoFs | p DoFs]
-for (unsigned int i = 0; i < dofs_per_cell_Q2; ++i)
-    combined_local_dofs[i] = ux_to_ns_map[ux_local_dofs[i]];
-for (unsigned int i = 0; i < dofs_per_cell_Q2; ++i)
-    combined_local_dofs[dofs_per_cell_Q2 + i] = uy_to_ns_map[uy_local_dofs[i]];
-for (unsigned int i = 0; i < dofs_per_cell_Q1; ++i)
-    combined_local_dofs[2 * dofs_per_cell_Q2 + i] = p_to_ns_map[p_local_dofs[i]];
+        for (unsigned int i = 0; i < dofs_per_cell_Q2; ++i)
+        {
+            const auto gi = uy_to_ns_map[uy_local_dofs[i]];
+            ns_rhs(gi) += local_rhs_uy(i);
 
-// Build combined local matrix (all 9 blocks)
-dealii::FullMatrix<double> combined_local_matrix(total_local_dofs, total_local_dofs);
-combined_local_matrix = 0;
+            for (unsigned int j = 0; j < dofs_per_cell_Q2; ++j)
+                ns_matrix.add(gi, ux_to_ns_map[ux_local_dofs[j]], local_uy_ux(i, j));
+            for (unsigned int j = 0; j < dofs_per_cell_Q2; ++j)
+                ns_matrix.add(gi, uy_to_ns_map[uy_local_dofs[j]], local_uy_uy(i, j));
+            for (unsigned int j = 0; j < dofs_per_cell_Q1; ++j)
+                ns_matrix.add(gi, p_to_ns_map[p_local_dofs[j]], local_uy_p(i, j));
+        }
 
-// Block (0,0): ux-ux
-for (unsigned int i = 0; i < dofs_per_cell_Q2; ++i)
-    for (unsigned int j = 0; j < dofs_per_cell_Q2; ++j)
-        combined_local_matrix(i, j) = local_ux_ux(i, j);
+        for (unsigned int i = 0; i < dofs_per_cell_Q1; ++i)
+        {
+            const auto gi = p_to_ns_map[p_local_dofs[i]];
+            ns_rhs(gi) += local_rhs_p(i);
 
-// Block (0,1): ux-uy
-for (unsigned int i = 0; i < dofs_per_cell_Q2; ++i)
-    for (unsigned int j = 0; j < dofs_per_cell_Q2; ++j)
-        combined_local_matrix(i, dofs_per_cell_Q2 + j) = local_ux_uy(i, j);
-
-// Block (0,2): ux-p
-for (unsigned int i = 0; i < dofs_per_cell_Q2; ++i)
-    for (unsigned int j = 0; j < dofs_per_cell_Q1; ++j)
-        combined_local_matrix(i, 2 * dofs_per_cell_Q2 + j) = local_ux_p(i, j);
-
-// Block (1,0): uy-ux
-for (unsigned int i = 0; i < dofs_per_cell_Q2; ++i)
-    for (unsigned int j = 0; j < dofs_per_cell_Q2; ++j)
-        combined_local_matrix(dofs_per_cell_Q2 + i, j) = local_uy_ux(i, j);
-
-// Block (1,1): uy-uy
-for (unsigned int i = 0; i < dofs_per_cell_Q2; ++i)
-    for (unsigned int j = 0; j < dofs_per_cell_Q2; ++j)
-        combined_local_matrix(dofs_per_cell_Q2 + i, dofs_per_cell_Q2 + j) = local_uy_uy(i, j);
-
-// Block (1,2): uy-p
-for (unsigned int i = 0; i < dofs_per_cell_Q2; ++i)
-    for (unsigned int j = 0; j < dofs_per_cell_Q1; ++j)
-        combined_local_matrix(dofs_per_cell_Q2 + i, 2 * dofs_per_cell_Q2 + j) = local_uy_p(i, j);
-
-// Block (2,0): p-ux
-for (unsigned int i = 0; i < dofs_per_cell_Q1; ++i)
-    for (unsigned int j = 0; j < dofs_per_cell_Q2; ++j)
-        combined_local_matrix(2 * dofs_per_cell_Q2 + i, j) = local_p_ux(i, j);
-
-// Block (2,1): p-uy
-for (unsigned int i = 0; i < dofs_per_cell_Q1; ++i)
-    for (unsigned int j = 0; j < dofs_per_cell_Q2; ++j)
-        combined_local_matrix(2 * dofs_per_cell_Q2 + i, dofs_per_cell_Q2 + j) = local_p_uy(i, j);
-
-// Block (2,2): p-p is zero (no pressure-pressure coupling in Stokes)
-
-// Build combined local RHS
-dealii::Vector<double> combined_local_rhs(total_local_dofs);
-for (unsigned int i = 0; i < dofs_per_cell_Q2; ++i)
-    combined_local_rhs(i) = local_rhs_ux(i);
-for (unsigned int i = 0; i < dofs_per_cell_Q2; ++i)
-    combined_local_rhs(dofs_per_cell_Q2 + i) = local_rhs_uy(i);
-for (unsigned int i = 0; i < dofs_per_cell_Q1; ++i)
-    combined_local_rhs(2 * dofs_per_cell_Q2 + i) = local_rhs_p(i);
-
-// Distribute to global system with proper constraint handling
-ns_constraints.distribute_local_to_global(
-    combined_local_matrix, combined_local_rhs,
-    combined_local_dofs,
-    ns_matrix, ns_rhs);
+            for (unsigned int j = 0; j < dofs_per_cell_Q2; ++j)
+                ns_matrix.add(gi, ux_to_ns_map[ux_local_dofs[j]], local_p_ux(i, j));
+            for (unsigned int j = 0; j < dofs_per_cell_Q2; ++j)
+                ns_matrix.add(gi, uy_to_ns_map[uy_local_dofs[j]], local_p_uy(i, j));
+        }
 
         // ====================================================================
         // FACE LOOP: B_h^m face terms for Kelvin force
@@ -863,7 +824,7 @@ ns_constraints.distribute_local_to_global(
     // ========================================================================
 
 
-    //ns_constraints.condense(ns_matrix, ns_rhs);
+    ns_constraints.condense(ns_matrix, ns_rhs);
 
 
     // Diagnostic output (disabled in MMS mode)

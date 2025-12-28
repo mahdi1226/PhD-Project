@@ -524,7 +524,7 @@ void PhaseFieldProblem<dim>::initialize_solutions()
             }
         };
 
-        FlatLayerIC ic_func(interface_y, epsilon);
+        FlatLayerIC ic_func(interface_y, params_.physics.epsilon);
         dealii::VectorTools::interpolate(theta_dof_handler_, ic_func, theta_solution_);
 
         if (params_.output.verbose)
@@ -559,7 +559,7 @@ void PhaseFieldProblem<dim>::initialize_solutions()
             }
         };
 
-        PerturbedLayerIC ic_func(interface_y, epsilon, perturbation, Lx,
+        PerturbedLayerIC ic_func(interface_y, params_.physics.epsilon, perturbation, Lx,
                                   params_.domain.x_min, n_modes);
         dealii::VectorTools::interpolate(theta_dof_handler_, ic_func, theta_solution_);
 
@@ -589,7 +589,7 @@ void PhaseFieldProblem<dim>::initialize_solutions()
             }
         };
 
-        DropletIC ic_func(cx, cy, radius, epsilon);
+        DropletIC ic_func(cx, cy, radius, params_.physics.epsilon);
         dealii::VectorTools::interpolate(theta_dof_handler_, ic_func, theta_solution_);
 
         if (params_.output.verbose)

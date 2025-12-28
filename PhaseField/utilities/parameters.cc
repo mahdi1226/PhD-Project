@@ -19,6 +19,16 @@ void Parameters::setup_rosensweig()
     domain.initial_cells_y = 6;
     ic.pool_depth = 0.2;
 
+    // Physical parameters (Section 6.2, p.520-522)
+    physics.epsilon = 0.01;       // interface thickness
+    physics.mobility = 0.0002;    // γ
+    physics.lambda = 0.05;        // capillary coefficient
+    physics.chi_0 = 0.5;          // susceptibility
+    physics.nu_water = 1.0;
+    physics.nu_ferro = 2.0;
+    physics.r = 0.1;              // density ratio
+    physics.gravity = 30000.0;    // non-dimensional gravity
+
     dipoles.positions = {
         dealii::Point<2>(-0.5, -15.0),
         dealii::Point<2>( 0.0, -15.0),
@@ -34,6 +44,7 @@ void Parameters::setup_rosensweig()
     time.dt = 5e-4;
     time.t_final = 2.0;
     time.max_steps = 4000;
+    time.use_adaptive_dt = false;  // PAPER_MATCH: Paper uses fixed dt
 
     // Mesh
     mesh.initial_refinement = 5;
@@ -46,7 +57,7 @@ void Parameters::setup_rosensweig()
     enable_gravity = true;
 
     // Output
-    output.frequency = 25;
+    output.frequency = 10;
 }
 
 void Parameters::setup_hedgehog()
@@ -60,6 +71,16 @@ void Parameters::setup_hedgehog()
     domain.initial_cells_x = 15;
     domain.initial_cells_y = 9;
     ic.pool_depth = 0.11;
+
+    // Physical parameters (Section 6.3, p.527) - DIFFERENT from Rosensweig!
+    physics.epsilon = 0.005;      // interface thickness (HALF of Rosensweig)
+    physics.mobility = 0.0002;    // γ (same)
+    physics.lambda = 0.025;       // capillary coefficient (HALF of Rosensweig)
+    physics.chi_0 = 0.9;          // susceptibility (HIGHER than Rosensweig: 0.5)
+    physics.nu_water = 1.0;
+    physics.nu_ferro = 2.0;
+    physics.r = 0.1;              // density ratio
+    physics.gravity = 30000.0;    // non-dimensional gravity
 
     // Dipoles (Section 6.3, p.527-528)
     // 42 dipoles arranged in 3 rows × 14 columns
@@ -89,9 +110,12 @@ void Parameters::setup_hedgehog()
     dipoles.ramp_time = 4.2;
 
     // Time-stepping
-    time.dt = 0.00025;
+    // Paper Section 6.3: No explicit dt given, but using similar approach to Rosensweig
+    // With t_final=6.0, use dt=0.001 (similar to Rosensweig ref5)
+    time.dt = 0.001;
     time.t_final = 6.0;
-    time.max_steps = 24000;
+    time.max_steps = 6000;
+    time.use_adaptive_dt = false;  // PAPER_MATCH: Paper uses fixed dt
 
     // Mesh
     mesh.initial_refinement = 6;
@@ -104,7 +128,74 @@ void Parameters::setup_hedgehog()
     enable_gravity = true;
 
     // Output
-    output.frequency = 25;
+    output.frequency = 10;
+}
+
+void Parameters::setup_dome()
+{
+    // Same as hedgehog but WITHOUT demagnetizing field
+    // Results in dome shape (Fig. 7) instead of spikes (Fig. 6)
+
+    // Domain (same as hedgehog)
+    domain.x_min = 0.0;
+    domain.x_max = 1.0;
+    domain.y_min = 0.0;
+    domain.y_max = 0.6;
+    domain.initial_cells_x = 15;
+    domain.initial_cells_y = 9;
+    ic.pool_depth = 0.11;
+    time.use_adaptive_dt = false;
+
+    // Physical parameters (same as Hedgehog, Section 6.3)
+    physics.epsilon = 0.005;
+    physics.mobility = 0.0002;
+    physics.lambda = 0.025;
+    physics.chi_0 = 0.9;
+    physics.nu_water = 1.0;
+    physics.nu_ferro = 2.0;
+    physics.r = 0.1;
+    physics.gravity = 30000.0;
+
+    // Same dipoles as hedgehog
+    dipoles.positions.clear();
+    const double x_min_dipole = 0.3;
+    const double x_max_dipole = 0.7;
+    const double x_spacing = (x_max_dipole - x_min_dipole) / 13.0;
+    const std::array<double, 3> y_rows = {-0.5, -0.75, -1.0};
+
+    for (double y : y_rows)
+    {
+        for (int j = 0; j < 14; ++j)
+        {
+            double x = x_min_dipole + j * x_spacing;
+            dipoles.positions.push_back(dealii::Point<2>(x, y));
+        }
+    }
+
+    dipoles.direction = {0.0, 1.0};
+    dipoles.intensity_max = 4.3;
+    dipoles.ramp_time = 4.2;
+
+    // KEY DIFFERENCE: Use reduced field (h = ha only, skip Poisson for hd)
+    use_reduced_magnetic_field = true;  // NEW FLAG
+
+    // Time-stepping (use paper's values!)
+    time.dt = 0.001;           // Paper: 2000 steps for t_final=6 → dt=0.003
+    time.t_final = 6.0;
+    time.max_steps = 6000;
+    time.use_adaptive_dt = false;  // Disable adaptive!
+
+    // Mesh - can be coarser for dome
+    mesh.initial_refinement = 4;
+    mesh.use_amr = false;      // Disable AMR for stability
+
+    // Subsystems
+    enable_magnetic = true;
+    enable_ns = true;
+    enable_gravity = true;
+
+    // Output more frequently to see evolution
+    output.frequency = 10;
 }
 
 void Parameters::setup_droplet()
@@ -122,6 +213,16 @@ void Parameters::setup_droplet()
     ic.droplet_center_x = 0.5;
     ic.droplet_center_y = 0.5;
     ic.droplet_radius = 0.25;
+
+    // Physical parameters (same as Rosensweig defaults)
+    physics.epsilon = 0.01;
+    physics.mobility = 0.0002;
+    physics.lambda = 0.05;
+    physics.chi_0 = 0.5;
+    physics.nu_water = 1.0;
+    physics.nu_ferro = 2.0;
+    physics.r = 0.1;
+    physics.gravity = 30000.0;
 
     // No dipoles (field-free test case)
     dipoles.positions.clear();
@@ -161,6 +262,9 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             params.setup_hedgehog();
         else if (std::strcmp(argv[i], "--droplet") == 0)
             params.setup_droplet();
+        else if (std::strcmp(argv[i], "--dome") == 0)        {
+            params.setup_dome();
+        }
 
         // Overrides
         else if (std::strcmp(argv[i], "--refinement") == 0 || std::strcmp(argv[i], "-r") == 0)
@@ -195,6 +299,12 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             params.mesh.amr_interval = std::stoul(argv[i]);
         }
 
+        // Adaptive time stepping
+        else if (std::strcmp(argv[i], "--adaptive_dt") == 0)
+            params.time.use_adaptive_dt = true;
+        else if (std::strcmp(argv[i], "--no_adaptive_dt") == 0)
+            params.time.use_adaptive_dt = false;
+
         // Solver
         else if (std::strcmp(argv[i], "--direct") == 0)
             params.solvers.ns.use_iterative = false;
@@ -224,6 +334,12 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             std::cout << "  --hedgehog      Hedgehog instability (Section 6.3)\n";
             std::cout << "  --droplet       Simple droplet (no magnetic, no gravity)\n\n";
 
+            std::cout << "PRESETS (pick one):\n";
+            std::cout << "  --rosensweig    Rosensweig instability (Section 6.2)\n";
+            std::cout << "  --hedgehog      Hedgehog instability (Section 6.3)\n";
+            std::cout << "  --dome          Hedgehog with h=ha only (Fig. 7 - dome)\n";  // ADD THIS
+            std::cout << "  --droplet       Simple droplet (no magnetic, no gravity)\n\n";
+
             std::cout << "OVERRIDES:\n";
             std::cout << "  --refinement N  Mesh refinement level\n";
             std::cout << "  --dt DT         Time step size\n";
@@ -233,6 +349,10 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             std::cout << "AMR:\n";
             std::cout << "  --amr / --no_amr      Enable/disable AMR\n";
             std::cout << "  --amr_interval N      Refine every N steps\n\n";
+
+            std::cout << "TIME STEPPING:\n";
+            std::cout << "  --adaptive_dt         Enable adaptive time stepping\n";
+            std::cout << "  --no_adaptive_dt      Disable adaptive time stepping (paper default)\n\n";
 
             std::cout << "SOLVER:\n";
             std::cout << "  --direct              Use direct solver (recommended)\n\n";
@@ -262,10 +382,14 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
         std::cout << "=== Configuration ===\n";
         std::cout << "  Refinement: " << params.mesh.initial_refinement << "\n";
         std::cout << "  dt=" << params.time.dt << ", t_final=" << params.time.t_final << "\n";
+        std::cout << "  Adaptive dt: " << (params.time.use_adaptive_dt ? "ON" : "OFF") << "\n";
         std::cout << "  AMR: " << (params.mesh.use_amr ? "ON" : "OFF");
         if (params.mesh.use_amr)
             std::cout << " (every " << params.mesh.amr_interval << " steps)";
         std::cout << "\n";
+        std::cout << "  Physics: epsilon=" << params.physics.epsilon
+                  << ", lambda=" << params.physics.lambda
+                  << ", chi_0=" << params.physics.chi_0 << "\n";
         std::cout << "  Solver: " << (params.solvers.ns.use_iterative ? "Iterative" : "Direct") << "\n";
         std::cout << "  Subsystems: "
                   << (params.enable_magnetic ? "Magnetic " : "")

@@ -47,6 +47,7 @@ set(SOURCES
         # Setup
         setup/ch_setup.cc
         setup/poisson_setup.cc
+        setup/magnetization_setup.cc  # ADDED - was dead code, now active
         setup/ns_setup.cc
 
         # Diagnostics
@@ -55,15 +56,11 @@ set(SOURCES
         diagnostics/poisson_diagnostics.cc
         diagnostics/ns_diagnostics.cc
 
-
-
         # Method of Manufactured Solution (MMS)
         mms/ch_mms.cc
         mms/poisson_mms.cc
         mms/ns_mms.cc
         mms/mms_runtime.cc
-
-
 
         # Utilities
         utilities/parameters.cc
