@@ -1,0 +1,22 @@
+#!/bin/bash
+#SBATCH --job-name=dome_r5
+#SBATCH --output=dome_r5_%j.out
+#SBATCH --error=dome_r5_%j.err
+#SBATCH --partition=general
+#SBATCH --time=24:00:00
+#SBATCH --mem=64G
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mail-type=BEGIN,END,FAIL
+
+module load dealii/9.7.1_gcc_12.3.0_mvapich
+
+cd /share/ceph/scratch/mg6f4/dealii_runs/dome_r5
+
+/home/mg6f4/PhD-Project/PhaseField/build-release/ferrofluid \
+  --dome \
+  --refinement 5 \
+  --no_amr \
+  --no_adaptive_dt \
+  --direct \
+  --verbose

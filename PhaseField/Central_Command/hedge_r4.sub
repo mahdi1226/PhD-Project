@@ -1,0 +1,22 @@
+#!/bin/bash
+#SBATCH --job-name=hedge_r4
+#SBATCH --output=hedge_r4_%j.out
+#SBATCH --error=hedge_r4_%j.err
+#SBATCH --partition=general
+#SBATCH --time=24:00:00
+#SBATCH --mem=64G
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mail-type=BEGIN,END,FAIL
+
+module load dealii/9.7.1_gcc_12.3.0_mvapich
+
+cd /share/ceph/scratch/mg6f4/dealii_runs/hedge_r4
+
+/home/mg6f4/PhD-Project/PhaseField/build-release/ferrofluid \
+  --hedgehog \
+  --refinement 4 \
+  --no_amr \
+  --no_adaptive_dt \
+  --direct \
+  --verbose
