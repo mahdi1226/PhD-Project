@@ -9,7 +9,8 @@
 #SBATCH --ntasks=1
 #SBATCH --mail-type=BEGIN,END,FAIL
 
-module load dealii/9.7.1_gcc_12.3.0_mvapich
+module load dealii/9.7.1_umfpack
+source /share/apps/common/SPACK_v110_release_a2/spack/opt/spack/linux-x86_64/dealii-9.7.1-kr766e7zm3gq6q7t67vefndkrhcyvmrw/.spack/spack-build-env.txt
 
 cd /share/ceph/scratch/mg6f4/dealii_runs/rosen_r5
 
