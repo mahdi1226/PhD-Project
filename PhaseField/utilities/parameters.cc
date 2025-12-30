@@ -10,6 +10,8 @@
 
 void Parameters::setup_rosensweig()
 {
+    preset_name = "rosen";  // For auto-generating run_name
+
     // Domain (Section 6.2, p.522)
     domain.x_min = 0.0;
     domain.x_max = 1.0;
@@ -62,6 +64,8 @@ void Parameters::setup_rosensweig()
 
 void Parameters::setup_hedgehog()
 {
+    preset_name = "hedge";  // For auto-generating run_name
+
     // Domain (Section 6.3, p.527)
     // Same rectangular domain as Rosensweig: Ω = (0,1) × (0,0.6)
     domain.x_min = 0.0;
@@ -133,6 +137,8 @@ void Parameters::setup_hedgehog()
 
 void Parameters::setup_dome()
 {
+    preset_name = "dome";  // For auto-generating run_name
+
     // Same as hedgehog but WITHOUT demagnetizing field
     // Results in dome shape (Fig. 7) instead of spikes (Fig. 6)
 
@@ -200,6 +206,8 @@ void Parameters::setup_dome()
 
 void Parameters::setup_droplet()
 {
+    preset_name = "drop";  // For auto-generating run_name
+
     // Domain: unit square
     domain.x_min = 0.0;
     domain.x_max = 1.0;
@@ -249,6 +257,23 @@ void Parameters::setup_droplet()
     output.frequency = 10;
 }
 
+// ============================================================================
+// finalize_run_name() - Build run_name from preset + refinement + amr
+// Call after all command line parsing is complete
+// ============================================================================
+void Parameters::finalize_run_name()
+{
+    // If user specified --run_name, use it as-is
+    if (!output.run_name.empty())
+        return;
+
+    // Auto-generate: preset-rN[-amr]
+    output.run_name = preset_name + "-r" + std::to_string(mesh.initial_refinement);
+
+    if (mesh.use_amr)
+        output.run_name += "-amr";
+}
+
 Parameters Parameters::parse_command_line(int argc, char* argv[])
 {
     Parameters params;
@@ -262,9 +287,8 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             params.setup_hedgehog();
         else if (std::strcmp(argv[i], "--droplet") == 0)
             params.setup_droplet();
-        else if (std::strcmp(argv[i], "--dome") == 0)        {
+        else if (std::strcmp(argv[i], "--dome") == 0)
             params.setup_dome();
-        }
 
         // Overrides
         else if (std::strcmp(argv[i], "--refinement") == 0 || std::strcmp(argv[i], "-r") == 0)
@@ -314,6 +338,13 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
         else if (std::strcmp(argv[i], "--no_dg_transport") == 0)
             params.use_dg_transport = false;
 
+        // Run name (NEW)
+        else if (std::strcmp(argv[i], "--run_name") == 0)
+        {
+            if (++i >= argc) { std::cerr << "--run_name requires a value\n"; std::exit(1); }
+            params.output.run_name = argv[i];
+        }
+
         // Debugging
         else if (std::strcmp(argv[i], "--mms") == 0)
             params.enable_mms = true;
@@ -337,12 +368,7 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             std::cout << "PRESETS (pick one):\n";
             std::cout << "  --rosensweig    Rosensweig instability (Section 6.2)\n";
             std::cout << "  --hedgehog      Hedgehog instability (Section 6.3)\n";
-            std::cout << "  --droplet       Simple droplet (no magnetic, no gravity)\n\n";
-
-            std::cout << "PRESETS (pick one):\n";
-            std::cout << "  --rosensweig    Rosensweig instability (Section 6.2)\n";
-            std::cout << "  --hedgehog      Hedgehog instability (Section 6.3)\n";
-            std::cout << "  --dome          Hedgehog with h=ha only (Fig. 7 - dome)\n";  // ADD THIS
+            std::cout << "  --dome          Hedgehog with h=ha only (Fig. 7 - dome)\n";
             std::cout << "  --droplet       Simple droplet (no magnetic, no gravity)\n\n";
 
             std::cout << "OVERRIDES:\n";
@@ -361,18 +387,20 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
 
             std::cout << "SOLVER:\n";
             std::cout << "  --direct              Use direct solver (recommended)\n";
-            std::cout << "  --dg_transport        Enable DG magnetization transport\n";      // ADD
-            std::cout << "  --no_dg_transport     Disable DG transport (quasi-equilibrium)\n"; // ADD
+            std::cout << "  --dg_transport        Enable DG magnetization transport\n";
+            std::cout << "  --no_dg_transport     Disable DG transport (quasi-equilibrium)\n\n";
+
+            std::cout << "OUTPUT:\n";
+            std::cout << "  --run_name NAME       Custom run name (default: auto-generated)\n";
+            std::cout << "                        e.g., rosen-r5-amr, dome-r4, hedge-r5\n";
+            std::cout << "  Results saved to: ../Results/<run_name>-<timestamp>/\n\n";
 
             std::cout << "DEBUGGING:\n";
             std::cout << "  --mms                 MMS verification mode\n";
             std::cout << "  --no_magnetic         Disable magnetic forces\n";
             std::cout << "  --no_gravity          Disable gravity\n";
             std::cout << "  --no_ns               Disable Navier-Stokes\n";
-            std::cout << "  --verbose             Verbose output\n\n";
-
-            std::cout << "OUTPUT:\n";
-            std::cout << "  Results saved to: ../Results/run-<timestamp>/\n";
+            std::cout << "  --verbose             Verbose output\n";
 
             std::exit(0);
         }
@@ -384,9 +412,13 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
         }
     }
 
+    // Finalize run_name after all parsing is done
+    params.finalize_run_name();
+
     if (params.output.verbose)
     {
         std::cout << "=== Configuration ===\n";
+        std::cout << "  Run name: " << params.output.run_name << "\n";
         std::cout << "  Refinement: " << params.mesh.initial_refinement << "\n";
         std::cout << "  dt=" << params.time.dt << ", t_final=" << params.time.t_final << "\n";
         std::cout << "  Adaptive dt: " << (params.time.use_adaptive_dt ? "ON" : "OFF") << "\n";
