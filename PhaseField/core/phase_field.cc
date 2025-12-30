@@ -30,8 +30,10 @@
 #include "diagnostics/ch_diagnostics.h"
 #include "diagnostics/poisson_diagnostics.h"
 #include "diagnostics/ns_diagnostics.h"
+#include "diagnostics/interface_tracking.h"
 #include "mms/ch_mms.h"
 #include "mms/poisson_mms.h"
+#include "diagnostics/force_diagnostics.h"
 #include "diagnostics/field_diagnostics.h"
 #include "mms/ns_mms.h"
 #include "physics/material_properties.h"
@@ -301,16 +303,12 @@ void PhaseFieldProblem<dim>::run()
             ++output_counter;
             output_results(output_counter);
 
-            // Compute diagnostics
-            const double mass = compute_mass();
-            const double E_ch = compute_ch_energy();
-            const double E_kin = params_.enable_ns ? compute_kinetic_energy() : 0.0;
-
+            // Use diagnostics already computed in time_step()
             std::cout << std::setw(8) << timestep_number_
                 << std::setw(12) << std::fixed << std::setprecision(4) << time_
-                << std::setw(14) << std::scientific << std::setprecision(4) << mass
-                << std::setw(14) << E_ch
-                << std::setw(14) << E_kin << "\n";
+                << std::setw(14) << std::scientific << std::setprecision(4) << last_step_data_.mass
+                << std::setw(14) << last_step_data_.E_CH
+                << std::setw(14) << last_step_data_.E_kin << "\n";
         }
     }
 
@@ -391,66 +389,29 @@ void PhaseFieldProblem<dim>::time_step(double dt)
     //   Block 2: Magnetics (42c-42d)
     //   Block 3: NS (42e-42f)
     // ========================================================================
-    const unsigned int n_picard = params_.picard_iterations; // Default: 3
+    const unsigned int n_picard = params_.picard_iterations;
 
-    // Reset iteration counter for this time step
     last_ns_gmres_iters_ = 0;
 
     for (unsigned int picard = 0; picard < n_picard; ++picard)
     {
-        // ====================================================================
-        // Block 1: Cahn-Hilliard (42a-42b)
-        // ====================================================================
         solve_ch();
 
-        // ====================================================================
-        // Block 2: Magnetics (42c-42d)
-        // ====================================================================
         if (params_.enable_magnetic)
         {
             solve_magnetization();
             solve_poisson();
         }
 
-        // ====================================================================
-        // Block 3: Navier-Stokes (42e-42f)
-        // ====================================================================
         if (params_.enable_ns)
-            solve_ns(); // This will update last_ns_gmres_iters_
+            solve_ns();
     }
 
     // ========================================================================
     // Diagnostics (after Picard converged)
     // ========================================================================
 
-    // Energy stability monitoring (Paper Proposition 4.1)
-    // Total energy should be bounded; increases only during dipole ramp
-    if (params_.output.verbose && params_.enable_magnetic)
-    {
-        double E_CH = compute_ch_energy();
-        double E_kin = compute_kinetic_energy();
-        double E_mag = compute_magnetic_energy();
-        double E_total = E_CH + E_kin + E_mag;
-
-        static double E_total_prev = E_total;
-        double dE = E_total - E_total_prev;
-
-        // Only warn if energy increases AFTER ramp is complete
-        // During ramp, energy increase is expected (external forcing)
-        bool ramp_complete = (time_ > params_.dipoles.ramp_time);
-
-        if (dE > 1e-6 && timestep_number_ > 1 && ramp_complete)
-        {
-            std::cout << "[WARNING] Energy increased by " << std::scientific
-                << dE << " at step " << timestep_number_
-                << " t=" << time_ << " (post-ramp)\n";
-            std::cout << "          E_CH=" << E_CH << " E_kin=" << E_kin
-                << " E_mag=" << E_mag << "\n";
-        }
-        E_total_prev = E_total;
-    }
-
-    // CH diagnostics (uses params_.physics.epsilon internally)
+    // CH diagnostics
     CHDiagnosticData ch_data = compute_ch_diagnostics<dim>(
         theta_dof_handler_, theta_solution_, params_,
         timestep_number_, time_new, dt, ch_energy_old_);
@@ -503,8 +464,32 @@ void PhaseFieldProblem<dim>::time_step(double dt)
         step_data.p_max = ns_diag.p_max;
     }
 
+    /// Interface tracking (for Rosensweig instability)
+    InterfacePosition interface_pos = compute_interface_position_robust<dim>(
+        theta_dof_handler_, theta_solution_, false);
+
+    step_data.interface_y_min = interface_pos.y_min;
+    step_data.interface_y_max = interface_pos.y_max;
+    step_data.interface_y_mean = interface_pos.y_mean;
+
+    // Force diagnostics
+    ForceDiagnostics force_data = compute_force_diagnostics<dim>(
+        theta_dof_handler_, theta_solution_, psi_solution_,
+        params_.enable_magnetic ? &phi_solution_ : nullptr,
+        params_);
+
+    step_data.F_cap_max = force_data.F_cap_max;
+    step_data.F_mag_max = force_data.F_mag_max;
+    step_data.F_grav_max = force_data.F_grav_max;
+
+    // =========================================================================
+    // Compute derived quantities and total energy
+    // =========================================================================
+    step_data.E_internal = step_data.E_CH + step_data.E_kin;
+    step_data.E_total = step_data.E_CH + step_data.E_kin + step_data.E_mag;
+
     // ========================================================================
-    // Compute derived quantities and energy
+    // Compute derived quantities and total energy
     // ========================================================================
     step_data.E_internal = step_data.E_CH + step_data.E_kin;
     step_data.E_total = step_data.E_CH + step_data.E_kin + step_data.E_mag;
@@ -518,6 +503,28 @@ void PhaseFieldProblem<dim>::time_step(double dt)
     E_internal_old_ = step_data.E_internal;
 
     step_data.compute_derived();
+
+    // ========================================================================
+    // Verbose energy stability warning (uses step_data, not member functions)
+    // ========================================================================
+    if (params_.output.verbose && params_.enable_magnetic)
+    {
+        static double E_total_prev = step_data.E_total;
+        double dE = step_data.E_total - E_total_prev;
+
+        bool ramp_complete = (time_new > params_.dipoles.ramp_time);
+
+        if (dE > 1e-6 && timestep_number_ > 1 && ramp_complete)
+        {
+            std::cout << "[WARNING] Energy increased by " << std::scientific
+                << dE << " at step " << timestep_number_
+                << " t=" << time_new << " (post-ramp)\n";
+            std::cout << "          E_CH=" << step_data.E_CH
+                << " E_kin=" << step_data.E_kin
+                << " E_mag=" << step_data.E_mag << "\n";
+        }
+        E_total_prev = step_data.E_total;
+    }
 
     // ========================================================================
     // Logging
@@ -886,147 +893,6 @@ void PhaseFieldProblem<dim>::update_mms_boundary_constraints(double time)
     }
 
     ch_combined_constraints_.close();
-}
-
-// ============================================================================
-// compute_mass() - Total mass integral of theta
-// ============================================================================
-template <int dim>
-double PhaseFieldProblem<dim>::compute_mass() const
-{
-    dealii::QGauss<dim> quadrature(fe_Q2_.degree + 1);
-    dealii::FEValues<dim> fe_values(fe_Q2_, quadrature,
-                                    dealii::update_values | dealii::update_JxW_values);
-
-    std::vector<double> theta_values(quadrature.size());
-    double mass = 0.0;
-
-    for (const auto& cell : theta_dof_handler_.active_cell_iterators())
-    {
-        fe_values.reinit(cell);
-        fe_values.get_function_values(theta_solution_, theta_values);
-
-        for (unsigned int q = 0; q < quadrature.size(); ++q)
-            mass += theta_values[q] * fe_values.JxW(q);
-    }
-
-    return mass;
-}
-
-// ============================================================================
-// compute_ch_energy() - Cahn-Hilliard free energy (Paper Eq. 42)
-//
-// E_CH = ∫[ε/2 |∇θ|² + (1/ε) W(θ)] dΩ
-//
-// NOTE: Mobility γ does NOT appear in energy! Only in evolution equation.
-// ============================================================================
-template <int dim>
-double PhaseFieldProblem<dim>::compute_ch_energy() const
-{
-    const double eps = params_.physics.epsilon;
-
-    dealii::QGauss<dim> quadrature(fe_Q2_.degree + 1);
-    dealii::FEValues<dim> fe_values(fe_Q2_, quadrature,
-                                    dealii::update_values | dealii::update_gradients | dealii::update_JxW_values);
-
-    std::vector<double> theta_values(quadrature.size());
-    std::vector<dealii::Tensor<1, dim>> theta_gradients(quadrature.size());
-    double energy = 0.0;
-
-    for (const auto& cell : theta_dof_handler_.active_cell_iterators())
-    {
-        fe_values.reinit(cell);
-        fe_values.get_function_values(theta_solution_, theta_values);
-        fe_values.get_function_gradients(theta_solution_, theta_gradients);
-
-        for (unsigned int q = 0; q < quadrature.size(); ++q)
-        {
-            const double theta = theta_values[q];
-            const double grad_theta_sq = theta_gradients[q] * theta_gradients[q];
-
-            // E_CH = ε/2 |∇θ|² + (1/ε) W(θ)  -- NO mobility factor!
-            const double E_grad = 0.5 * eps * grad_theta_sq;
-            const double W = 0.25 * (theta * theta - 1.0) * (theta * theta - 1.0);
-            const double E_bulk = (1.0 / eps) * W;
-
-            energy += (E_grad + E_bulk) * fe_values.JxW(q);
-        }
-    }
-
-    return energy;
-}
-
-// ============================================================================
-// compute_kinetic_energy() - Kinetic energy (1/2) integral |u|^2
-// ============================================================================
-template <int dim>
-double PhaseFieldProblem<dim>::compute_kinetic_energy() const
-{
-    if (!params_.enable_ns)
-        return 0.0;
-
-    dealii::QGauss<dim> quadrature(fe_Q2_.degree + 1);
-    dealii::FEValues<dim> fe_values_ux(fe_Q2_, quadrature,
-                                       dealii::update_values | dealii::update_JxW_values);
-    dealii::FEValues<dim> fe_values_uy(fe_Q2_, quadrature,
-                                       dealii::update_values);
-
-    std::vector<double> ux_values(quadrature.size());
-    std::vector<double> uy_values(quadrature.size());
-    double energy = 0.0;
-
-    auto ux_cell = ux_dof_handler_.begin_active();
-    auto uy_cell = uy_dof_handler_.begin_active();
-
-    for (; ux_cell != ux_dof_handler_.end(); ++ux_cell, ++uy_cell)
-    {
-        fe_values_ux.reinit(ux_cell);
-        fe_values_uy.reinit(uy_cell);
-
-        fe_values_ux.get_function_values(ux_solution_, ux_values);
-        fe_values_uy.get_function_values(uy_solution_, uy_values);
-
-        for (unsigned int q = 0; q < quadrature.size(); ++q)
-        {
-            const double u_sq = ux_values[q] * ux_values[q] +
-                uy_values[q] * uy_values[q];
-            energy += 0.5 * u_sq * fe_values_ux.JxW(q);
-        }
-    }
-
-    return energy;
-}
-
-// ============================================================================
-// compute_magnetic_energy() - Magnetic energy (mu_0/2) integral |H|^2
-// ============================================================================
-template <int dim>
-double PhaseFieldProblem<dim>::compute_magnetic_energy() const
-{
-    if (!params_.enable_magnetic)
-        return 0.0;
-
-
-    dealii::QGauss<dim> quadrature(fe_Q2_.degree + 1);
-    dealii::FEValues<dim> fe_values(fe_Q2_, quadrature,
-                                    dealii::update_gradients | dealii::update_JxW_values);
-
-    std::vector<dealii::Tensor<1, dim>> phi_gradients(quadrature.size());
-    double energy = 0.0;
-
-    for (const auto& cell : phi_dof_handler_.active_cell_iterators())
-    {
-        fe_values.reinit(cell);
-        fe_values.get_function_gradients(phi_solution_, phi_gradients);
-
-        for (unsigned int q = 0; q < quadrature.size(); ++q)
-        {
-            const double H_sq = phi_gradients[q] * phi_gradients[q];
-            energy += 0.5 * mu_0 * H_sq * fe_values.JxW(q);
-        }
-    }
-
-    return energy;
 }
 
 // ============================================================================

@@ -500,7 +500,6 @@ void PhaseFieldProblem<dim>::initialize_solutions()
         if (params_.output.verbose)
         {
             std::cout << "[Setup] MMS IC at t = " << params_.mms_t_init << "\n";
-            std::cout << "[Setup] Initial mass = " << compute_mass() << "\n";
         }
         return;
     }
@@ -632,9 +631,6 @@ void PhaseFieldProblem<dim>::initialize_solutions()
         if (params_.output.verbose)
             std::cout << "[Setup] Magnetization initialized to zero (will relax)\n";
     }
-
-    if (params_.output.verbose)
-        std::cout << "[Setup] Initial mass = " << compute_mass() << "\n";
 }
 
 // ============================================================================

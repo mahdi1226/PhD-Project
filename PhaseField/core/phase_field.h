@@ -90,10 +90,6 @@ private:
     // Output and diagnostics
     // ========================================================================
     void output_results(unsigned int step) const;
-    double compute_mass() const;
-    double compute_ch_energy() const;
-    double compute_kinetic_energy() const;
-    double compute_magnetic_energy() const;
     double get_min_h() const;
     FieldDistributionLogger field_logger_;
 

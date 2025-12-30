@@ -62,7 +62,7 @@ void PhaseFieldProblem<dim>::refine_mesh()
         triangulation_,
         indicators,
         params_.mesh.amr_upper_fraction,   // 0.3
-        params_.mesh.amr_lower_fraction);  // 0.1
+        params_.mesh.amr_lower_fraction);  // 0.03
 
     // Enforce min/max refinement levels
     for (const auto& cell : triangulation_.active_cell_iterators())
