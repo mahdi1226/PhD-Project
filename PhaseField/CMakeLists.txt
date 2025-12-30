@@ -51,7 +51,6 @@ set(SOURCES
         setup/ns_setup.cc
 
         # Diagnostics
-        diagnostics/diagnostics.cc
         diagnostics/ch_diagnostics.cc
         diagnostics/poisson_diagnostics.cc
         diagnostics/ns_diagnostics.cc

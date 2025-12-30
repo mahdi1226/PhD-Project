@@ -83,12 +83,12 @@ struct Parameters
     {
         unsigned int initial_refinement = 5;
         bool use_amr = true;
-        unsigned int amr_min_level = 4;
-        unsigned int amr_max_level = 7;
+        unsigned int amr_min_level = 0;
+        unsigned int amr_max_level = 0;
         unsigned int amr_interval = 5;
         double amr_upper_fraction = 0.3;
-        double amr_lower_fraction = 0.1;
-        double interface_coarsen_threshold = 0.8;
+        double amr_lower_fraction = 0.03;
+        double interface_coarsen_threshold = 0.9;
     } mesh;
 
     // ========================================================================

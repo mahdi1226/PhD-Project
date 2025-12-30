@@ -52,6 +52,9 @@ void Parameters::setup_rosensweig()
     mesh.initial_refinement = 5;
     mesh.use_amr = true;
     mesh.amr_interval = 5;
+    // AMR levels (Paper Section 6.1: maintain ~20 elements across interface)
+    mesh.amr_min_level = mesh.initial_refinement - 2;  // Don't coarsen below level 3
+    mesh.amr_max_level = mesh.initial_refinement + 2;  // Allow refinement up to level 7
 
     // Subsystems
     enable_magnetic = true;
@@ -125,6 +128,9 @@ void Parameters::setup_hedgehog()
     mesh.initial_refinement = 6;
     mesh.use_amr = true;
     mesh.amr_interval = 5;
+    // AMR levels (Paper Section 6.1)
+    mesh.amr_min_level = mesh.initial_refinement - 2;  // Don't coarsen below level 4
+    mesh.amr_max_level = mesh.initial_refinement + 2;  // Allow refinement up to level 8
 
     // Subsystems
     enable_magnetic = true;
@@ -191,9 +197,12 @@ void Parameters::setup_dome()
     time.max_steps = 6000;
     time.use_adaptive_dt = false;  // Disable adaptive!
 
-    // Mesh - can be coarser for dome
-    mesh.initial_refinement = 4;
-    mesh.use_amr = false;      // Disable AMR for stability
+    // Same mesh as hedgehog (Paper Section 6.3)
+    mesh.initial_refinement = 6;
+    mesh.use_amr = true;
+    mesh.amr_interval = 5;
+    mesh.amr_min_level = mesh.initial_refinement - 2;  // Level 4
+    mesh.amr_max_level = mesh.initial_refinement + 2;  // Level 8
 
     // Subsystems
     enable_magnetic = true;
@@ -247,6 +256,9 @@ void Parameters::setup_droplet()
     mesh.initial_refinement = 5;
     mesh.use_amr = true;
     mesh.amr_interval = 5;
+    // AMR levels
+    mesh.amr_min_level = mesh.initial_refinement - 2;
+    mesh.amr_max_level = mesh.initial_refinement + 2;
 
     // Subsystems: NS only, no magnetic or gravity
     enable_magnetic = false;
@@ -272,6 +284,13 @@ void Parameters::finalize_run_name()
 
     if (mesh.use_amr)
         output.run_name += "-amr";
+    // Update AMR levels if they weren't explicitly set (still at default 0)
+    // This handles --refinement override case
+    if (mesh.use_amr && mesh.amr_min_level == 0 && mesh.amr_max_level == 0)
+    {
+        mesh.amr_min_level = (mesh.initial_refinement > 2) ? mesh.initial_refinement - 2 : 0;
+        mesh.amr_max_level = mesh.initial_refinement + 2;
+    }
 }
 
 Parameters Parameters::parse_command_line(int argc, char* argv[])
