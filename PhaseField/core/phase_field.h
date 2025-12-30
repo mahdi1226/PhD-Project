@@ -35,6 +35,8 @@
 #include "solvers/ns_block_preconditioner.h"
 #include "output/console_logger.h"
 #include "diagnostics/step_data.h"
+#include "diagnostics/field_diagnostics.h"
+
 
 #include <vector>
 
@@ -93,7 +95,7 @@ private:
     double compute_kinetic_energy() const;
     double compute_magnetic_energy() const;
     double get_min_h() const;
-
+    FieldDistributionLogger field_logger_;
 
     // ========================================================================
     // AMR tracking for solver optimization

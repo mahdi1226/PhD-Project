@@ -1,7 +1,10 @@
 // ============================================================================
-// diagnostics/field_diagnostic.h - Applied Field Diagnostic
+// diagnostics/field_diagnostics.h - Applied Field Diagnostic (ENHANCED)
 //
-// Prints h_a at grid of points to verify field distribution
+// Provides both console output and CSV logging for h_a field distribution.
+// Key for diagnosing non-uniform field causing dome shapes instead of spikes.
+//
+// Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
 // ============================================================================
 #ifndef FIELD_DIAGNOSTIC_H
 #define FIELD_DIAGNOSTIC_H
@@ -11,9 +14,176 @@
 #include <iostream>
 #include <iomanip>
 #include <fstream>
+#include <vector>
+#include <string>
 
 /**
- * @brief Print h_a field at a grid of points
+ * @brief Container for field distribution diagnostics at interface level
+ */
+struct FieldDistributionData
+{
+    double time = 0.0;
+    unsigned int step = 0;
+
+    // Field at key x-positions (at interface y-level)
+    double h_a_x_left = 0.0;      // |h_a| at x = x_min + 0.1*L
+    double h_a_x_center = 0.0;   // |h_a| at x = 0.5*(x_min + x_max)
+    double h_a_x_right = 0.0;    // |h_a| at x = x_max - 0.1*L
+
+    // Field components at center
+    double h_a_center_x = 0.0;   // h_a_x component at center
+    double h_a_center_y = 0.0;   // h_a_y component at center
+
+    // Uniformity metrics
+    double h_a_min = 0.0;        // min|h_a| across interface
+    double h_a_max = 0.0;        // max|h_a| across interface
+    double center_to_edge_ratio = 0.0;  // |h_a|_center / |h_a|_edge
+    double uniformity = 0.0;     // min/max ratio (1.0 = perfectly uniform)
+
+    // Ramp factor
+    double ramp_factor = 0.0;
+
+    /**
+     * @brief CSV header string
+     */
+    static std::string header()
+    {
+        return "step,time,ramp_factor,h_a_left,h_a_center,h_a_right,"
+               "h_a_center_x,h_a_center_y,h_a_min,h_a_max,"
+               "center_edge_ratio,uniformity";
+    }
+
+    /**
+     * @brief Convert to CSV row
+     */
+    std::string to_csv() const
+    {
+        std::ostringstream oss;
+        oss << step << ","
+            << std::scientific << std::setprecision(6)
+            << time << ","
+            << ramp_factor << ","
+            << h_a_x_left << ","
+            << h_a_x_center << ","
+            << h_a_x_right << ","
+            << h_a_center_x << ","
+            << h_a_center_y << ","
+            << h_a_min << ","
+            << h_a_max << ","
+            << center_to_edge_ratio << ","
+            << uniformity;
+        return oss.str();
+    }
+};
+
+/**
+ * @brief Compute field distribution at interface level
+ *
+ * Samples h_a at multiple x-positions along y = pool_depth.
+ * Returns metrics useful for diagnosing field uniformity issues.
+ */
+inline FieldDistributionData compute_field_distribution(
+    const Parameters& params,
+    double time,
+    unsigned int step)
+{
+    FieldDistributionData data;
+    data.time = time;
+    data.step = step;
+
+    // Ramp factor
+    data.ramp_factor = (params.dipoles.ramp_time > 0.0)
+        ? std::min(time / params.dipoles.ramp_time, 1.0) : 1.0;
+
+    const double y_interface = params.ic.pool_depth;
+    const double x_min = params.domain.x_min;
+    const double x_max = params.domain.x_max;
+    const double Lx = x_max - x_min;
+
+    // Sample at 11 points across the interface
+    const int n_samples = 11;
+    std::vector<double> h_a_magnitudes(n_samples);
+
+    double min_mag = 1e20;
+    double max_mag = 0.0;
+
+    for (int i = 0; i < n_samples; ++i)
+    {
+        double x = x_min + i * Lx / (n_samples - 1);
+        dealii::Point<2> p(x, y_interface);
+        auto h_a = compute_applied_field<2>(p, params, time);
+        double mag = h_a.norm();
+
+        h_a_magnitudes[i] = mag;
+        min_mag = std::min(min_mag, mag);
+        max_mag = std::max(max_mag, mag);
+
+        // Store specific positions
+        if (i == 1)  // x ~ 0.1*L from left
+            data.h_a_x_left = mag;
+        else if (i == n_samples / 2)  // center
+        {
+            data.h_a_x_center = mag;
+            data.h_a_center_x = h_a[0];
+            data.h_a_center_y = h_a[1];
+        }
+        else if (i == n_samples - 2)  // x ~ 0.1*L from right
+            data.h_a_x_right = mag;
+    }
+
+    data.h_a_min = min_mag;
+    data.h_a_max = max_mag;
+
+    // Compute ratios
+    double edge_avg = 0.5 * (data.h_a_x_left + data.h_a_x_right);
+    data.center_to_edge_ratio = (edge_avg > 1e-12)
+        ? data.h_a_x_center / edge_avg : 0.0;
+
+    data.uniformity = (max_mag > 1e-12) ? min_mag / max_mag : 0.0;
+
+    return data;
+}
+
+/**
+ * @brief Logger for field distribution data
+ */
+class FieldDistributionLogger
+{
+public:
+    FieldDistributionLogger() = default;
+
+    void open(const std::string& filename)
+    {
+        file_.open(filename);
+        if (file_.is_open())
+        {
+            file_ << FieldDistributionData::header() << "\n";
+        }
+    }
+
+    void write(const FieldDistributionData& data)
+    {
+        if (file_.is_open())
+        {
+            file_ << data.to_csv() << "\n";
+            file_.flush();
+        }
+    }
+
+    void close()
+    {
+        if (file_.is_open())
+            file_.close();
+    }
+
+    bool is_open() const { return file_.is_open(); }
+
+private:
+    std::ofstream file_;
+};
+
+/**
+ * @brief Print h_a field at a grid of points (console output)
  *
  * Call this at the beginning of simulation to verify field distribution.
  */
@@ -62,7 +232,7 @@ inline void diagnose_applied_field(const Parameters& params, double time)
               << std::setw(15) << "|h_a|" << "\n";
     std::cout << "----------------------------------------------------\n";
 
-    const double y_test = params.ic.pool_depth;  // At interface
+    const double y_test = params.ic.pool_depth;
     double max_magnitude = 0.0;
     double min_magnitude = 1e10;
 
@@ -102,6 +272,15 @@ inline void diagnose_applied_field(const Parameters& params, double time)
         std::cout << "    Consider widening dipole x-range or using wider magnet.\n";
     }
 
+    // Check for dome-causing field pattern
+    if (h_center.norm() > 1.5 * h_edge.norm() && h_center.norm() < 3.0 * h_edge.norm())
+    {
+        std::cout << "\n*** NOTE: Field has moderate center/edge variation ***\n";
+        std::cout << "    Center/Edge ratio of " << h_center.norm() / (h_edge.norm() + 1e-12)
+                  << " may cause dome shape.\n";
+        std::cout << "    For uniform deformation, aim for ratio close to 1.0.\n";
+    }
+
     std::cout << "============================================================\n\n";
 }
 
@@ -137,6 +316,18 @@ inline void write_field_csv(const Parameters& params, double time,
 
     file.close();
     std::cout << "Wrote field data to: " << filename << "\n";
+}
+
+/**
+ * @brief Write full spatial field profile at a specific time
+ *
+ * Creates a 2D grid CSV for heatmap visualization.
+ */
+inline void write_field_profile(const Parameters& params, double time,
+                                unsigned int step, const std::string& output_dir)
+{
+    std::string filename = output_dir + "/h_a_profile_" + std::to_string(step) + ".csv";
+    write_field_csv(params, time, filename);
 }
 
 #endif // FIELD_DIAGNOSTIC_H

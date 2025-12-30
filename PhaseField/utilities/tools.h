@@ -10,19 +10,25 @@
 #include <ctime>
 
 /**
- * @brief Generate timestamped folder path
+ * @brief Generate timestamped folder path with optional run name
  *
  * For HPC batch jobs where multiple runs need unique output directories.
  *
  * @param base Base folder path
- * @return base/run-YYYY-MM-DD-HH-MM-SS
+ * @param run_name Optional run identifier (e.g., "rosen-r5-amr")
+ * @return base/run_name-YYYY-MM-DD-HH-MM-SS or base/run-YYYY-MM-DD-HH-MM-SS
  */
-inline std::string timestamped_folder(const std::string& base)
+inline std::string timestamped_folder(const std::string& base,
+                                       const std::string& run_name = "")
 {
     std::time_t t = std::time(nullptr);
     char buf[32];
     std::strftime(buf, sizeof(buf), "%Y-%m-%d-%H-%M-%S", std::localtime(&t));
-    return base + "/run-" + buf;
+
+    if (run_name.empty())
+        return base + "/run-" + buf;
+    else
+        return base + "/" + run_name + "-" + buf;
 }
 
 #endif // TOOLS_H

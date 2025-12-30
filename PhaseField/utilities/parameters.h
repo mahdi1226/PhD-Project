@@ -109,7 +109,7 @@ struct Parameters
         // Magnetic (Section 6.2)
         double chi_0 = 0.5;         // susceptibility (Rosensweig: 0.5, Hedgehog: 0.9)
         double mu_0 = 1.0;          // permeability of free space
-        double tau_M = 1e-6;         // magnetization relaxation time
+        double tau_M = 1e-6;        // magnetization relaxation time
 
         // Density / Gravity (Eq. 19)
         double rho = 1.0;           // reference density
@@ -135,9 +135,15 @@ struct Parameters
     struct Output
     {
         std::string folder = "../Results";
+        std::string run_name = "";   // Auto-generated if empty: preset-rN[-amr]
         unsigned int frequency = 10;
         bool verbose = false;
     } output;
+
+    // ========================================================================
+    // Preset name (for auto-generating run_name)
+    // ========================================================================
+    std::string preset_name = "custom";
 
     // ========================================================================
     // Subsystem enables (for debugging)
@@ -201,6 +207,11 @@ struct Parameters
     void setup_droplet();
     void setup_dome();                               // Dome configuration
     bool use_reduced_magnetic_field = false;        // Dome set-up h = h_a only
+
+    // ========================================================================
+    // Build run_name from preset + refinement + amr (call after parsing)
+    // ========================================================================
+    void finalize_run_name();
 
     // ========================================================================
     // Command line parsing

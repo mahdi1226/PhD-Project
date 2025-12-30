@@ -70,12 +70,14 @@ void PhaseFieldProblem<dim>::run()
     std::cout << "============================================================\n\n";
 
     // Create output directory with timestamp
-    std::string output_dir = timestamped_folder(params_.output.folder);
+    std::string output_dir = timestamped_folder(params_.output.folder, params_.output.run_name);
     std::filesystem::create_directories(output_dir);
     std::cout << "[Info] Output directory: " << output_dir << "\n\n";
 
     // Store output directory for later use
     const_cast<Parameters&>(params_).output.folder = output_dir;
+    // Store magnetic fields distribution
+    field_logger_.open(output_dir + "/field_distribution.csv");
 
     // Initialize metrics logger
     metrics_logger_ = std::make_unique<MetricsLogger>(output_dir);
@@ -204,6 +206,10 @@ void PhaseFieldProblem<dim>::run()
             current_dt = params_.time.t_final - time_;
 
         time_step(current_dt);
+
+        // Log magnetic field distribution
+        auto field_data = compute_field_distribution(params_, time_, timestep_number_);
+        field_logger_.write(field_data);
 
         // ====================================================================
         // Adaptive dt logic (after time_step computes diagnostics)
@@ -338,6 +344,7 @@ void PhaseFieldProblem<dim>::run()
     }
 
     std::cout << "[Info] Output saved to: " << params_.output.folder << "\n";
+    field_logger_.close();
 }
 
 // ============================================================================
@@ -435,10 +442,10 @@ void PhaseFieldProblem<dim>::time_step(double dt)
         if (dE > 1e-6 && timestep_number_ > 1 && ramp_complete)
         {
             std::cout << "[WARNING] Energy increased by " << std::scientific
-                      << dE << " at step " << timestep_number_
-                      << " t=" << time_ << " (post-ramp)\n";
+                << dE << " at step " << timestep_number_
+                << " t=" << time_ << " (post-ramp)\n";
             std::cout << "          E_CH=" << E_CH << " E_kin=" << E_kin
-                      << " E_mag=" << E_mag << "\n";
+                << " E_mag=" << E_mag << "\n";
         }
         E_total_prev = E_total;
     }

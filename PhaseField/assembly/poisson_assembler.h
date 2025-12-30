@@ -101,22 +101,29 @@ dealii::Tensor<1, dim> compute_applied_field(
     // Sum contributions from all dipoles: h_a = Σ α ∇_x φ_s
     // φ_s = d·r / |r|²  where r = x_s - x
     // ∇_x φ_s = -d/|r|² + 2(d·r)r/|r|⁴
+    // Softening parameter: larger = more uniform field spread
+    // Try values: 0.01 (minimal), 0.04 (moderate), 0.1 (strong smoothing)
+    const double delta_sq = 0.04;  // Add to params.dipoles for easy tuning
+
     for (const auto& dipole_pos : params.dipoles.positions)
     {
         const double rx = dipole_pos[0] - p[0];  // r = x_s - x
         const double ry = dipole_pos[1] - p[1];
         const double r_sq = rx * rx + ry * ry;
 
-        // Avoid singularity
-        if (r_sq < 1e-12)
+        // Regularized distance (softening prevents sharp 1/r² decay)
+        const double r_eff_sq = r_sq + delta_sq;
+
+        // Avoid singularity (now less critical due to softening)
+        if (r_eff_sq < 1e-12)
             continue;
 
-        const double r_sq_sq = r_sq * r_sq;
+        const double r_eff_sq_sq = r_eff_sq * r_eff_sq;
         const double d_dot_r = d_x * rx + d_y * ry;
 
-        // ∇_x φ_s = -d/|r|² + 2(d·r)r/|r|⁴
-        h_a[0] += alpha * (-d_x / r_sq + 2.0 * d_dot_r * rx / r_sq_sq);
-        h_a[1] += alpha * (-d_y / r_sq + 2.0 * d_dot_r * ry / r_sq_sq);
+        // ∇_x φ_s = -d/|r_eff|² + 2(d·r)r/|r_eff|⁴
+        h_a[0] += alpha * (-d_x / r_eff_sq + 2.0 * d_dot_r * rx / r_eff_sq_sq);
+        h_a[1] += alpha * (-d_y / r_eff_sq + 2.0 * d_dot_r * ry / r_eff_sq_sq);
     }
 
     return h_a;

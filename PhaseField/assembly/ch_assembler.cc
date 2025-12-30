@@ -41,16 +41,17 @@ template <int dim>
 void assemble_ch_system(
     const dealii::DoFHandler<dim>& theta_dof_handler,
     const dealii::DoFHandler<dim>& psi_dof_handler,
-    const dealii::Vector<double>&  theta_old,
-    const dealii::Vector<double>&  ux_solution,
-    const dealii::Vector<double>&  uy_solution,
-    const Parameters&              params,
-    double                         dt,
-    double                         current_time,
+
+    const dealii::Vector<double>& theta_old,
+    const dealii::Vector<double>& ux_solution,
+    const dealii::Vector<double>& uy_solution,
+    const Parameters& params,
+    double dt,
+    double current_time,
     const std::vector<dealii::types::global_dof_index>& theta_to_ch_map,
     const std::vector<dealii::types::global_dof_index>& psi_to_ch_map,
-    dealii::SparseMatrix<double>&  matrix,
-    dealii::Vector<double>&        rhs)
+    dealii::SparseMatrix<double>& matrix,
+    dealii::Vector<double>& rhs)
 {
     matrix = 0;
     rhs = 0;
@@ -63,11 +64,11 @@ void assemble_ch_system(
     const unsigned int n_q_points = quadrature.size();
 
     dealii::FEValues<dim> theta_fe_values(fe, quadrature,
-        dealii::update_values | dealii::update_gradients |
-        dealii::update_quadrature_points | dealii::update_JxW_values);
+                                          dealii::update_values | dealii::update_gradients |
+                                          dealii::update_quadrature_points | dealii::update_JxW_values);
 
     dealii::FEValues<dim> psi_fe_values(fe, quadrature,
-        dealii::update_values | dealii::update_gradients);
+                                        dealii::update_values | dealii::update_gradients);
 
     dealii::FEValues<dim> ux_fe_values(fe, quadrature, dealii::update_values);
     dealii::FEValues<dim> uy_fe_values(fe, quadrature, dealii::update_values);
@@ -88,11 +89,11 @@ void assemble_ch_system(
     std::vector<double> uy_values(n_q_points);
 
 
-    const double eta = epsilon;  // η = ε per paper
+    const double eta = epsilon; // η = ε per paper
 
     const bool have_velocity = (ux_solution.size() > 0) &&
-                               (uy_solution.size() > 0) &&
-                               (ux_solution.l2_norm() + uy_solution.l2_norm() > 1e-14);
+        (uy_solution.size() > 0) &&
+        (ux_solution.l2_norm() + uy_solution.l2_norm() > 1e-14);
 
     const bool mms_mode = params.enable_mms;
     CHSourceTheta<dim> source_theta(mobility);
@@ -115,7 +116,8 @@ void assemble_ch_system(
         {
             typename dealii::DoFHandler<dim>::active_cell_iterator
                 ux_cell(&theta_dof_handler.get_triangulation(),
-                        theta_cell->level(), theta_cell->index(),
+                        theta_cell->level(),
+                        theta_cell->index(),
                         &theta_dof_handler);
             ux_fe_values.reinit(ux_cell);
             uy_fe_values.reinit(ux_cell);
