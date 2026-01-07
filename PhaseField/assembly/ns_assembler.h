@@ -1,31 +1,20 @@
 // ============================================================================
-// assembly/ns_assembler.h - Navier-Stokes Assembly (CORRECTED)
+// assembly/ns_assembler.h - Navier-Stokes Assembly
 //
 // Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
 // Equation 42e (discrete scheme), p.505
 //
 // Paper's discrete NS scheme:
 //
-//   (δU^k/τ, V) + B_h(U^{k-1}, U^k, V) + 2(ν(θ^{k-1})D(U^k), D(V))
+//   (δU^k/τ, V) + B_h(U^{k-1}, U^k, V) + (ν(θ^{k-1})T(U^k), T(V))
 //     - (P^k, div V) + (div U^k, Q) = (F^{k-1}, V)
 //
 // where:
 //   - δU^k = U^k - U^{k-1}
-//   - D(U) = (∇U + ∇U^T)/2  (symmetric strain rate)
-//   - B_h(w,u,v) = skew convection form (Eq. 37)
+//   - T(U) = ∇U + (∇U)^T (symmetric gradient)
+//   - B_h(w,u,v) = (w·∇u, v) + ½(∇·w)(u, v) (skew convection)
 //   - ν(θ^{k-1}) = viscosity at LAGGED θ
-//   - F^{k-1} = F_cap + F_mag + F_grav with LAGGED fields
-//
-// Forces (all using lagged θ^{k-1}):
-//   - Capillary: F_cap = (λ/ε)θ^{k-1}∇ψ^k        [Eq. 10, lagged θ]
-//   - Kelvin:    F_mag = μ₀ B_h^m(V, H^k, M^k)   [Eq. 38, FULL model]
-//   - Gravity:   F_grav = (1 + r·H(θ^{k-1}/ε))g  [Eq. 19]
-//
-// CRITICAL CHANGES from old code:
-//   1. θ^{k-1} (lagged) for capillary, viscosity, gravity
-//   2. Symmetric strain D(U), not full gradient ∇U
-//   3. Skew convection B_h(U^{k-1}, U^k, V)
-//   4. Full Kelvin force with transported M^k (not equilibrium χH)
+//   - F^{k-1} = F_cap + F_mag with LAGGED fields
 //
 // ============================================================================
 #ifndef NS_ASSEMBLER_H
@@ -41,27 +30,10 @@
 #include <vector>
 
 /**
- * @brief Force magnitudes computed during NS assembly
- */
-struct NSAssemblyInfo
-{
-    double F_cap_max = 0.0;     // max|F_capillary|
-    double F_mag_max = 0.0;     // max|F_magnetic|
-    double F_grav_max = 0.0;    // max|F_gravity|
-
-    void reset()
-    {
-        F_cap_max = 0.0;
-        F_mag_max = 0.0;
-        F_grav_max = 0.0;
-    }
-};
-
-/**
  * @brief Assemble the Navier-Stokes system (Paper Eq. 42e)
  *
  * Assembles the coupled (ux, uy, p) system with all forces.
- * Constraints are applied symmetrically to preserve saddle-point structure.
+ * Constraints are applied via condense() to preserve saddle-point structure.
  *
  * @param ux_dof_handler    DoFHandler for velocity x (Q2)
  * @param uy_dof_handler    DoFHandler for velocity y (Q2)
@@ -72,7 +44,7 @@ struct NSAssemblyInfo
  * @param M_dof_handler     DoFHandler for magnetization M (DG, can be nullptr)
  * @param ux_old            Previous velocity U^{k-1}_x
  * @param uy_old            Previous velocity U^{k-1}_y
- * @param theta_old         Previous phase field θ^{k-1} (LAGGED for energy stability)
+ * @param theta_old         Previous phase field θ^{k-1} (LAGGED)
  * @param psi_solution      Current chemical potential ψ^k
  * @param phi_solution      Current magnetic potential φ^k (can be nullptr)
  * @param mx_solution       Current magnetization M^k_x (can be nullptr)
@@ -86,7 +58,6 @@ struct NSAssemblyInfo
  * @param ns_constraints    Combined constraints (hanging nodes + BCs)
  * @param ns_matrix         [OUT] Assembled system matrix
  * @param ns_rhs            [OUT] Assembled RHS vector
- * @param assembly_info     [OUT] Optional: force magnitudes for diagnostics
  */
 template <int dim>
 void assemble_ns_system(

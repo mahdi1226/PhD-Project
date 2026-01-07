@@ -13,7 +13,6 @@
 #include "setup/ns_setup.h"
 #include "solvers/ns_solver.h"
 #include "mms/ns_mms.h"
-#include "physics/material_properties.h"
 #include "solvers/solver_info.h"
 
 
@@ -521,6 +520,7 @@ void PhaseFieldProblem<dim>::initialize_solutions()
             double interface_y_, eps_;
             FlatLayerIC(double y, double e)
                 : dealii::Function<dim>(1), interface_y_(y), eps_(e) {}
+            ~FlatLayerIC() override = default;
 
             double value(const dealii::Point<dim>& p, unsigned int = 0) const override
             {
@@ -552,6 +552,7 @@ void PhaseFieldProblem<dim>::initialize_solutions()
             PerturbedLayerIC(double y, double e, double a, double L, double xm, int n)
                 : dealii::Function<dim>(1)
                 , interface_y_(y), eps_(e), amp_(a), Lx_(L), x_min_(xm), n_modes_(n) {}
+            ~PerturbedLayerIC() override = default;
 
             double value(const dealii::Point<dim>& p, unsigned int = 0) const override
             {
@@ -585,6 +586,7 @@ void PhaseFieldProblem<dim>::initialize_solutions()
             double cx_, cy_, radius_, eps_;
             DropletIC(double cx, double cy, double r, double e)
                 : dealii::Function<dim>(1), cx_(cx), cy_(cy), radius_(r), eps_(e) {}
+            ~DropletIC() override = default;
 
             double value(const dealii::Point<dim>& p, unsigned int = 0) const override
             {

@@ -24,6 +24,10 @@
 
 #include <iostream>
 
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
 // ============================================================================
 // Double-well potential (Eq. 2, p.498)
 //   F(θ) = (1/4)(θ² - 1)²
@@ -88,19 +92,25 @@ void assemble_ch_system(
     std::vector<double> ux_values(n_q_points);
     std::vector<double> uy_values(n_q_points);
 
-
-    const double eta = epsilon; // η = ε per paper
-
+    const double eps = params.physics.epsilon;
+    const double gamma = params.physics.mobility;
+    const double eta = params.physics.epsilon;
     const bool have_velocity = (ux_solution.size() > 0) &&
         (uy_solution.size() > 0) &&
         (ux_solution.l2_norm() + uy_solution.l2_norm() > 1e-14);
 
     const bool mms_mode = params.enable_mms;
-    CHSourceTheta<dim> source_theta(mobility);
-    CHSourcePsi<dim> source_psi(epsilon, dt);
+    const double L_y = params.domain.y_max - params.domain.y_min;
+
+    // MMS source terms - use convection version if velocity is present
+    CHSourceThetaWithConvection<dim> source_theta_conv(params.physics.mobility, dt, L_y);
+    CHSourceTheta<dim> source_theta_no_conv(params.physics.mobility, dt);
+    CHSourcePsi<dim> source_psi(params.physics.epsilon, dt);
+
     if (mms_mode)
     {
-        source_theta.set_time(current_time);
+        source_theta_conv.set_time(current_time);
+        source_theta_no_conv.set_time(current_time);
         source_psi.set_time(current_time);
     }
 
@@ -143,38 +153,70 @@ void assemble_ch_system(
         for (unsigned int q = 0; q < n_q_points; ++q)
         {
             const double JxW = theta_fe_values.JxW(q);
+            const auto& x_q = theta_fe_values.quadrature_point(q);
+
+            // ALWAYS use numerical theta_old (this is what we're testing!)
             const double theta_old_q = theta_old_values[q];
 
             dealii::Tensor<1, dim> U;
-            U[0] = ux_values[q];
-            if constexpr (dim >= 2)
-                U[1] = uy_values[q];
+            if (mms_mode && have_velocity)
+            {
+                // MMS MODE with velocity: Use EXACT velocity for consistency with MMS source
+                // This isolates CH from NS discretization errors
+                const double t_old = current_time - dt;
+                const double x = x_q[0];
+                const double y = x_q[1];
+                const double sin_px = std::sin(M_PI * x);
+                const double sin_py_Ly = std::sin(M_PI * y / L_y);
+                const double sin_2py_Ly = std::sin(2.0 * M_PI * y / L_y);
+                const double sin_2px = std::sin(2.0 * M_PI * x);
 
+                // ux = t·(π/L_y)·sin²(πx)·sin(2πy/L_y)
+                U[0] = t_old * (M_PI / L_y) * sin_px * sin_px * sin_2py_Ly;
+                // uy = -t·π·sin(2πx)·sin²(πy/L_y)
+                U[1] = -t_old * M_PI * sin_2px * sin_py_Ly * sin_py_Ly;
+            }
+            else
+            {
+                U[0] = ux_values[q];
+                if constexpr (dim >= 2)
+                    U[1] = uy_values[q];
+            }
+
+            // f_old uses NUMERICAL theta_old (production code path)
             const double f_old = f_double_well(theta_old_q);
 
+            // MMS source terms (only addition for MMS)
+            double S_theta_q = 0.0, S_psi_q = 0.0;
+            if (mms_mode)
+            {
+                // Use convection source if velocity is present
+                S_theta_q = have_velocity
+                    ? source_theta_conv.value(x_q)
+                    : source_theta_no_conv.value(x_q);
+                S_psi_q = source_psi.value(x_q);
+            }
             for (unsigned int i = 0; i < dofs_per_cell; ++i)
             {
                 const double Lambda_i = theta_fe_values.shape_value(i, q);
-                const dealii::Tensor<1, dim> grad_Lambda_i = theta_fe_values.shape_grad(i, q);
-
+                const auto& grad_Lambda_i = theta_fe_values.shape_grad(i, q);
                 const double Upsilon_i = psi_fe_values.shape_value(i, q);
-                const dealii::Tensor<1, dim> grad_Upsilon_i = psi_fe_values.shape_grad(i, q);
+                const auto& grad_Upsilon_i = psi_fe_values.shape_grad(i, q);
 
                 for (unsigned int j = 0; j < dofs_per_cell; ++j)
                 {
                     const double theta_j = theta_fe_values.shape_value(j, q);
-                    const dealii::Tensor<1, dim> grad_theta_j = theta_fe_values.shape_grad(j, q);
-
+                    const auto& grad_theta_j = theta_fe_values.shape_grad(j, q);
                     const double psi_j = psi_fe_values.shape_value(j, q);
-                    const dealii::Tensor<1, dim> grad_psi_j = psi_fe_values.shape_grad(j, q);
+                    const auto& grad_psi_j = psi_fe_values.shape_grad(j, q);
 
                     // Eq 42a LHS
                     local_matrix_tt(i, j) += (1.0 / dt) * theta_j * Lambda_i * JxW;
-                    local_matrix_tp(i, j) -= mobility * (grad_psi_j * grad_Lambda_i) * JxW;
+                    local_matrix_tp(i, j) -= gamma * (grad_psi_j * grad_Lambda_i) * JxW;
 
                     // Eq 42b LHS
                     local_matrix_pp(i, j) += psi_j * Upsilon_i * JxW;
-                    local_matrix_pt(i, j) += epsilon * (grad_theta_j * grad_Upsilon_i) * JxW;
+                    local_matrix_pt(i, j) += eps * (grad_theta_j * grad_Upsilon_i) * JxW;
                     local_matrix_pt(i, j) += (1.0 / eta) * theta_j * Upsilon_i * JxW;
                 }
 
@@ -183,17 +225,14 @@ void assemble_ch_system(
                 local_rhs_t(i) += theta_old_q * (U * grad_Lambda_i) * JxW;
 
                 // Eq 42b RHS
-                local_rhs_p(i) -= (1.0 / epsilon) * f_old * Upsilon_i * JxW;
+                local_rhs_p(i) -= (1.0 / eps) * f_old * Upsilon_i * JxW;
                 local_rhs_p(i) += (1.0 / eta) * theta_old_q * Upsilon_i * JxW;
 
+                // MMS source terms
                 if (mms_mode)
                 {
-                    const auto& q_point = theta_fe_values.quadrature_point(q);
-                    const double S_theta = source_theta.value(q_point);
-                    const double S_psi = source_psi.value(q_point);
-
-                    local_rhs_t(i) += S_theta * Lambda_i * JxW;
-                    local_rhs_p(i) += S_psi * Upsilon_i * JxW;
+                    local_rhs_t(i) += S_theta_q * Lambda_i * JxW;
+                    local_rhs_p(i) += S_psi_q * Upsilon_i * JxW;
                 }
             }
         }

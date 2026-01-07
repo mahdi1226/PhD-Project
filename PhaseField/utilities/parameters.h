@@ -115,6 +115,7 @@ struct Parameters
         double rho = 1.0;           // reference density
         double r = 0.1;             // density ratio
         double gravity = 30000.0;   // non-dimensionalized gravity
+        double grad_div_stabilization = 0.0;  // Optional stabilization
     } physics;
 
     // ========================================================================

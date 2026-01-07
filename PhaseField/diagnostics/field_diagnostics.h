@@ -9,7 +9,7 @@
 #ifndef FIELD_DIAGNOSTIC_H
 #define FIELD_DIAGNOSTIC_H
 
-#include "assembly/poisson_assembler.h"
+#include "assembly/magnetization_assembler.h"
 #include "utilities/parameters.h"
 #include <iostream>
 #include <iomanip>

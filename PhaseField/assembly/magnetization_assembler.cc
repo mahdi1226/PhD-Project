@@ -6,6 +6,7 @@
 // Eq. 42c, Eq. 57
 //
 // FIX: chi() now uses params_.physics.chi_0 instead of global chi_0.
+// MMS: When enable_mms=true, adds MMS source term to RHS.
 //
 // Assembles the scalar DG magnetization system using skew_forms.h.
 //
@@ -22,6 +23,7 @@
 // ============================================================================
 
 #include "assembly/magnetization_assembler.h"
+#include "mms/magnetization_mms.h"
 #include "physics/skew_forms.h"
 #include "physics/material_properties.h"
 #include <deal.II/dofs/dof_tools.h>
@@ -30,6 +32,7 @@
 #include <deal.II/lac/dynamic_sparsity_pattern.h>
 #include <deal.II/lac/full_matrix.h>
 #include <deal.II/base/quadrature_lib.h>
+
 
 // ============================================================================
 // Constructor
@@ -62,60 +65,7 @@ MagnetizationAssembler<dim>::MagnetizationAssembler(
 template <int dim>
 double MagnetizationAssembler<dim>::chi(double theta_val) const
 {
-    return params_.physics.chi_0 * (1.0 + theta_val) / 2.0;
-}
-
-// ============================================================================
-// Create sparsity pattern with face coupling
-// ============================================================================
-template <int dim>
-void MagnetizationAssembler<dim>::create_sparsity_pattern(
-    dealii::SparsityPattern& sparsity) const
-{
-
-    const unsigned int n_dofs = M_dof_handler_.n_dofs();
-    dealii::DynamicSparsityPattern dsp(n_dofs, n_dofs);
-
-    // Standard DG sparsity (block-diagonal over cells)
-    dealii::DoFTools::make_sparsity_pattern(M_dof_handler_, dsp);
-
-    // Add face coupling for DG transport (Eq. 57 face term)
-    const dealii::FiniteElement<dim>& fe = M_dof_handler_.get_fe();
-    const unsigned int dofs_per_cell = fe.dofs_per_cell;
-
-    std::vector<dealii::types::global_dof_index> dofs_here(dofs_per_cell);
-    std::vector<dealii::types::global_dof_index> dofs_there(dofs_per_cell);
-
-    for (const auto& cell : M_dof_handler_.active_cell_iterators())
-    {
-        cell->get_dof_indices(dofs_here);
-
-        for (unsigned int f = 0; f < cell->n_faces(); ++f)
-        {
-            if (cell->at_boundary(f))
-                continue;
-
-            const auto neighbor = cell->neighbor(f);
-
-            // Only process each face once
-            if (neighbor->is_active() && cell->index() > neighbor->index())
-                continue;
-
-            neighbor->get_dof_indices(dofs_there);
-
-            // Add all cross-cell couplings (both directions)
-            for (unsigned int i = 0; i < dofs_per_cell; ++i)
-            {
-                for (unsigned int j = 0; j < dofs_per_cell; ++j)
-                {
-                    dsp.add(dofs_here[i], dofs_there[j]);
-                    dsp.add(dofs_there[i], dofs_here[j]);
-                }
-            }
-        }
-    }
-
-    sparsity.copy_from(dsp);
+    return susceptibility(theta_val, params_.physics.epsilon, params_.physics.chi_0);
 }
 
 // ============================================================================
@@ -132,8 +82,12 @@ void MagnetizationAssembler<dim>::assemble(
     const dealii::Vector<double>& theta,
     const dealii::Vector<double>& Mx_old,
     const dealii::Vector<double>& My_old,
-    double dt) const
+    double dt,
+    double current_time) const
 {
+    const bool mms_mode = params_.enable_mms;
+    const double L_y = params_.domain.y_max - params_.domain.y_min;
+    const double t_old = current_time - dt;
 
     const dealii::FiniteElement<dim>& fe_M = M_dof_handler_.get_fe();
     const dealii::FiniteElement<dim>& fe_U = U_dof_handler_.get_fe();
@@ -151,11 +105,12 @@ void MagnetizationAssembler<dim>::assemble(
 
     // FEValues for cells
     dealii::FEValues<dim> fe_values_M(fe_M, quadrature_cell,
-                               dealii::update_values | dealii::update_gradients | dealii::update_JxW_values);
+                               dealii::update_values | dealii::update_gradients |
+                               dealii::update_quadrature_points | dealii::update_JxW_values);
     dealii::FEValues<dim> fe_values_U(fe_U, quadrature_cell,
                                dealii::update_values | dealii::update_gradients);
     dealii::FEValues<dim> fe_values_phi(fe_phi, quadrature_cell,
-                                 dealii::update_gradients);
+                                 dealii::update_gradients | dealii::update_quadrature_points);
     dealii::FEValues<dim> fe_values_theta(fe_theta, quadrature_cell,
                                    dealii::update_values);
 
@@ -180,8 +135,9 @@ void MagnetizationAssembler<dim>::assemble(
     const double tau = dt;
 
     // Coefficients: (1/τ + 1/T) for LHS, 1/T and 1/τ for RHS
-    const double mass_coeff = (tau_M > 0.0) ? (1.0/tau + 1.0/tau_M) : 1.0/tau;
-    const double relax_coeff = (tau_M > 0.0) ? 1.0/tau_M : 0.0;
+    const double tau_M_val = params_.physics.tau_M;
+    const double mass_coeff = (tau_M_val > 0.0) ? (1.0/tau + 1.0/tau_M_val) : 1.0/tau;
+    const double relax_coeff = (tau_M_val > 0.0) ? 1.0/tau_M_val : 0.0;
     const double old_coeff = 1.0/tau;
 
     // Initialize
@@ -222,6 +178,7 @@ void MagnetizationAssembler<dim>::assemble(
         for (unsigned int q = 0; q < n_q_cell; ++q)
         {
             const double JxW = fe_values_M.JxW(q);
+            const dealii::Point<dim>& x_q = fe_values_M.quadrature_point(q);
 
             // U and div(U)
             dealii::Tensor<1, dim> U;
@@ -229,13 +186,26 @@ void MagnetizationAssembler<dim>::assemble(
             U[1] = Uy_vals[q];
             const double div_U = grad_Ux[q][0] + grad_Uy[q][1];
 
-            // H = ∇φ (paper convention: Poisson RHS is (h_a - M, ∇χ), so H = ∇φ)
+            // H = h_a + h_d where:
+            //   h_a = applied field from dipoles/bars
+            //   h_d = ∇φ = demagnetizing field from Poisson
+            dealii::Tensor<1, dim> h_a = compute_applied_field(x_q, params_, current_time);
             dealii::Tensor<1, dim> H;
-            H[0] = grad_phi[q][0];
-            H[1] = grad_phi[q][1];
+            H[0] = h_a[0] + grad_phi[q][0];
+            H[1] = h_a[1] + grad_phi[q][1];
 
             // χ(θ)
             const double chi_theta = chi(theta_vals[q]);
+
+            // MMS source term
+            dealii::Tensor<1, dim> F_mms;
+            F_mms = 0;
+            if (mms_mode)
+            {
+                // For MMS: compute source term that makes exact solution satisfy equation
+                F_mms = compute_mag_mms_source_with_transport<dim>(
+                    x_q, current_time, t_old, tau_M_val, chi_theta, H, U, div_U, L_y);
+            }
 
             for (unsigned int i = 0; i < dofs_per_cell; ++i)
             {
@@ -258,9 +228,9 @@ void MagnetizationAssembler<dim>::assemble(
                     local_matrix(i, j) += (mass + transport) * JxW;
                 }
 
-                // RHS: (1/T)(χ_θ H, φ_i) + (1/τ)(M_old, φ_i)
-                local_rhs_x(i) += (relax_coeff * chi_theta * H[0] + old_coeff * Mx_old_vals[q]) * phi_i * JxW;
-                local_rhs_y(i) += (relax_coeff * chi_theta * H[1] + old_coeff * My_old_vals[q]) * phi_i * JxW;
+                // RHS: (1/T)(χ_θ H, φ_i) + (1/τ)(M_old, φ_i) + (F_mms, φ_i)
+                local_rhs_x(i) += (relax_coeff * chi_theta * H[0] + old_coeff * Mx_old_vals[q] + F_mms[0]) * phi_i * JxW;
+                local_rhs_y(i) += (relax_coeff * chi_theta * H[1] + old_coeff * My_old_vals[q] + F_mms[1]) * phi_i * JxW;
             }
         }
 
@@ -437,7 +407,8 @@ void MagnetizationAssembler<dim>::assemble_rhs_only(
     std::vector<dealii::types::global_dof_index> local_dofs(dofs_per_cell);
 
     const double tau = dt;
-    const double relax_coeff = (tau_M > 0.0) ? 1.0/tau_M : 0.0;
+    const double tau_M_val = params_.physics.tau_M;
+    const double relax_coeff = (tau_M_val > 0.0) ? 1.0/tau_M_val : 0.0;
     const double old_coeff = 1.0/tau;
 
     rhs_x = 0;
@@ -465,10 +436,13 @@ void MagnetizationAssembler<dim>::assemble_rhs_only(
         {
             const double JxW = fe_values_M.JxW(q);
 
-            // H = ∇φ (paper convention)
+            // H = h_a + h_d (applied + demagnetizing)
+            // Note: assemble_rhs_only doesn't have current_time, so h_a = 0
+            // This function is only used when matrix is fixed (U=0), so typically MMS/standalone
             dealii::Tensor<1, dim> H;
             H[0] = grad_phi[q][0];
             H[1] = grad_phi[q][1];
+            // TO-DO: If h_a is needed in rhs_only, add current_time parameter
 
             const double chi_theta = chi(theta_vals[q]);
 

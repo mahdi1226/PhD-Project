@@ -40,13 +40,13 @@ static inline double sigmoid_force(double x)
  */
 struct ForceDiagnostics
 {
-    double F_cap_L2 = 0.0;    // ||F_cap||_L2
-    double F_mag_L2 = 0.0;    // ||F_mag||_L2
-    double F_grav_L2 = 0.0;   // ||F_grav||_L2
+    double F_cap_L2 = 0.0; // ||F_cap||_L2
+    double F_mag_L2 = 0.0; // ||F_mag||_L2
+    double F_grav_L2 = 0.0; // ||F_grav||_L2
 
-    double F_cap_max = 0.0;   // max|F_cap|
-    double F_mag_max = 0.0;   // max|F_mag|
-    double F_grav_max = 0.0;  // max|F_grav|
+    double F_cap_max = 0.0; // max|F_cap|
+    double F_mag_max = 0.0; // max|F_mag|
+    double F_grav_max = 0.0; // max|F_grav|
 };
 
 /**
@@ -82,16 +82,16 @@ ForceDiagnostics compute_force_diagnostics(
     const double eps = params.physics.epsilon;
     const double lam = params.physics.lambda;
     const double chi0 = params.physics.chi_0;
-    const double g_val = params.enable_gravity ? gravity_dimensionless : 0.0;
+    const double g_val = params.enable_gravity ? params.physics.gravity : 0.0;
 
     const auto& fe = theta_dof_handler.get_fe();
     dealii::QGauss<dim> quadrature(fe.degree + 1);
     const unsigned int n_q_points = quadrature.size();
 
     dealii::FEValues<dim> fe_values(fe, quadrature,
-        dealii::update_values |
-        dealii::update_gradients |
-        dealii::update_JxW_values);
+                                    dealii::update_values |
+                                    dealii::update_gradients |
+                                    dealii::update_JxW_values);
 
     std::vector<double> theta_values(n_q_points);
     std::vector<dealii::Tensor<1, dim>> theta_gradients(n_q_points);
@@ -151,7 +151,7 @@ ForceDiagnostics compute_force_diagnostics(
                 // Dominant Kelvin force term at interface
                 dealii::Tensor<1, dim> F_mag;
                 for (unsigned int d = 0; d < dim; ++d)
-                    F_mag[d] = 0.5 * mu_0 * chi_prime * H_sq * theta_gradients[q][d];
+                    F_mag[d] = 0.5 * params.physics.mu_0 * chi_prime * H_sq * theta_gradients[q][d];
 
                 const double F_mag_mag = F_mag.norm();
                 F_mag_sq += F_mag_mag * F_mag_mag * JxW;
@@ -166,11 +166,11 @@ ForceDiagnostics compute_force_diagnostics(
             if (params.enable_gravity)
             {
                 const double H_val = sigmoid_force(theta / eps);
-                const double rho = 1.0 + r * H_val;
+                const double rho = 1.0 + params.physics.r * H_val;
 
                 dealii::Tensor<1, dim> F_grav;
                 F_grav[0] = 0.0;
-                F_grav[1] = -rho * g_val;  // g points downward
+                F_grav[1] = -rho * g_val; // g points downward
 
                 const double F_grav_mag = F_grav.norm();
                 F_grav_sq += F_grav_mag * F_grav_mag * JxW;

@@ -1,120 +1,144 @@
 // ============================================================================
-// assemblers/magnetization_assembler.h - DG Magnetization Equation Assembler
+// assembly/magnetization_assembler.h - DG Magnetization Assembler Header
 //
 // Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
-// Eq. 42c: Magnetization transport with relaxation
+// Eq. 42c, Eq. 57
 //
-// Discrete equation (per component):
-//   (1/τ + 1/T)(M^k, Z) - B_h^m(U^k, Z, M^k) = (1/T)(χ_θ H^k, Z) + (1/τ)(M^{k-1}, Z)
-//
-// Key insight from paper:
-//   - M_x and M_y are DECOUPLED (same matrix, different RHS)
-//   - Solve two SCALAR DG equations, not a coupled vector system
-//
-// Assembly strategy:
-//   - Assemble ONE scalar system matrix (reuse for both components)
-//   - Assemble TWO RHS vectors (one per component)
-//   - Solve TWO scalar systems
+// EQUATION 42c (rearranged):
+//   (1/τ + 1/T)(M^k, Z) - B_h^m(U^{k-1}, Z, M^k) = (1/T)(χ_θ H^k, Z) + (1/τ)(M^{k-1}, Z)
 //
 // ============================================================================
 #ifndef MAGNETIZATION_ASSEMBLER_H
 #define MAGNETIZATION_ASSEMBLER_H
 
-#include <deal.II/dofs/dof_handler.h>
-#include <deal.II/fe/fe_dgp.h>
-#include <deal.II/lac/sparse_matrix.h>
-#include <deal.II/lac/sparsity_pattern.h>
-#include <deal.II/lac/vector.h>
-
 #include "utilities/parameters.h"
 
-/**
- * @brief Assembles the scalar DG magnetization system (Eq. 42c)
- *
- * One matrix, two RHS vectors (Mx and My share the same operator).
- *
- * Matrix: (1/τ + 1/T)M - A_transport
- *   - Mass term: (1/τ + 1/T) ∫ φ_i φ_j
- *   - Transport cell: -[(U·∇φ_i)φ_j + (1/2)(∇·U)(φ_i φ_j)]
- *   - Transport face: +[[φ_i]]·{φ_j}·(U·n)  [Eq. 57 with -B_h^m]
- *
- * RHS_x: (1/T)(χ_θ H_x, φ_i) + (1/τ)(Mx_old, φ_i)
- * RHS_y: (1/T)(χ_θ H_y, φ_i) + (1/τ)(My_old, φ_i)
- */
+#include <deal.II/dofs/dof_handler.h>
+#include <deal.II/lac/sparse_matrix.h>
+#include <deal.II/lac/vector.h>
+#include <deal.II/base/point.h>
+#include <deal.II/base/tensor.h>
+#include <cmath>
+#include <algorithm>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
+// ============================================================================
+// Compute applied magnetic field h_a at a point (2D) [Eq. 97-98]
+//
+// This belongs here because h_a enters the magnetization equation:
+//   M ≈ χ(h_a + h_d) where h_d = ∇φ is the demagnetizing field from Poisson
+//
+// Poisson only sees ∇·M (demagnetizing), not h_a directly.
+// ============================================================================
+template <int dim>
+dealii::Tensor<1, dim> compute_applied_field(
+    const dealii::Point<dim>& p,
+    const Parameters& params,
+    double current_time)
+{
+    dealii::Tensor<1, dim> h_a;
+
+    // Only implemented for 2D
+    if constexpr (dim != 2)
+    {
+        // Return zero for 3D (not implemented)
+        return h_a;
+    }
+    else
+    {
+        const double ramp_factor = (params.dipoles.ramp_time > 0.0)
+            ? std::min(current_time / params.dipoles.ramp_time, 1.0)
+            : 1.0;
+
+        const double alpha = params.dipoles.intensity_max * ramp_factor;
+        const double d_x = params.dipoles.direction[0];
+        const double d_y = params.dipoles.direction[1];
+
+        h_a[0] = 0.0;
+        h_a[1] = 0.0;
+
+        const double delta_sq = 0.04;  // Softening parameter
+
+        for (const auto& dipole_pos : params.dipoles.positions)
+        {
+            const double rx = dipole_pos[0] - p[0];
+            const double ry = dipole_pos[1] - p[1];
+            const double r_sq = rx * rx + ry * ry;
+            const double r_eff_sq = r_sq + delta_sq;
+
+            if (r_eff_sq < 1e-12)
+                continue;
+
+            const double r_eff_sq_sq = r_eff_sq * r_eff_sq;
+            const double d_dot_r = d_x * rx + d_y * ry;
+
+            h_a[0] += alpha * (-d_x / r_eff_sq + 2.0 * d_dot_r * rx / r_eff_sq_sq);
+            h_a[1] += alpha * (-d_y / r_eff_sq + 2.0 * d_dot_r * ry / r_eff_sq_sq);
+        }
+
+        return h_a;
+    }
+}
+
 template <int dim>
 class MagnetizationAssembler
 {
 public:
-    /**
-     * @brief Constructor
-     *
-     * @param params       Simulation parameters
-     * @param M_dof        DoFHandler for M (DG, scalar - same for Mx and My)
-     * @param U_dof        DoFHandler for velocity components (CG)
-     * @param phi_dof      DoFHandler for potential φ (CG)
-     * @param theta_dof    DoFHandler for phase field θ (CG)
-     */
-    MagnetizationAssembler(const Parameters& params,
-                           const dealii::DoFHandler<dim>& M_dof,
-                           const dealii::DoFHandler<dim>& U_dof,
-                           const dealii::DoFHandler<dim>& phi_dof,
-                           const dealii::DoFHandler<dim>& theta_dof);
+    /// Constructor
+    MagnetizationAssembler(
+        const Parameters& params,
+        const dealii::DoFHandler<dim>& M_dof,
+        const dealii::DoFHandler<dim>& U_dof,
+        const dealii::DoFHandler<dim>& phi_dof,
+        const dealii::DoFHandler<dim>& theta_dof);
 
-    /**
-     * @brief Create sparsity pattern with face coupling
-     *
-     * DG transport requires neighbor coupling through faces.
-     * Must call this BEFORE assemble().
-     */
-    void create_sparsity_pattern(dealii::SparsityPattern& sparsity) const;
+    /// Assemble the DG magnetization system
+    /// @param system_matrix Output sparse matrix (same for Mx and My)
+    /// @param rhs_x Output RHS vector for Mx component
+    /// @param rhs_y Output RHS vector for My component
+    /// @param Ux x-velocity solution
+    /// @param Uy y-velocity solution
+    /// @param phi Magnetic potential solution
+    /// @param theta Phase field solution
+    /// @param Mx_old Previous time step Mx
+    /// @param My_old Previous time step My
+    /// @param dt Time step size
+    /// @param current_time Current time (for MMS source term)
+    void assemble(
+        dealii::SparseMatrix<double>& system_matrix,
+        dealii::Vector<double>& rhs_x,
+        dealii::Vector<double>& rhs_y,
+        const dealii::Vector<double>& Ux,
+        const dealii::Vector<double>& Uy,
+        const dealii::Vector<double>& phi,
+        const dealii::Vector<double>& theta,
+        const dealii::Vector<double>& Mx_old,
+        const dealii::Vector<double>& My_old,
+        double dt,
+        double current_time = 0.0) const;
 
-    /**
-     * @brief Assemble system matrix and both RHS vectors
-     *
-     * @param system_matrix  [OUT] Scalar system matrix
-     * @param rhs_x          [OUT] RHS for Mx component
-     * @param rhs_y          [OUT] RHS for My component
-     * @param Ux, Uy         Velocity components (CG)
-     * @param phi            Magnetic potential (CG)
-     * @param theta          Phase field (CG)
-     * @param Mx_old, My_old Previous magnetization (DG)
-     * @param dt             Time step τ
-     */
-    void assemble(dealii::SparseMatrix<double>& system_matrix,
-                  dealii::Vector<double>& rhs_x,
-                  dealii::Vector<double>& rhs_y,
-                  const dealii::Vector<double>& Ux,
-                  const dealii::Vector<double>& Uy,
-                  const dealii::Vector<double>& phi,
-                  const dealii::Vector<double>& theta,
-                  const dealii::Vector<double>& Mx_old,
-                  const dealii::Vector<double>& My_old,
-                  double dt) const;
-
-    /**
-     * @brief Assemble only RHS vectors (when matrix unchanged)
-     *
-     * Use when U hasn't changed significantly.
-     */
-    void assemble_rhs_only(dealii::Vector<double>& rhs_x,
-                           dealii::Vector<double>& rhs_y,
-                           const dealii::Vector<double>& phi,
-                           const dealii::Vector<double>& theta,
-                           const dealii::Vector<double>& Mx_old,
-                           const dealii::Vector<double>& My_old,
-                           double dt) const;
+    /// Assemble only the RHS (for fixed matrix reuse)
+    void assemble_rhs_only(
+        dealii::Vector<double>& rhs_x,
+        dealii::Vector<double>& rhs_y,
+        const dealii::Vector<double>& phi,
+        const dealii::Vector<double>& theta,
+        const dealii::Vector<double>& Mx_old,
+        const dealii::Vector<double>& My_old,
+        double dt) const;
 
 private:
-    /**
-     * @brief Compute χ(θ) = χ₀(1+θ)/2
-     */
-    double chi(double theta_val) const;
-
     const Parameters& params_;
     const dealii::DoFHandler<dim>& M_dof_handler_;
     const dealii::DoFHandler<dim>& U_dof_handler_;
     const dealii::DoFHandler<dim>& phi_dof_handler_;
     const dealii::DoFHandler<dim>& theta_dof_handler_;
+
+    /// Susceptibility function: χ(θ)
+    double chi(double theta_val) const;
 };
 
 #endif // MAGNETIZATION_ASSEMBLER_H

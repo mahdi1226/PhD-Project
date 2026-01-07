@@ -124,17 +124,17 @@ void PhaseFieldProblem<dim>::run()
         std::cout << "  Magnetic: ENABLED\n";
         std::cout << "  chi_0 (susceptibility) = " << params_.physics.chi_0 << "\n";
         if (params_.use_dg_transport)
-            std::cout << "  DG transport: ENABLED (tau_M = " << tau_M << ")\n";
+            std::cout << "  DG transport: ENABLED (tau_M = " << params_.physics.tau_M<< ")\n";
         else
             std::cout << "  DG transport: disabled (quasi-equilibrium M = chi*H)\n";
     }
     if (params_.enable_ns)
     {
         std::cout << "  Navier-Stokes: ENABLED\n";
-        std::cout << "  nu_water = " << nu_water << "\n";
-        std::cout << "  nu_ferro = " << nu_ferro << "\n";
+        std::cout << "  nu_water = " << params_.physics.nu_water << "\n";
+        std::cout << "  nu_ferro = " << params_.physics.nu_ferro << "\n";
         if (params_.enable_gravity)
-            std::cout << "  Gravity: ENABLED (g = " << gravity_dimensionless << ")\n";
+            std::cout << "  Gravity: ENABLED (g = " << params_.physics.gravity << ")\n";
     }
     if (mms_mode)
     {
@@ -220,7 +220,7 @@ void PhaseFieldProblem<dim>::run()
         if (params_.enable_ns && !mms_mode && params_.time.use_adaptive_dt)
         {
             double dt_new = current_dt;
-            bool dt_changed = false;
+            double dt_changed = false;
             std::string reason;
 
             // 1. CFL-based adjustment
@@ -296,6 +296,10 @@ void PhaseFieldProblem<dim>::run()
             refine_mesh();
         }
 
+        // Add after AMR in phase_field.cc:
+        std::cout << "[AMR Debug] mx size: " << mx_solution_.size()
+                  << ", mx_dof n_dofs: " << mx_dof_handler_.n_dofs() << "\n";
+
         // Output periodically
         if (timestep_number_ % params_.output.frequency == 0 ||
             time_ >= params_.time.t_final - 1e-12)
@@ -370,9 +374,6 @@ void PhaseFieldProblem<dim>::time_step(double dt)
 
     const double time_new = time_ + dt;
 
-    if (params_.enable_mms)
-        update_mms_boundary_constraints(time_new);
-
     // ========================================================================
     // Initialize StepData
     // ========================================================================
@@ -425,6 +426,9 @@ void PhaseFieldProblem<dim>::time_step(double dt)
     step_data.ch_energy_increasing = ch_data.energy_increasing;
 
     ch_energy_old_ = ch_data.energy;
+    step_data.ch_iterations = last_ch_info_.iterations;
+    step_data.ch_residual = last_ch_info_.residual;
+    step_data.ch_time = last_ch_info_.solve_time;
 
     // Poisson diagnostics
     if (params_.enable_magnetic)
@@ -442,6 +446,9 @@ void PhaseFieldProblem<dim>::time_step(double dt)
         step_data.mu_min = poisson_diag.mu_min;
         step_data.mu_max = poisson_diag.mu_max;
     }
+    step_data.poisson_iterations = last_poisson_info_.iterations;
+    step_data.poisson_residual = last_poisson_info_.residual;
+    step_data.poisson_time = last_poisson_info_.solve_time;
 
     // NS diagnostics
     if (params_.enable_ns)
@@ -485,12 +492,6 @@ void PhaseFieldProblem<dim>::time_step(double dt)
     // =========================================================================
     // Compute derived quantities and total energy
     // =========================================================================
-    step_data.E_internal = step_data.E_CH + step_data.E_kin;
-    step_data.E_total = step_data.E_CH + step_data.E_kin + step_data.E_mag;
-
-    // ========================================================================
-    // Compute derived quantities and total energy
-    // ========================================================================
     step_data.E_internal = step_data.E_CH + step_data.E_kin;
     step_data.E_total = step_data.E_CH + step_data.E_kin + step_data.E_mag;
 
@@ -575,12 +576,14 @@ void PhaseFieldProblem<dim>::solve_ch()
 
     ch_combined_constraints_.condense(ch_matrix_, ch_rhs_);
 
-    solve_ch_system(ch_matrix_, ch_rhs_,
-                    ch_combined_constraints_,
-                    theta_to_ch_map_,
-                    psi_to_ch_map_,
-                    theta_solution_,
-                    psi_solution_);
+    SolverInfo ch_info = solve_ch_system(ch_matrix_, ch_rhs_,
+                                      ch_combined_constraints_,
+                                      theta_to_ch_map_, psi_to_ch_map_,
+                                      theta_solution_, psi_solution_,
+                                      params_.solvers.ch,
+                                      params_.output.verbose);
+
+    last_ch_info_ = ch_info;  // Store for diagnostics
 
     theta_constraints_.distribute(theta_solution_);
     psi_constraints_.distribute(psi_solution_);
@@ -617,7 +620,7 @@ void PhaseFieldProblem<dim>::solve_magnetization()
         assembler.assemble(mx_matrix_, mx_rhs_, my_rhs_,
                            ux_solution_, uy_solution_, phi_solution_,
                            theta_old_solution_, mx_old_solution_, my_old_solution_,
-                           params_.time.dt);
+                           params_.time.dt, time_);
 
         MagnetizationSolver<dim> solver(params_.solvers.magnetization);
         solver.initialize(mx_matrix_);
@@ -640,54 +643,16 @@ void PhaseFieldProblem<dim>::solve_magnetization()
 }
 
 // ============================================================================
-// ============================================================================
-// solve_poisson() - Solve magnetostatic Poisson equation
+// solve_poisson() - Solve magnetostatic Poisson equation (Paper Eq. 42d)
 //
-// QUASI-EQUILIBRIUM MODEL:
-//   (μ(θ)∇φ, ∇χ) = (h_a, ∇χ)
-//
-// where μ(θ) = 1 + χ(θ) is the phase-dependent permeability.
-//
-// For quasi-equilibrium (M = χH), the M term in Eq. 42d is absorbed into
-// the permeability μ(θ). This 8-arg signature (using θ, not M) is correct.
-//
-// The 9-arg signature with explicit M_dof_handler is only needed for the
-// full DG transport model (Eq. 42c), which is not yet implemented.
+//   (∇φ, ∇χ) = (h_a - M^k, ∇χ)
 // ============================================================================
 template <int dim>
 void PhaseFieldProblem<dim>::solve_poisson()
 {
-    // ========================================================================
-    // Paper Eq. 42d:
-    //   (∇Φ^k, ∇X) = (h_a - M^k, ∇X)
-    //
-    // Uses M^{k,i+1} computed by solve_magnetization() in current Picard step.
-    // ========================================================================
-
     phi_matrix_ = 0;
     phi_rhs_ = 0;
 
-
-    /*if (params_.enable_mms)
-    {
-        // MMS mode: use manufactured source
-        // TODO: Need MMS version with explicit M formulation
-        assemble_poisson_system_mms<dim>(
-            phi_dof_handler_,
-            mx_dof_handler_,
-            mx_solution_,
-            my_solution_,
-            params_,
-            time_,
-            params_.domain.y_max - params_.domain.y_min,
-            phi_matrix_,
-            phi_rhs_,
-            phi_constraints_);
-    }*/
-    //else
-    //{
-    // Physical mode: Paper Eq. 42d
-    // (∇Φ, ∇X) = (h_a - M, ∇X)
     assemble_poisson_system<dim>(
         phi_dof_handler_,
         mx_dof_handler_,
@@ -698,12 +663,12 @@ void PhaseFieldProblem<dim>::solve_poisson()
         phi_matrix_,
         phi_rhs_,
         phi_constraints_);
-    //}
 
-    solve_poisson_system(phi_matrix_, phi_rhs_, phi_solution_,
-                         phi_constraints_,
-                         params_.solvers.poisson,
-                         params_.output.verbose);
+    last_poisson_info_ = solve_poisson_system(
+        phi_matrix_, phi_rhs_, phi_solution_,
+        phi_constraints_,
+        params_.solvers.poisson,
+        params_.output.verbose);
 }
 
 // ============================================================================
@@ -751,16 +716,6 @@ void PhaseFieldProblem<dim>::solve_ns()
 
 
     SolverInfo ns_info;
-
-    {
-        double rhs_vel = 0, rhs_p = 0;
-        const unsigned int n_vel = ux_to_ns_map_.size() + uy_to_ns_map_.size();
-        for (unsigned int i = 0; i < n_vel; ++i)
-            rhs_vel += ns_rhs_[i] * ns_rhs_[i];
-        for (unsigned int i = n_vel; i < ns_rhs_.size(); ++i)
-            rhs_p += ns_rhs_[i] * ns_rhs_[i];
-    }
-
 
     // Use FGMRES + Block Schur preconditioner (following deal.II step-56)
     // Use direct solver if:
@@ -817,82 +772,9 @@ void PhaseFieldProblem<dim>::solve_ns()
         uy_solution_,
         p_solution_);
 
-    /*// Subtract mean pressure (free-surface BC needs pressure reference)
-    const double mean_p = p_solution_.mean_value();
-    p_solution_.add(-mean_p);*/
-
     ux_constraints_.distribute(ux_solution_);
     uy_constraints_.distribute(uy_solution_);
     p_constraints_.distribute(p_solution_);
-}
-
-// ============================================================================
-// update_mms_boundary_constraints()
-// ============================================================================
-template <int dim>
-void PhaseFieldProblem<dim>::update_mms_boundary_constraints(double time)
-{
-    theta_constraints_.clear();
-    psi_constraints_.clear();
-
-    dealii::DoFTools::make_hanging_node_constraints(theta_dof_handler_, theta_constraints_);
-    dealii::DoFTools::make_hanging_node_constraints(psi_dof_handler_, psi_constraints_);
-
-    apply_ch_mms_boundary_constraints<dim>(
-        theta_dof_handler_,
-        psi_dof_handler_,
-        theta_constraints_,
-        psi_constraints_,
-        time);
-
-    theta_constraints_.close();
-    psi_constraints_.close();
-
-    // Rebuild combined constraints
-    ch_combined_constraints_.clear();
-
-    const unsigned int n_theta = theta_dof_handler_.n_dofs();
-    const unsigned int n_psi = psi_dof_handler_.n_dofs();
-
-    for (unsigned int i = 0; i < n_theta; ++i)
-    {
-        if (theta_constraints_.is_constrained(i))
-        {
-            const auto coupled_i = theta_to_ch_map_[i];
-            const auto* entries = theta_constraints_.get_constraint_entries(i);
-            const double inhom = theta_constraints_.get_inhomogeneity(i);
-
-            ch_combined_constraints_.add_line(coupled_i);
-            if (entries != nullptr && !entries->empty())
-            {
-                for (const auto& entry : *entries)
-                    ch_combined_constraints_.add_entry(coupled_i,
-                                                       theta_to_ch_map_[entry.first], entry.second);
-            }
-            ch_combined_constraints_.set_inhomogeneity(coupled_i, inhom);
-        }
-    }
-
-    for (unsigned int i = 0; i < n_psi; ++i)
-    {
-        if (psi_constraints_.is_constrained(i))
-        {
-            const auto coupled_i = psi_to_ch_map_[i];
-            const auto* entries = psi_constraints_.get_constraint_entries(i);
-            const double inhom = psi_constraints_.get_inhomogeneity(i);
-
-            ch_combined_constraints_.add_line(coupled_i);
-            if (entries != nullptr && !entries->empty())
-            {
-                for (const auto& entry : *entries)
-                    ch_combined_constraints_.add_entry(coupled_i,
-                                                       psi_to_ch_map_[entry.first], entry.second);
-            }
-            ch_combined_constraints_.set_inhomogeneity(coupled_i, inhom);
-        }
-    }
-
-    ch_combined_constraints_.close();
 }
 
 // ============================================================================

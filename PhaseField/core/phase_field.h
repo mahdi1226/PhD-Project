@@ -36,6 +36,7 @@
 #include "output/console_logger.h"
 #include "diagnostics/step_data.h"
 #include "diagnostics/field_diagnostics.h"
+#include "solvers/solver_info.h"
 
 
 #include <vector>
@@ -209,6 +210,8 @@ private:
     double ch_energy_old_ = 0.0;
     double E_total_old_ = 0.0;
     double E_internal_old_ = 0.0;
+    SolverInfo last_ch_info_;               // Solver info tracking (for diagnostics) Cahn-Hilliard
+    SolverInfo last_poisson_info_;          // Solver info tracking (for diagnostics) Poisson
 };
 
 #endif // PHASE_FIELD_H

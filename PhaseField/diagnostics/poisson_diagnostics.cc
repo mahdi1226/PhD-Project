@@ -5,7 +5,7 @@
 // ============================================================================
 
 #include "diagnostics/poisson_diagnostics.h"
-#include "assembly/poisson_assembler.h"
+#include "assembly/magnetization_assembler.h"
 #include "physics/material_properties.h"
 #include <deal.II/base/quadrature_lib.h>
 #include <deal.II/fe/fe_values.h>

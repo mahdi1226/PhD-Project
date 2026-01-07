@@ -21,7 +21,7 @@ find_package(deal.II 9.5 REQUIRED
 deal_ii_initialize_cached_variables()
 
 # -----------------------------
-# Source files
+# Source files (main solver)
 # -----------------------------
 set(SOURCES
         main.cc
@@ -47,7 +47,7 @@ set(SOURCES
         # Setup
         setup/ch_setup.cc
         setup/poisson_setup.cc
-        setup/magnetization_setup.cc  # ADDED - was dead code, now active
+        setup/magnetization_setup.cc
         setup/ns_setup.cc
 
         # Diagnostics
@@ -55,10 +55,7 @@ set(SOURCES
         diagnostics/poisson_diagnostics.cc
         diagnostics/ns_diagnostics.cc
 
-        # Method of Manufactured Solution (MMS)
-        mms/ch_mms.cc
-        mms/poisson_mms.cc
-        mms/ns_mms.cc
+        # MMS runtime helpers (used by main solver)
         mms/mms_runtime.cc
 
         # Utilities
@@ -70,30 +67,80 @@ set(HEADERS
         physics/kelvin_force.h
         physics/skew_forms.h
         physics/material_properties.h
+        mms/ch_mms.h
+        mms/poisson_mms.h
+        mms/ns_mms.h
+        mms/magnetization_mms.h
+        mms/mms_verification.h
+        assembly/ns_mms_assembler.h
 )
 
 # -----------------------------
-# Target
+# Main solver executable
 # -----------------------------
 add_executable(ferrofluid ${SOURCES} ${HEADERS})
 
-# Project include root (replaces global include_directories)
-target_include_directories(ferrofluid PRIVATE
-        ${CMAKE_SOURCE_DIR}
-)
-
-# Link deal.II
+target_include_directories(ferrofluid PRIVATE ${CMAKE_SOURCE_DIR})
 deal_ii_setup_target(ferrofluid)
 
-# -----------------------------
-# Warnings + build-type flags (generator-safe)
-# -----------------------------
 target_compile_options(ferrofluid PRIVATE
         -Wall -Wextra -Wpedantic
-
         $<$<CONFIG:Debug>:-g -O0>
         $<$<CONFIG:Release>:-O3 -march=native>
 )
 
-# (Optional) If you want faster rebuilds with Ninja:
-# set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+# -----------------------------
+# MMS Test executable
+# -----------------------------
+set(MMS_TEST_SOURCES
+        mms/test_mms.cc
+        mms/mms_verification.cc
+
+        # Required by mms_verification.cc
+        assembly/ch_assembler.cc
+        setup/ch_setup.cc
+        utilities/parameters.cc
+
+        # Poisson MMS
+        assembly/poisson_assembler.cc
+        setup/poisson_setup.cc
+
+        # NS MMS
+        assembly/ns_assembler.cc
+        setup/ns_setup.cc
+        solvers/ns_solver.cc
+        solvers/ns_block_preconditioner.cc
+
+        # Magnetization MMS
+        assembly/magnetization_assembler.cc
+)
+
+add_executable(test_mms ${MMS_TEST_SOURCES})
+
+target_include_directories(test_mms PRIVATE ${CMAKE_SOURCE_DIR})
+deal_ii_setup_target(test_mms)
+
+target_compile_options(test_mms PRIVATE
+        -Wall -Wextra -Wpedantic
+        $<$<CONFIG:Debug>:-g -O0>
+        $<$<CONFIG:Release>:-O3 -march=native>
+)
+
+# -----------------------------
+# NS MMS Test executable (Phase A-D verification)
+# -----------------------------
+set(NS_MMS_TEST_SOURCES
+        mms/test_steady_stokes_mms.cc
+        assembly/ns_mms_assembler.cc
+)
+
+add_executable(test_navier_stokes ${NS_MMS_TEST_SOURCES})
+
+target_include_directories(test_navier_stokes PRIVATE ${CMAKE_SOURCE_DIR})
+deal_ii_setup_target(test_navier_stokes)
+
+target_compile_options(test_navier_stokes PRIVATE
+        -Wall -Wextra -Wpedantic
+        $<$<CONFIG:Debug>:-g -O0>
+        $<$<CONFIG:Release>:-O3 -march=native>
+)

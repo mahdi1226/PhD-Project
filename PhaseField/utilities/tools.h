@@ -26,9 +26,9 @@ inline std::string timestamped_folder(const std::string& base,
     std::strftime(buf, sizeof(buf), "%Y-%m-%d-%H-%M-%S", std::localtime(&t));
 
     if (run_name.empty())
-        return base + "/run-" + buf;
+        return base + "/" + buf;
     else
-        return base + "/" + run_name + "-" + buf;
+        return base + "/" + buf + "-" + run_name;  // Date first!
 }
 
 #endif // TOOLS_H
