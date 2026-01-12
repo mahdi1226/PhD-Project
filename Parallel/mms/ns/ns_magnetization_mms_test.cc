@@ -22,7 +22,7 @@
 #include "mms/ns/ns_magnetization_mms_test.h"
 #include "mms/ns/ns_mms.h"
 #include "mms/ns/ns_magnetization_mms.h"
-#include "mms/mms_verification.h"
+#include "../mms_core/mms_verification.h"
 
 // PRODUCTION code
 #include "setup/ns_setup.h"

@@ -10,7 +10,7 @@
 #define NS_VARIABLE_NU_MMS_TEST_H
 
 #include "utilities/parameters.h"
-#include "mms/mms_verification.h"  // For MMSConvergenceResult
+#include "../mms_core/mms_verification.h"
 #include <vector>
 
 // ============================================================================

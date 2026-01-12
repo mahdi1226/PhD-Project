@@ -1,5 +1,5 @@
 // ============================================================================
-// mms/mms_context.cc - MMS Test Context Implementation (Parallel Version)
+// mms/mms_core/mms_context.cc - MMS Test Context Implementation (Parallel Version)
 //
 // CH-ONLY VERSION: Other subsystems not yet converted to parallel.
 //
@@ -8,9 +8,12 @@
 //   - Uses TrilinosWrappers types
 //   - Initializes IndexSets for owned/relevant DoFs
 //   - Uses MPI reductions where needed
+//
+// CRITICAL FIX: All CH MMS classes now receive L_y parameter for consistency
+//               with the L_y-scaled exact solutions.
 // ============================================================================
 
-#include "mms/mms_context.h"
+#include "mms_context.h"
 
 // Production setup functions - CH only
 #include "setup/ch_setup.h"
@@ -32,13 +35,13 @@
 template <int dim>
 MMSContext<dim>::MMSContext(MPI_Comm mpi_comm)
     : mpi_communicator(mpi_comm)
-    , pcout(std::cout, dealii::Utilities::MPI::this_mpi_process(mpi_comm) == 0)
-    , triangulation(mpi_comm,
-                    typename dealii::Triangulation<dim>::MeshSmoothing(
-                        dealii::Triangulation<dim>::smoothing_on_refinement |
-                        dealii::Triangulation<dim>::smoothing_on_coarsening))
-    , theta_dof_handler(triangulation)
-    , psi_dof_handler(triangulation)
+      , pcout(std::cout, dealii::Utilities::MPI::this_mpi_process(mpi_comm) == 0)
+      , triangulation(mpi_comm,
+                      typename dealii::Triangulation<dim>::MeshSmoothing(
+                          dealii::Triangulation<dim>::smoothing_on_refinement |
+                          dealii::Triangulation<dim>::smoothing_on_coarsening))
+      , theta_dof_handler(triangulation)
+      , psi_dof_handler(triangulation)
 {
 }
 
@@ -77,13 +80,13 @@ void MMSContext<dim>::setup_mesh(const Parameters& params, unsigned int refineme
             const double tol = 1e-10;
 
             if (std::abs(center[1] - params.domain.y_min) < tol)
-                face->set_boundary_id(0);  // bottom
+                face->set_boundary_id(0); // bottom
             else if (std::abs(center[0] - params.domain.x_max) < tol)
-                face->set_boundary_id(1);  // right
+                face->set_boundary_id(1); // right
             else if (std::abs(center[1] - params.domain.y_max) < tol)
-                face->set_boundary_id(2);  // top
+                face->set_boundary_id(2); // top
             else if (std::abs(center[0] - params.domain.x_min) < tol)
-                face->set_boundary_id(3);  // left
+                face->set_boundary_id(3); // left
         }
     }
 
@@ -91,7 +94,7 @@ void MMSContext<dim>::setup_mesh(const Parameters& params, unsigned int refineme
     triangulation.refine_global(refinement);
 
     pcout << "[MMSContext] Mesh: " << triangulation.n_global_active_cells()
-          << " cells (local: " << triangulation.n_locally_owned_active_cells() << ")\n";
+        << " cells (local: " << triangulation.n_locally_owned_active_cells() << ")\n";
 }
 
 // ============================================================================
@@ -100,6 +103,9 @@ void MMSContext<dim>::setup_mesh(const Parameters& params, unsigned int refineme
 template <int dim>
 void MMSContext<dim>::setup_ch(const Parameters& params, double initial_time)
 {
+    // CRITICAL: Compute L_y from domain parameters for consistent MMS
+    const double L_y = params.domain.y_max - params.domain.y_min;
+
     // Create finite element
     fe_phase = std::make_unique<dealii::FE_Q<dim>>(params.fe.degree_phase);
 
@@ -158,9 +164,9 @@ void MMSContext<dim>::setup_ch(const Parameters& params, double initial_time)
     psi_constraints.clear();
     psi_constraints.reinit(psi_locally_owned, psi_locally_relevant);
 
-    // Apply MMS boundary conditions
-    CHMMSBoundaryTheta<dim> theta_bc;
-    CHMMSBoundaryPsi<dim> psi_bc;
+    // Apply MMS boundary conditions - CRITICAL: pass L_y for consistency
+    CHMMSBoundaryTheta<dim> theta_bc(L_y);
+    CHMMSBoundaryPsi<dim> psi_bc(L_y);
     theta_bc.set_time(initial_time);
     psi_bc.set_time(initial_time);
 
@@ -190,31 +196,34 @@ void MMSContext<dim>::setup_ch(const Parameters& params, double initial_time)
         mpi_communicator, pcout);
 
     pcout << "[MMSContext] CH DoFs: θ = " << n_theta
-          << ", ψ = " << n_psi
-          << ", coupled = " << n_total
-          << ", local = " << ch_locally_owned.n_elements() << "\n";
+        << ", ψ = " << n_psi
+        << ", coupled = " << n_total
+        << ", local = " << ch_locally_owned.n_elements() << "\n";
 }
 
 // ============================================================================
 // apply_ch_initial_conditions() - MMS initial conditions
 // ============================================================================
 template <int dim>
-void MMSContext<dim>::apply_ch_initial_conditions(const Parameters& /*params*/, double t_init)
+void MMSContext<dim>::apply_ch_initial_conditions(const Parameters& params, double t_init)
 {
-    CHMMSInitialTheta<dim> theta_ic(t_init);
-    CHMMSInitialPsi<dim> psi_ic(t_init);
+    // CRITICAL: Compute L_y from domain parameters for consistent MMS
+    const double L_y = params.domain.y_max - params.domain.y_min;
+
+    CHMMSInitialTheta<dim> theta_ic(t_init, L_y);
+    CHMMSInitialPsi<dim> psi_ic(t_init, L_y);
 
     // Interpolate into owned vectors
     dealii::VectorTools::interpolate(theta_dof_handler, theta_ic, theta_owned);
     dealii::VectorTools::interpolate(psi_dof_handler, psi_ic, psi_owned);
 
     // Update ghost values
-    theta_relevant = theta_owned;
-    psi_relevant = psi_owned;
+    update_theta_ghosts();
+    update_psi_ghosts();
 
     // Copy to old
     theta_old_owned = theta_owned;
-    theta_old_relevant = theta_relevant;
+    update_theta_old_ghosts();
 
     pcout << "[MMSContext] Applied CH MMS initial conditions at t = " << t_init << "\n";
 }
@@ -223,17 +232,20 @@ void MMSContext<dim>::apply_ch_initial_conditions(const Parameters& /*params*/, 
 // update_ch_constraints() - Update BCs for new time
 // ============================================================================
 template <int dim>
-void MMSContext<dim>::update_ch_constraints(const Parameters& /*params*/, double current_time)
+void MMSContext<dim>::update_ch_constraints(const Parameters& params, double current_time)
 {
+    // CRITICAL: Compute L_y from domain parameters for consistent MMS
+    const double L_y = params.domain.y_max - params.domain.y_min;
+
     // Clear and reinit individual constraints
     theta_constraints.clear();
     theta_constraints.reinit(theta_locally_owned, theta_locally_relevant);
     psi_constraints.clear();
     psi_constraints.reinit(psi_locally_owned, psi_locally_relevant);
 
-    // Apply MMS BCs at new time
-    CHMMSBoundaryTheta<dim> theta_bc;
-    CHMMSBoundaryPsi<dim> psi_bc;
+    // Apply MMS BCs at new time - CRITICAL: pass L_y for consistency
+    CHMMSBoundaryTheta<dim> theta_bc(L_y);
+    CHMMSBoundaryPsi<dim> psi_bc(L_y);
     theta_bc.set_time(current_time);
     psi_bc.set_time(current_time);
 
@@ -254,8 +266,6 @@ void MMSContext<dim>::update_ch_constraints(const Parameters& /*params*/, double
     psi_constraints.close();
 
     // Rebuild combined constraints
-    const unsigned int n_theta = theta_dof_handler.n_dofs();
-
     ch_constraints.clear();
     ch_constraints.reinit(ch_locally_owned, ch_locally_relevant);
 
@@ -271,7 +281,7 @@ void MMSContext<dim>::update_ch_constraints(const Parameters& /*params*/, double
                 // Inhomogeneous constraint
                 ch_constraints.add_line(theta_to_ch_map[i]);
                 ch_constraints.set_inhomogeneity(theta_to_ch_map[i],
-                    theta_constraints.get_inhomogeneity(i));
+                                                 theta_constraints.get_inhomogeneity(i));
             }
         }
     }
@@ -287,7 +297,7 @@ void MMSContext<dim>::update_ch_constraints(const Parameters& /*params*/, double
             {
                 ch_constraints.add_line(psi_to_ch_map[i]);
                 ch_constraints.set_inhomogeneity(psi_to_ch_map[i],
-                    psi_constraints.get_inhomogeneity(i));
+                                                 psi_constraints.get_inhomogeneity(i));
             }
         }
     }
@@ -325,23 +335,28 @@ unsigned int MMSContext<dim>::n_ch_dofs() const
 }
 
 // ============================================================================
-// Ghost update helpers
+// Ghost update helpers - FIXED: proper ghost synchronization
 // ============================================================================
 template <int dim>
 void MMSContext<dim>::update_theta_ghosts()
 {
+    // Compress owned vector to ensure all writes are finalized
+    theta_owned.compress(dealii::VectorOperation::insert);
+    // Copy to ghosted vector - this imports ghost values
     theta_relevant = theta_owned;
 }
 
 template <int dim>
 void MMSContext<dim>::update_theta_old_ghosts()
 {
+    theta_old_owned.compress(dealii::VectorOperation::insert);
     theta_old_relevant = theta_old_owned;
 }
 
 template <int dim>
 void MMSContext<dim>::update_psi_ghosts()
 {
+    psi_owned.compress(dealii::VectorOperation::insert);
     psi_relevant = psi_owned;
 }
 
@@ -356,4 +371,4 @@ void MMSContext<dim>::update_ch_ghosts()
 // ============================================================================
 // Explicit instantiation
 // ============================================================================
-template class MMSContext<2>;
+template struct MMSContext<2>;

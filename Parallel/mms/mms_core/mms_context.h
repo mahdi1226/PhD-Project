@@ -1,5 +1,5 @@
 // ============================================================================
-// mms/mms_context.h - MMS Test Context (Parallel Version)
+// mms/mms_core/mms_context.h - MMS Test Context (Parallel Version)
 //
 // CH-ONLY VERSION: Other subsystems not yet converted to parallel.
 //

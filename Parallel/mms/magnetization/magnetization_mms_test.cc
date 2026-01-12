@@ -151,7 +151,6 @@ MagMMSResult run_magnetization_mms_single(
 
     Parameters mms_params = params;
     mms_params.enable_mms = true;
-    mms_params.physics.tau_M = 1.0;
 
     auto total_start = std::chrono::high_resolution_clock::now();
 

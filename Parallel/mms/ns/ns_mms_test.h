@@ -4,9 +4,10 @@
 // Provides parallel NS MMS verification integrated with mms_verification.cc
 //
 // Uses PRODUCTION code:
-//   - setup_ns_coupled_system() from setup/ns_setup.h
-//   - BlockSchurPreconditionerParallel from solvers/ns_block_preconditioner.h
+//   - setup_ns_coupled_system_parallel() from setup/ns_setup.h
+//   - assemble_ns_system_parallel() from assembly/ns_assembler.h
 //   - solve_ns_system_schur_parallel() from solvers/ns_solver.h
+//   - BlockSchurPreconditionerParallel from solvers/ns_block_preconditioner.h
 //
 // Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
 // ============================================================================
@@ -138,6 +139,7 @@ struct NSMMSConvergenceResult
 //   - Distributed triangulation
 //   - Trilinos matrices and vectors
 //   - BlockSchurPreconditionerParallel
+//   - Production assembler with enable_mms=true
 //
 // For standalone NS test, theta/psi/phi/M are not needed (no coupling)
 // ============================================================================
@@ -145,12 +147,14 @@ NSMMSConvergenceResult run_ns_mms_standalone(
     const std::vector<unsigned int>& refinements,
     const Parameters& params,
     NSSolverType solver_type,
+    unsigned int n_time_steps,
     MPI_Comm mpi_communicator);
 
 // Convenience overload defaulting to Block Schur solver
 NSMMSConvergenceResult run_ns_mms_standalone(
     const std::vector<unsigned int>& refinements,
     const Parameters& params,
+    unsigned int n_time_steps,
     MPI_Comm mpi_communicator);
 
 // ============================================================================
@@ -160,6 +164,7 @@ NSMMSConvergenceResult run_ns_mms_phase(
     NSPhase phase,
     const std::vector<unsigned int>& refinements,
     const Parameters& params,
+    unsigned int n_time_steps,
     MPI_Comm mpi_communicator);
 
 #endif // NS_MMS_TEST_H

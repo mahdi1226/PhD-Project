@@ -6,12 +6,17 @@
 //   - assemble_ch_system() from assembly/ch_assembler.h
 //   - solve_ch_system() from solvers/ch_solver.h
 //
+// NO PARAMETER OVERRIDES - uses Parameters defaults from parameters.h
+//
+// CRITICAL FIX: All CH MMS classes now receive L_y parameter for consistency
+//               with the L_y-scaled exact solutions.
+//
 // Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
 // ============================================================================
 
 #include "mms/ch/ch_mms_test.h"
 #include "mms/ch/ch_mms.h"
-#include "mms/mms_context.h"
+#include "../mms_core/mms_context.h"
 
 // PRODUCTION components
 #include "assembly/ch_assembler.h"
@@ -19,6 +24,7 @@
 
 #include <deal.II/base/utilities.h>
 #include <deal.II/numerics/vector_tools.h>
+#include <deal.II/fe/fe_values.h>
 
 #include <iostream>
 #include <iomanip>
@@ -27,7 +33,7 @@
 #include <cmath>
 
 // ============================================================================
-// CHMMSConvergenceResult Implementation (unchanged - just data)
+// CHMMSConvergenceResult Implementation
 // ============================================================================
 
 void CHMMSConvergenceResult::compute_rates()
@@ -75,49 +81,38 @@ void CHMMSConvergenceResult::compute_rates()
 
 void CHMMSConvergenceResult::print() const
 {
-    std::cout << "\n========================================\n";
-    std::cout << "MMS Convergence Results: CH_STANDALONE\n";
-    std::cout << "========================================\n";
-
+    std::cout << "\n--- CH Errors ---\n";
     std::cout << std::left
-              << std::setw(6) << "Ref"
-              << std::setw(12) << "h"
-              << std::setw(12) << "θ_L2"
-              << std::setw(8) << "rate"
-              << std::setw(12) << "θ_H1"
-              << std::setw(8) << "rate"
-              << std::setw(12) << "ψ_L2"
-              << std::setw(8) << "rate"
-              << std::setw(10) << "time(s)"
+              << std::setw(5) << "Ref"
+              << std::setw(10) << "h"
+              << std::setw(10) << "θ_L2"
+              << std::setw(6) << "rate"
+              << std::setw(10) << "θ_H1"
+              << std::setw(6) << "rate"
+              << std::setw(10) << "ψ_L2"
+              << std::setw(6) << "rate"
               << "\n";
-    std::cout << std::string(88, '-') << "\n";
+    std::cout << std::string(63, '-') << "\n";
 
     for (size_t i = 0; i < results.size(); ++i)
     {
         const auto& r = results[i];
-        std::cout << std::left << std::setw(6) << r.refinement
+        std::cout << std::left << std::setw(5) << r.refinement
                   << std::scientific << std::setprecision(2)
-                  << std::setw(12) << r.h
-                  << std::setw(12) << r.theta_L2
+                  << std::setw(10) << r.h
+                  << std::setw(10) << r.theta_L2
                   << std::fixed << std::setprecision(2)
-                  << std::setw(8) << (i > 0 ? theta_L2_rates[i-1] : 0.0)
+                  << std::setw(6) << (i > 0 ? theta_L2_rates[i-1] : 0.0)
                   << std::scientific << std::setprecision(2)
-                  << std::setw(12) << r.theta_H1
+                  << std::setw(10) << r.theta_H1
                   << std::fixed << std::setprecision(2)
-                  << std::setw(8) << (i > 0 ? theta_H1_rates[i-1] : 0.0)
+                  << std::setw(6) << (i > 0 ? theta_H1_rates[i-1] : 0.0)
                   << std::scientific << std::setprecision(2)
-                  << std::setw(12) << r.psi_L2
+                  << std::setw(10) << r.psi_L2
                   << std::fixed << std::setprecision(2)
-                  << std::setw(8) << (i > 0 ? psi_L2_rates[i-1] : 0.0)
-                  << std::setw(10) << r.total_time
+                  << std::setw(6) << (i > 0 && !psi_L2_rates.empty() ? psi_L2_rates[i-1] : 0.0)
                   << "\n";
     }
-    std::cout << "========================================\n";
-
-    if (passes())
-        std::cout << "[PASS] All convergence rates within tolerance!\n";
-    else
-        std::cout << "[FAIL] Some convergence rates below expected!\n";
 }
 
 void CHMMSConvergenceResult::write_csv(const std::string& filename) const
@@ -130,8 +125,7 @@ void CHMMSConvergenceResult::write_csv(const std::string& filename) const
     }
 
     file << "refinement,h,n_dofs,theta_L2,theta_L2_rate,theta_H1,theta_H1_rate,"
-         << "psi_L2,psi_L2_rate,setup_time,assembly_time,solve_time,total_time,"
-         << "solver_iterations,solver_residual\n";
+         << "psi_L2,psi_L2_rate,total_time\n";
 
     for (size_t i = 0; i < results.size(); ++i)
     {
@@ -145,17 +139,10 @@ void CHMMSConvergenceResult::write_csv(const std::string& filename) const
              << (i > 0 ? theta_H1_rates[i-1] : 0.0) << ","
              << r.psi_L2 << ","
              << (i > 0 ? psi_L2_rates[i-1] : 0.0) << ","
-             << std::fixed << std::setprecision(4)
-             << r.setup_time << ","
-             << r.assembly_time << ","
-             << r.solve_time << ","
-             << r.total_time << ","
-             << r.solver_iterations << ","
-             << std::scientific << r.solver_residual << "\n";
+             << std::fixed << std::setprecision(4) << r.total_time << "\n";
     }
 
     file.close();
-    std::cout << "[CH MMS] Results written to " << filename << "\n";
 }
 
 bool CHMMSConvergenceResult::passes(double tol) const
@@ -163,7 +150,6 @@ bool CHMMSConvergenceResult::passes(double tol) const
     if (theta_L2_rates.empty())
         return false;
 
-    // Check last rate is within tolerance of expected
     const double last_L2_rate = theta_L2_rates.back();
     const double last_H1_rate = theta_H1_rates.back();
 
@@ -173,6 +159,7 @@ bool CHMMSConvergenceResult::passes(double tol) const
 
 // ============================================================================
 // Parallel error computation helper
+// CRITICAL FIX: Added L_y parameter for consistent exact solutions
 // ============================================================================
 template <int dim>
 static CHMMSErrors compute_ch_mms_errors_parallel(
@@ -181,13 +168,14 @@ static CHMMSErrors compute_ch_mms_errors_parallel(
     const dealii::TrilinosWrappers::MPI::Vector& theta_solution,
     const dealii::TrilinosWrappers::MPI::Vector& psi_solution,
     double time,
+    double L_y,  // CRITICAL: L_y parameter for consistent exact solutions
     MPI_Comm mpi_communicator)
 {
     CHMMSErrors errors;
 
-    // Exact solutions
-    CHExactTheta<dim> exact_theta;
-    CHExactPsi<dim> exact_psi;
+    // Exact solutions - CRITICAL: pass L_y for consistency
+    CHExactTheta<dim> exact_theta(L_y);
+    CHExactPsi<dim> exact_psi(L_y);
     exact_theta.set_time(time);
     exact_psi.set_time(time);
 
@@ -195,30 +183,64 @@ static CHMMSErrors compute_ch_mms_errors_parallel(
     const unsigned int quad_degree = theta_dof_handler.get_fe().degree + 2;
     dealii::QGauss<dim> quadrature(quad_degree);
 
-    // Compute local error contributions
-    dealii::Vector<double> theta_diff_L2(theta_dof_handler.get_triangulation().n_active_cells());
-    dealii::Vector<double> theta_diff_H1(theta_dof_handler.get_triangulation().n_active_cells());
-    dealii::Vector<double> psi_diff_L2(psi_dof_handler.get_triangulation().n_active_cells());
+    dealii::FEValues<dim> fe_values(theta_dof_handler.get_fe(), quadrature,
+                                    dealii::update_values |
+                                    dealii::update_gradients |
+                                    dealii::update_quadrature_points |
+                                    dealii::update_JxW_values);
 
-    dealii::VectorTools::integrate_difference(
-        theta_dof_handler, theta_solution, exact_theta,
-        theta_diff_L2, quadrature, dealii::VectorTools::L2_norm);
+    const unsigned int n_q_points = quadrature.size();
+    std::vector<double> theta_values(n_q_points);
+    std::vector<double> psi_values(n_q_points);
+    std::vector<dealii::Tensor<1, dim>> theta_gradients(n_q_points);
 
-    dealii::VectorTools::integrate_difference(
-        theta_dof_handler, theta_solution, exact_theta,
-        theta_diff_H1, quadrature, dealii::VectorTools::H1_seminorm);
+    double local_theta_L2_sq = 0.0;
+    double local_theta_H1_sq = 0.0;
+    double local_psi_L2_sq = 0.0;
 
-    dealii::VectorTools::integrate_difference(
-        psi_dof_handler, psi_solution, exact_psi,
-        psi_diff_L2, quadrature, dealii::VectorTools::L2_norm);
+    for (const auto& cell : theta_dof_handler.active_cell_iterators())
+    {
+        if (!cell->is_locally_owned())
+            continue;
 
-    // Compute global norms via MPI reduction
-    // integrate_difference returns cell-wise norm^2, so we sum and sqrt
-    double local_theta_L2_sq = theta_diff_L2.norm_sqr();
-    double local_theta_H1_sq = theta_diff_H1.norm_sqr();
-    double local_psi_L2_sq = psi_diff_L2.norm_sqr();
+        fe_values.reinit(cell);
+        fe_values.get_function_values(theta_solution, theta_values);
+        fe_values.get_function_gradients(theta_solution, theta_gradients);
 
-    double global_theta_L2_sq = 0.0, global_theta_H1_sq = 0.0, global_psi_L2_sq = 0.0;
+        // Get psi values on same cell
+        const typename dealii::DoFHandler<dim>::active_cell_iterator psi_cell(
+            &theta_dof_handler.get_triangulation(),
+            cell->level(), cell->index(), &psi_dof_handler);
+        dealii::FEValues<dim> psi_fe_values(psi_dof_handler.get_fe(), quadrature,
+                                            dealii::update_values);
+        psi_fe_values.reinit(psi_cell);
+        psi_fe_values.get_function_values(psi_solution, psi_values);
+
+        for (unsigned int q = 0; q < n_q_points; ++q)
+        {
+            const auto& x_q = fe_values.quadrature_point(q);
+            const double JxW = fe_values.JxW(q);
+
+            // θ errors
+            const double theta_exact = exact_theta.value(x_q);
+            const auto grad_theta_exact = exact_theta.gradient(x_q);
+            const double theta_err = theta_values[q] - theta_exact;
+            const auto grad_theta_err = theta_gradients[q] - grad_theta_exact;
+
+            local_theta_L2_sq += theta_err * theta_err * JxW;
+            local_theta_H1_sq += grad_theta_err * grad_theta_err * JxW;
+
+            // ψ errors
+            const double psi_exact = exact_psi.value(x_q);
+            const double psi_err = psi_values[q] - psi_exact;
+            local_psi_L2_sq += psi_err * psi_err * JxW;
+        }
+    }
+
+    // MPI reduction
+    double global_theta_L2_sq = 0.0;
+    double global_theta_H1_sq = 0.0;
+    double global_psi_L2_sq = 0.0;
 
     MPI_Allreduce(&local_theta_L2_sq, &global_theta_L2_sq, 1, MPI_DOUBLE, MPI_SUM, mpi_communicator);
     MPI_Allreduce(&local_theta_H1_sq, &global_theta_H1_sq, 1, MPI_DOUBLE, MPI_SUM, mpi_communicator);
@@ -232,13 +254,12 @@ static CHMMSErrors compute_ch_mms_errors_parallel(
 }
 
 // ============================================================================
-// run_ch_mms_single - Single refinement test using MMSContext (Parallel)
+// run_ch_mms_single_impl - Single refinement test
 // ============================================================================
-
 template <int dim>
 static CHMMSResult run_ch_mms_single_impl(
     unsigned int refinement,
-    Parameters params,
+    const Parameters& params,
     CHSolverType solver_type,
     unsigned int n_time_steps,
     MPI_Comm mpi_communicator)
@@ -248,91 +269,80 @@ static CHMMSResult run_ch_mms_single_impl(
 
     auto total_start = std::chrono::high_resolution_clock::now();
 
-    // ========================================================================
-    // MMS Parameters
-    // ========================================================================
+    // Time stepping parameters
     const double t_init = 0.1;
     const double t_final = 0.2;
     const double dt = (t_final - t_init) / n_time_steps;
 
-    params.enable_mms = true;
-    params.enable_ns = false;  // Standalone CH
-    params.time.dt = dt;
-
-    // Domain: unit square for MMS
-    params.domain.x_min = 0.0;
-    params.domain.x_max = 1.0;
-    params.domain.y_min = 0.0;
-    params.domain.y_max = 1.0;
-    params.domain.initial_cells_x = 1;
-    params.domain.initial_cells_y = 1;
+    // CRITICAL: Compute L_y from domain parameters
+    const double L_y = params.domain.y_max - params.domain.y_min;
 
     // ========================================================================
-    // Setup using MMSContext - USES PRODUCTION CODE
+    // Setup using MMSContext (calls PRODUCTION setup_ch_coupled_system)
     // ========================================================================
-    auto setup_start = std::chrono::high_resolution_clock::now();
-
     MMSContext<dim> ctx(mpi_communicator);
     ctx.setup_mesh(params, refinement);
     ctx.setup_ch(params, t_init);
+
+    // ========================================================================
+    // Apply MMS initial conditions
+    // ========================================================================
     ctx.apply_ch_initial_conditions(params, t_init);
 
-    auto setup_end = std::chrono::high_resolution_clock::now();
-    double total_setup_time = std::chrono::duration<double>(setup_end - setup_start).count();
+    // ========================================================================
+    // Create dummy velocity DoFHandlers (CH standalone has no velocity)
+    // ========================================================================
+    dealii::FE_Q<dim> fe_vel(params.fe.degree_velocity);
+    dealii::DoFHandler<dim> ux_dof_handler(ctx.triangulation);
+    dealii::DoFHandler<dim> uy_dof_handler(ctx.triangulation);
+    ux_dof_handler.distribute_dofs(fe_vel);
+    uy_dof_handler.distribute_dofs(fe_vel);
 
-    // Zero velocity for standalone CH (no NS coupling) - using Trilinos vectors
-    dealii::TrilinosWrappers::MPI::Vector ux_zero(ctx.theta_locally_owned, mpi_communicator);
-    dealii::TrilinosWrappers::MPI::Vector uy_zero(ctx.theta_locally_owned, mpi_communicator);
-    ux_zero = 0;
-    uy_zero = 0;
+    dealii::IndexSet ux_locally_owned = ux_dof_handler.locally_owned_dofs();
+    dealii::IndexSet uy_locally_owned = uy_dof_handler.locally_owned_dofs();
+    dealii::TrilinosWrappers::MPI::Vector ux_relevant(ux_locally_owned, mpi_communicator);
+    dealii::TrilinosWrappers::MPI::Vector uy_relevant(uy_locally_owned, mpi_communicator);
+    ux_relevant = 0;
+    uy_relevant = 0;
 
     // ========================================================================
     // Time stepping loop
     // ========================================================================
-    double current_time = t_init;
-    double total_assembly_time = 0.0;
     double total_solve_time = 0.0;
     unsigned int total_iterations = 0;
     double last_residual = 0.0;
+
+    double current_time = t_init;
+
+    // Enable MMS in assembler - source terms are now added internally
+    Parameters mms_params = params;
+    mms_params.enable_mms = true;
 
     for (unsigned int step = 0; step < n_time_steps; ++step)
     {
         current_time += dt;
 
-        // Copy solution to old
-        ctx.theta_old_owned = ctx.theta_owned;
-        ctx.update_theta_old_ghosts();
-
-        // Update boundary constraints for new time
+        // Update boundary conditions for current time
         ctx.update_ch_constraints(params, current_time);
 
         // ====================================================================
-        // ASSEMBLY - Using PRODUCTION code
+        // PRODUCTION assembly (MMS sources added internally when enable_mms=true)
         // ====================================================================
-        auto assembly_start = std::chrono::high_resolution_clock::now();
-
-        ctx.ch_matrix = 0;
-        ctx.ch_rhs = 0;
-
-        // Assembly reads from ghosted vectors
-        // Uses distribute_local_to_global for constraint handling
         assemble_ch_system<dim>(
             ctx.theta_dof_handler, ctx.psi_dof_handler,
-            ctx.theta_old_relevant, ux_zero, uy_zero,
-            params, dt, current_time,
+            ctx.theta_relevant,
+            ux_dof_handler, uy_dof_handler,
+            ux_relevant, uy_relevant,
+            mms_params, dt, current_time,
             ctx.theta_to_ch_map, ctx.psi_to_ch_map,
-            ctx.ch_constraints,  // ADDED: constraints for BC handling
+            ctx.ch_constraints,
             ctx.ch_matrix, ctx.ch_rhs);
 
-        auto assembly_end = std::chrono::high_resolution_clock::now();
-        total_assembly_time += std::chrono::duration<double>(assembly_end - assembly_start).count();
-
         // ====================================================================
-        // SOLVE - Using PRODUCTION code
+        // PRODUCTION solver
         // ====================================================================
         auto solve_start = std::chrono::high_resolution_clock::now();
 
-        // PRODUCTION solver (GMRES + AMG or Direct)
         LinearSolverParams solver_params = params.solvers.ch;
         if (solver_type == CHSolverType::Direct)
         {
@@ -359,12 +369,12 @@ static CHMMSResult run_ch_mms_single_impl(
     }
 
     // ========================================================================
-    // Compute errors (parallel reduction)
+    // Compute errors (parallel reduction) - CRITICAL: pass L_y
     // ========================================================================
     CHMMSErrors errors = compute_ch_mms_errors_parallel<dim>(
         ctx.theta_dof_handler, ctx.psi_dof_handler,
         ctx.theta_relevant, ctx.psi_relevant,
-        current_time, mpi_communicator);
+        current_time, L_y, mpi_communicator);
 
     auto total_end = std::chrono::high_resolution_clock::now();
 
@@ -374,8 +384,6 @@ static CHMMSResult run_ch_mms_single_impl(
     result.theta_L2 = errors.theta_L2;
     result.theta_H1 = errors.theta_H1;
     result.psi_L2 = errors.psi_L2;
-    result.setup_time = total_setup_time;
-    result.assembly_time = total_assembly_time;
     result.solve_time = total_solve_time;
     result.total_time = std::chrono::duration<double>(total_end - total_start).count();
     result.solver_iterations = total_iterations;
@@ -427,7 +435,7 @@ CHMMSConvergenceResult run_ch_mms_standalone(
                   << ", γ = " << params.physics.mobility << "\n";
         std::cout << "  FE degree = Q" << params.fe.degree_phase << "\n";
         std::cout << "  Solver = " << (solver_type == CHSolverType::Direct ? "Direct" : "GMRES+AMG") << "\n";
-        std::cout << "  Using MMSContext with PRODUCTION: ch_setup + ch_assembler + ch_solver\n";
+        std::cout << "  Using PRODUCTION: ch_setup + ch_assembler + ch_solver\n";
     }
 
     for (unsigned int ref : refinements)

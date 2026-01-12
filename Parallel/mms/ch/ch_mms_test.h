@@ -7,6 +7,8 @@
 //   - assemble_ch_system() from assembly/ch_assembler.h
 //   - solve_ch_system() from solvers/ch_solver.h
 //
+// NO PARAMETER OVERRIDES - uses Parameters defaults from parameters.h
+//
 // Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
 // ============================================================================
 #ifndef CH_MMS_TEST_H
@@ -89,9 +91,10 @@ struct CHMMSConvergenceResult
  * @brief Run CH MMS convergence study using PRODUCTION code
  *
  * PARALLEL VERSION: Takes MPI_Comm, uses distributed triangulation
+ * Uses Parameters defaults - NO OVERRIDES
  *
  * @param refinements Vector of refinement levels to test
- * @param params Parameters (physics, FE degrees, etc.)
+ * @param params Parameters from parameters.h (production defaults)
  * @param solver_type Which solver to use
  * @param n_time_steps Number of time steps
  * @param mpi_communicator MPI communicator

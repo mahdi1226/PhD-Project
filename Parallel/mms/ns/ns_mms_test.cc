@@ -1,12 +1,14 @@
 // ============================================================================
 // mms/ns/ns_mms_test.cc - Parallel NS MMS Test Implementation
 //
-// Wraps the parallel NS MMS verification into the unified MMS framework.
-// Uses all PRODUCTION code:
+// Uses PRODUCTION code with enable_mms flag:
 //   - setup_ns_coupled_system_parallel() from setup/ns_setup.h
-//   - assemble_ns_mms_system_parallel() from assembly/ns_assembler.h
+//   - assemble_ns_system_parallel() from assembly/ns_assembler.h (enable_mms=true)
 //   - solve_ns_system_schur_parallel() from solvers/ns_solver.h
 //   - BlockSchurPreconditionerParallel from solvers/ns_block_preconditioner.h
+//
+// ALL parameters come from Parameters struct - NO HARDCODED VALUES!
+// MMS verifies production code with production parameters.
 //
 // Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
 // ============================================================================
@@ -35,6 +37,7 @@
 
 #include <iostream>
 #include <iomanip>
+#include <fstream>
 #include <chrono>
 #include <cmath>
 
@@ -202,48 +205,37 @@ static NSMMSResult compute_errors_parallel(
 {
     NSMMSResult error;
 
-    // Create ghosted vectors for evaluation
-    const dealii::IndexSet ux_relevant =
-        dealii::DoFTools::extract_locally_relevant_dofs(ux_dof_handler);
-    const dealii::IndexSet uy_relevant =
-        dealii::DoFTools::extract_locally_relevant_dofs(uy_dof_handler);
-    const dealii::IndexSet p_relevant =
-        dealii::DoFTools::extract_locally_relevant_dofs(p_dof_handler);
-
-    dealii::TrilinosWrappers::MPI::Vector ux_ghosted(ux_relevant, mpi_comm);
-    dealii::TrilinosWrappers::MPI::Vector uy_ghosted(uy_relevant, mpi_comm);
-    dealii::TrilinosWrappers::MPI::Vector p_ghosted(p_relevant, mpi_comm);
-
-    ux_ghosted = ux_solution;
-    uy_ghosted = uy_solution;
-    p_ghosted = p_solution;
-
-    // Exact solutions
+    // Exact solutions from mms/ns/ns_mms.h
     NSExactVelocityX<dim> exact_ux(time, L_y);
     NSExactVelocityY<dim> exact_uy(time, L_y);
     NSExactPressure<dim> exact_p(time, L_y);
 
-    // Quadrature
-    dealii::QGauss<dim> quadrature(ux_dof_handler.get_fe().degree + 2);
+    const auto& fe_vel = ux_dof_handler.get_fe();
+    const auto& fe_p = p_dof_handler.get_fe();
+
+    dealii::QGauss<dim> quadrature(fe_vel.degree + 2);
     const unsigned int n_q_points = quadrature.size();
 
-    dealii::FEValues<dim> ux_fe_values(ux_dof_handler.get_fe(), quadrature,
+    dealii::FEValues<dim> fe_values_ux(fe_vel, quadrature,
         dealii::update_values | dealii::update_gradients |
         dealii::update_quadrature_points | dealii::update_JxW_values);
-    dealii::FEValues<dim> uy_fe_values(uy_dof_handler.get_fe(), quadrature,
+    dealii::FEValues<dim> fe_values_uy(fe_vel, quadrature,
         dealii::update_values | dealii::update_gradients);
-    dealii::FEValues<dim> p_fe_values(p_dof_handler.get_fe(), quadrature,
-        dealii::update_values);
+    dealii::FEValues<dim> fe_values_p(fe_p, quadrature,
+        dealii::update_values | dealii::update_quadrature_points | dealii::update_JxW_values);
 
-    std::vector<double> ux_values(n_q_points), uy_values(n_q_points), p_values(n_q_points);
-    std::vector<dealii::Tensor<1, dim>> ux_gradients(n_q_points), uy_gradients(n_q_points);
+    std::vector<double> ux_vals(n_q_points), uy_vals(n_q_points), p_vals(n_q_points);
+    std::vector<dealii::Tensor<1, dim>> grad_ux(n_q_points), grad_uy(n_q_points);
 
     double local_ux_L2_sq = 0.0, local_ux_H1_sq = 0.0;
     double local_uy_L2_sq = 0.0, local_uy_H1_sq = 0.0;
-    double local_p_L2_sq = 0.0, local_div_U_L2_sq = 0.0;
-    double local_p_mean_num = 0.0, local_p_mean_exact = 0.0, local_area = 0.0;
+    double local_p_L2_sq = 0.0;
+    double local_div_U_L2_sq = 0.0;
 
-    // First pass: compute mean pressures
+    // Compute mean pressure for correction
+    double local_p_integral = 0.0, local_volume = 0.0;
+    double local_exact_p_integral = 0.0;
+
     auto ux_cell = ux_dof_handler.begin_active();
     auto uy_cell = uy_dof_handler.begin_active();
     auto p_cell = p_dof_handler.begin_active();
@@ -253,32 +245,37 @@ static NSMMSResult compute_errors_parallel(
         if (!ux_cell->is_locally_owned())
             continue;
 
-        ux_fe_values.reinit(ux_cell);
-        p_fe_values.reinit(p_cell);
+        fe_values_ux.reinit(ux_cell);
+        fe_values_uy.reinit(uy_cell);
+        fe_values_p.reinit(p_cell);
 
-        p_fe_values.get_function_values(p_ghosted, p_values);
+        fe_values_ux.get_function_values(ux_solution, ux_vals);
+        fe_values_ux.get_function_gradients(ux_solution, grad_ux);
+        fe_values_uy.get_function_values(uy_solution, uy_vals);
+        fe_values_uy.get_function_gradients(uy_solution, grad_uy);
+        fe_values_p.get_function_values(p_solution, p_vals);
 
         for (unsigned int q = 0; q < n_q_points; ++q)
         {
-            const double JxW = ux_fe_values.JxW(q);
-            const dealii::Point<dim>& x_q = ux_fe_values.quadrature_point(q);
+            const double JxW = fe_values_ux.JxW(q);
+            const auto& x_q = fe_values_ux.quadrature_point(q);
 
-            local_p_mean_num += p_values[q] * JxW;
-            local_p_mean_exact += exact_p.value(x_q) * JxW;
-            local_area += JxW;
+            local_p_integral += p_vals[q] * JxW;
+            local_exact_p_integral += exact_p.value(x_q) * JxW;
+            local_volume += JxW;
         }
     }
 
-    // Global reduction for means
-    double global_p_mean_num = 0.0, global_p_mean_exact = 0.0, global_area = 0.0;
-    MPI_Allreduce(&local_p_mean_num, &global_p_mean_num, 1, MPI_DOUBLE, MPI_SUM, mpi_comm);
-    MPI_Allreduce(&local_p_mean_exact, &global_p_mean_exact, 1, MPI_DOUBLE, MPI_SUM, mpi_comm);
-    MPI_Allreduce(&local_area, &global_area, 1, MPI_DOUBLE, MPI_SUM, mpi_comm);
+    // Global reduction for mean pressure
+    double global_p_integral = 0.0, global_volume = 0.0, global_exact_p_integral = 0.0;
+    MPI_Allreduce(&local_p_integral, &global_p_integral, 1, MPI_DOUBLE, MPI_SUM, mpi_comm);
+    MPI_Allreduce(&local_exact_p_integral, &global_exact_p_integral, 1, MPI_DOUBLE, MPI_SUM, mpi_comm);
+    MPI_Allreduce(&local_volume, &global_volume, 1, MPI_DOUBLE, MPI_SUM, mpi_comm);
 
-    const double p_mean_num = global_p_mean_num / global_area;
-    const double p_mean_exact = global_p_mean_exact / global_area;
+    const double p_mean = global_p_integral / global_volume;
+    const double exact_p_mean = global_exact_p_integral / global_volume;
 
-    // Second pass: compute errors
+    // Now compute errors with mean-corrected pressure
     ux_cell = ux_dof_handler.begin_active();
     uy_cell = uy_dof_handler.begin_active();
     p_cell = p_dof_handler.begin_active();
@@ -288,50 +285,50 @@ static NSMMSResult compute_errors_parallel(
         if (!ux_cell->is_locally_owned())
             continue;
 
-        ux_fe_values.reinit(ux_cell);
-        uy_fe_values.reinit(uy_cell);
-        p_fe_values.reinit(p_cell);
+        fe_values_ux.reinit(ux_cell);
+        fe_values_uy.reinit(uy_cell);
+        fe_values_p.reinit(p_cell);
 
-        ux_fe_values.get_function_values(ux_ghosted, ux_values);
-        uy_fe_values.get_function_values(uy_ghosted, uy_values);
-        p_fe_values.get_function_values(p_ghosted, p_values);
-        ux_fe_values.get_function_gradients(ux_ghosted, ux_gradients);
-        uy_fe_values.get_function_gradients(uy_ghosted, uy_gradients);
+        fe_values_ux.get_function_values(ux_solution, ux_vals);
+        fe_values_ux.get_function_gradients(ux_solution, grad_ux);
+        fe_values_uy.get_function_values(uy_solution, uy_vals);
+        fe_values_uy.get_function_gradients(uy_solution, grad_uy);
+        fe_values_p.get_function_values(p_solution, p_vals);
 
         for (unsigned int q = 0; q < n_q_points; ++q)
         {
-            const double JxW = ux_fe_values.JxW(q);
-            const dealii::Point<dim>& x_q = ux_fe_values.quadrature_point(q);
+            const double JxW = fe_values_ux.JxW(q);
+            const auto& x_q = fe_values_ux.quadrature_point(q);
 
-            // Velocity errors
-            const double ux_exact = exact_ux.value(x_q);
-            const double uy_exact = exact_uy.value(x_q);
-            const dealii::Tensor<1, dim> grad_ux_exact = exact_ux.gradient(x_q);
-            const dealii::Tensor<1, dim> grad_uy_exact = exact_uy.gradient(x_q);
+            // Exact values
+            const double exact_ux_val = exact_ux.value(x_q);
+            const double exact_uy_val = exact_uy.value(x_q);
+            const double exact_p_val = exact_p.value(x_q) - exact_p_mean;
+            const auto exact_grad_ux = exact_ux.gradient(x_q);
+            const auto exact_grad_uy = exact_uy.gradient(x_q);
 
-            const double ux_err = ux_values[q] - ux_exact;
-            const double uy_err = uy_values[q] - uy_exact;
-            const dealii::Tensor<1, dim> grad_ux_err = ux_gradients[q] - grad_ux_exact;
-            const dealii::Tensor<1, dim> grad_uy_err = uy_gradients[q] - grad_uy_exact;
+            // Errors
+            const double ux_err = ux_vals[q] - exact_ux_val;
+            const double uy_err = uy_vals[q] - exact_uy_val;
+            const double p_err = (p_vals[q] - p_mean) - exact_p_val;
 
             local_ux_L2_sq += ux_err * ux_err * JxW;
             local_uy_L2_sq += uy_err * uy_err * JxW;
+            local_p_L2_sq += p_err * p_err * JxW;
+
+            // Gradient errors
+            const auto grad_ux_err = grad_ux[q] - exact_grad_ux;
+            const auto grad_uy_err = grad_uy[q] - exact_grad_uy;
             local_ux_H1_sq += grad_ux_err * grad_ux_err * JxW;
             local_uy_H1_sq += grad_uy_err * grad_uy_err * JxW;
 
-            // Zero-mean pressure error
-            const double p_exact = exact_p.value(x_q) - p_mean_exact;
-            const double p_num = p_values[q] - p_mean_num;
-            const double p_err = p_num - p_exact;
-            local_p_L2_sq += p_err * p_err * JxW;
-
             // Divergence
-            const double div_U = ux_gradients[q][0] + uy_gradients[q][1];
+            const double div_U = grad_ux[q][0] + grad_uy[q][1];
             local_div_U_L2_sq += div_U * div_U * JxW;
         }
     }
 
-    // Global reduction for errors
+    // Global reductions
     double global_ux_L2_sq = 0.0, global_ux_H1_sq = 0.0;
     double global_uy_L2_sq = 0.0, global_uy_H1_sq = 0.0;
     double global_p_L2_sq = 0.0, global_div_U_L2_sq = 0.0;
@@ -360,6 +357,7 @@ static NSMMSConvergenceResult run_phase_internal(
     NSPhase phase,
     const std::vector<unsigned int>& refinements,
     const Parameters& params,
+    unsigned int n_time_steps,
     MPI_Comm mpi_comm)
 {
     const unsigned int this_mpi_rank = dealii::Utilities::MPI::this_mpi_process(mpi_comm);
@@ -369,27 +367,41 @@ static NSMMSConvergenceResult run_phase_internal(
     const bool include_time_derivative = (phase == NSPhase::B || phase == NSPhase::D);
     const bool include_convection = (phase == NSPhase::C || phase == NSPhase::D);
 
-    // Parameters
-    const double L_x = 1.0, L_y = 1.0;
-    const double nu = 1.0;
+    // ========================================================================
+    // ALL PARAMETERS FROM params - NO HARDCODED VALUES!
+    // ========================================================================
+    const double L_y = params.domain.y_max - params.domain.y_min;
+    const double nu = params.physics.nu_water;  // Use water viscosity for standalone NS
+
+    // Time stepping parameters (MMS-specific, acceptable to define here)
     const double t_init = 0.1;
     const double t_final = 0.2;
-    const unsigned int n_steps = include_time_derivative ? 10 : 1;
+    const unsigned int n_steps = include_time_derivative ? n_time_steps : 1;
     const double dt = (t_final - t_init) / n_steps;
     const double time_steady = 1.0;
 
     NSMMSConvergenceResult result;
     result.phase = phase;
-    result.fe_degree_velocity = 2;
-    result.fe_degree_pressure = 1;
+    result.fe_degree_velocity = params.fe.degree_velocity;
+    result.fe_degree_pressure = params.fe.degree_pressure;
     result.n_time_steps = n_steps;
     result.dt = dt;
     result.nu = nu;
     result.L_y = L_y;
 
+    // Expected rates for Taylor-Hood elements
+    result.expected_vel_L2_rate = params.fe.degree_velocity + 1;  // p+1 for Qp
+    result.expected_vel_H1_rate = params.fe.degree_velocity;      // p for Qp
+    result.expected_p_L2_rate = params.fe.degree_pressure + 1;    // p+1 for Qp
+
     pcout << "\n================================================================\n";
     pcout << "Phase " << to_string(phase) << "\n";
     pcout << "================================================================\n";
+    pcout << "  Domain: [" << params.domain.x_min << "," << params.domain.x_max
+          << "] x [" << params.domain.y_min << "," << params.domain.y_max << "]\n";
+    pcout << "  L_y = " << L_y << ", nu = " << nu << "\n";
+    pcout << "  FE degrees: velocity Q" << params.fe.degree_velocity
+          << ", pressure Q" << params.fe.degree_pressure << "\n";
     pcout << "  include_time_derivative = " << (include_time_derivative ? "true" : "false") << "\n";
     pcout << "  include_convection = " << (include_convection ? "true" : "false") << "\n";
     if (include_time_derivative)
@@ -406,27 +418,38 @@ static NSMMSConvergenceResult run_phase_internal(
         NSMMSResult res;
         res.refinement = ref;
 
-        // Create distributed mesh
+        // ====================================================================
+        // Create distributed mesh using params.domain
+        // ====================================================================
         dealii::parallel::distributed::Triangulation<dim> triangulation(mpi_comm);
-        dealii::GridGenerator::hyper_rectangle(triangulation,
-            dealii::Point<dim>(0.0, 0.0), dealii::Point<dim>(L_x, L_y));
+
+        dealii::Point<dim> p1(params.domain.x_min, params.domain.y_min);
+        dealii::Point<dim> p2(params.domain.x_max, params.domain.y_max);
+
+        std::vector<unsigned int> subdivisions(dim);
+        subdivisions[0] = params.domain.initial_cells_x;
+        subdivisions[1] = params.domain.initial_cells_y;
+
+        dealii::GridGenerator::subdivided_hyper_rectangle(triangulation, subdivisions, p1, p2);
         triangulation.refine_global(ref);
 
         const double h = dealii::GridTools::minimal_cell_diameter(triangulation) / std::sqrt(2.0);
         res.h = h;
 
-        // Finite elements: Q2-Q1 Taylor-Hood
-        dealii::FE_Q<dim> fe_Q2(2);
-        dealii::FE_Q<dim> fe_Q1(1);
+        // ====================================================================
+        // Finite elements from params.fe
+        // ====================================================================
+        dealii::FE_Q<dim> fe_vel(params.fe.degree_velocity);
+        dealii::FE_Q<dim> fe_p(params.fe.degree_pressure);
 
         // DoF handlers
         dealii::DoFHandler<dim> ux_dof_handler(triangulation);
         dealii::DoFHandler<dim> uy_dof_handler(triangulation);
         dealii::DoFHandler<dim> p_dof_handler(triangulation);
 
-        ux_dof_handler.distribute_dofs(fe_Q2);
-        uy_dof_handler.distribute_dofs(fe_Q2);
-        p_dof_handler.distribute_dofs(fe_Q1);
+        ux_dof_handler.distribute_dofs(fe_vel);
+        uy_dof_handler.distribute_dofs(fe_vel);
+        p_dof_handler.distribute_dofs(fe_p);
 
         const dealii::IndexSet ux_owned = ux_dof_handler.locally_owned_dofs();
         const dealii::IndexSet uy_owned = uy_dof_handler.locally_owned_dofs();
@@ -438,9 +461,9 @@ static NSMMSConvergenceResult run_phase_internal(
 
         // Setup constraints using PRODUCTION functions
         dealii::AffineConstraints<double> ux_constraints, uy_constraints, p_constraints;
-        setup_ns_mms_velocity_constraints_parallel<dim>(ux_dof_handler, uy_dof_handler,
+        setup_ns_velocity_constraints_parallel<dim>(ux_dof_handler, uy_dof_handler,
             ux_constraints, uy_constraints);
-        setup_ns_mms_pressure_constraints_parallel<dim>(p_dof_handler, p_constraints);
+        setup_ns_pressure_constraints_parallel<dim>(p_dof_handler, p_constraints);
 
         // Setup coupled system using PRODUCTION function
         std::vector<dealii::types::global_dof_index> ux_to_ns_map, uy_to_ns_map, p_to_ns_map;
@@ -523,26 +546,35 @@ static NSMMSConvergenceResult run_phase_internal(
 
         for (unsigned int step = 0; step < actual_steps; ++step)
         {
+            const double t_old = current_time;
             if (include_time_derivative)
                 current_time += dt;
 
-            // Assemble using PRODUCTION function
+            // ==============================================================
+            // Assemble using PRODUCTION function with enable_mms=true
+            // ==============================================================
             auto assembly_start = std::chrono::high_resolution_clock::now();
 
-            assemble_ns_mms_system_parallel<dim>(
+            assemble_ns_system_parallel<dim>(
                 ux_dof_handler, uy_dof_handler, p_dof_handler,
                 ux_old, uy_old,
-                nu, actual_dt, current_time, L_y,
+                nu, actual_dt,
                 include_time_derivative, include_convection,
                 ux_to_ns_map, uy_to_ns_map, p_to_ns_map,
                 ns_owned, ns_constraints,
                 ns_matrix, ns_rhs,
-                mpi_comm);
+                mpi_comm,
+                true,           // enable_mms = true
+                current_time,   // mms_time
+                t_old,          // mms_time_old
+                L_y);           // mms_L_y
 
             auto assembly_end = std::chrono::high_resolution_clock::now();
             total_assembly_time += std::chrono::duration<double>(assembly_end - assembly_start).count();
 
+            // ==============================================================
             // Solve using Block Schur preconditioner (PRODUCTION function)
+            // ==============================================================
             auto solve_start = std::chrono::high_resolution_clock::now();
 
             ns_solution = 0;
@@ -564,6 +596,7 @@ static NSMMSConvergenceResult run_phase_internal(
                 ns_solution,
                 ux_to_ns_map, uy_to_ns_map, p_to_ns_map,
                 ux_owned, uy_owned, p_owned,
+                ns_owned, ns_relevant,
                 ux_solution, uy_solution, p_solution,
                 mpi_comm);
 
@@ -576,10 +609,19 @@ static NSMMSConvergenceResult run_phase_internal(
         res.solve_time = total_solve_time;
         res.solver_iterations = total_iterations;
 
+        // Create ghosted copies for error computation
+        dealii::TrilinosWrappers::MPI::Vector ux_ghosted(ux_relevant, mpi_comm);
+        dealii::TrilinosWrappers::MPI::Vector uy_ghosted(uy_relevant, mpi_comm);
+        dealii::TrilinosWrappers::MPI::Vector p_ghosted(p_relevant, mpi_comm);
+
+        ux_ghosted = ux_solution;
+        uy_ghosted = uy_solution;
+        p_ghosted = p_solution;
+
         // Compute errors at final time
         NSMMSResult errors = compute_errors_parallel(
             ux_dof_handler, uy_dof_handler, p_dof_handler,
-            ux_solution, uy_solution, p_solution,
+            ux_ghosted, uy_ghosted, p_ghosted,  // Use ghosted vectors!
             current_time, L_y, mpi_comm);
 
         res.ux_L2 = errors.ux_L2;
@@ -612,27 +654,30 @@ NSMMSConvergenceResult run_ns_mms_standalone(
     const std::vector<unsigned int>& refinements,
     const Parameters& params,
     NSSolverType solver_type,
+    unsigned int n_time_steps,
     MPI_Comm mpi_communicator)
 {
     (void)solver_type;  // Currently only Schur is supported for parallel
 
     // Run Phase D (full unsteady NS) by default
-    return run_phase_internal(NSPhase::D, refinements, params, mpi_communicator);
+    return run_phase_internal(NSPhase::D, refinements, params, n_time_steps, mpi_communicator);
 }
 
 NSMMSConvergenceResult run_ns_mms_standalone(
     const std::vector<unsigned int>& refinements,
     const Parameters& params,
+    unsigned int n_time_steps,
     MPI_Comm mpi_communicator)
 {
-    return run_ns_mms_standalone(refinements, params, NSSolverType::Schur, mpi_communicator);
+    return run_ns_mms_standalone(refinements, params, NSSolverType::Schur, n_time_steps, mpi_communicator);
 }
 
 NSMMSConvergenceResult run_ns_mms_phase(
     NSPhase phase,
     const std::vector<unsigned int>& refinements,
     const Parameters& params,
+    unsigned int n_time_steps,
     MPI_Comm mpi_communicator)
 {
-    return run_phase_internal(phase, refinements, params, mpi_communicator);
+    return run_phase_internal(phase, refinements, params, n_time_steps, mpi_communicator);
 }
