@@ -1,0 +1,4 @@
+step,time,message
+2,1.500000e-03,"theta bounds violated: [-1.000000, 1.001112]"
+3,2.000000e-03,"theta bounds violated: [-1.000001, 1.001239]"
+4,2.500000e-03,"theta bounds violated: [-1.000001, 1.001343]"

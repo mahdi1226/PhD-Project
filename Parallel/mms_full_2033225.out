@@ -1,0 +1,229 @@
+==============================================
+MMS Full Test Suite
+Started: Sun Jan 11 09:58:03 CST 2026
+==============================================
+
+========== TEST: CH_STANDALONE ==========
+
+--- CH_STANDALONE with np=1 ---
+Start: Sun Jan 11 09:58:03 CST 2026
+End: Sun Jan 11 09:58:03 CST 2026
+
+
+--- CH_STANDALONE with np=2 ---
+Start: Sun Jan 11 09:58:03 CST 2026
+End: Sun Jan 11 09:58:03 CST 2026
+
+
+--- CH_STANDALONE with np=4 ---
+Start: Sun Jan 11 09:58:03 CST 2026
+End: Sun Jan 11 09:58:03 CST 2026
+
+
+--- CH_STANDALONE with np=8 ---
+Start: Sun Jan 11 09:58:03 CST 2026
+End: Sun Jan 11 09:58:03 CST 2026
+
+
+--- CH_STANDALONE with np=16 ---
+Start: Sun Jan 11 09:58:03 CST 2026
+End: Sun Jan 11 09:58:04 CST 2026
+
+
+--- CH_STANDALONE with np=24 ---
+Start: Sun Jan 11 09:58:04 CST 2026
+End: Sun Jan 11 09:58:04 CST 2026
+
+
+--- CH_STANDALONE with np=32 ---
+Start: Sun Jan 11 09:58:04 CST 2026
+End: Sun Jan 11 09:58:04 CST 2026
+
+
+========== TEST: POISSON_STANDALONE ==========
+
+--- POISSON_STANDALONE with np=1 ---
+Start: Sun Jan 11 09:58:04 CST 2026
+End: Sun Jan 11 09:58:04 CST 2026
+
+
+--- POISSON_STANDALONE with np=2 ---
+Start: Sun Jan 11 09:58:04 CST 2026
+End: Sun Jan 11 09:58:04 CST 2026
+
+
+--- POISSON_STANDALONE with np=4 ---
+Start: Sun Jan 11 09:58:04 CST 2026
+End: Sun Jan 11 09:58:04 CST 2026
+
+
+--- POISSON_STANDALONE with np=8 ---
+Start: Sun Jan 11 09:58:04 CST 2026
+End: Sun Jan 11 09:58:04 CST 2026
+
+
+--- POISSON_STANDALONE with np=16 ---
+Start: Sun Jan 11 09:58:04 CST 2026
+End: Sun Jan 11 09:58:04 CST 2026
+
+
+--- POISSON_STANDALONE with np=24 ---
+Start: Sun Jan 11 09:58:04 CST 2026
+End: Sun Jan 11 09:58:05 CST 2026
+
+
+--- POISSON_STANDALONE with np=32 ---
+Start: Sun Jan 11 09:58:05 CST 2026
+End: Sun Jan 11 09:58:05 CST 2026
+
+
+========== TEST: NS_STANDALONE ==========
+
+--- NS_STANDALONE with np=1 ---
+Start: Sun Jan 11 09:58:05 CST 2026
+End: Sun Jan 11 09:58:05 CST 2026
+
+
+--- NS_STANDALONE with np=2 ---
+Start: Sun Jan 11 09:58:05 CST 2026
+End: Sun Jan 11 09:58:05 CST 2026
+
+
+--- NS_STANDALONE with np=4 ---
+Start: Sun Jan 11 09:58:05 CST 2026
+End: Sun Jan 11 09:58:05 CST 2026
+
+
+--- NS_STANDALONE with np=8 ---
+Start: Sun Jan 11 09:58:05 CST 2026
+End: Sun Jan 11 09:58:05 CST 2026
+
+
+--- NS_STANDALONE with np=16 ---
+Start: Sun Jan 11 09:58:05 CST 2026
+End: Sun Jan 11 09:58:05 CST 2026
+
+
+--- NS_STANDALONE with np=24 ---
+Start: Sun Jan 11 09:58:05 CST 2026
+End: Sun Jan 11 09:58:06 CST 2026
+
+
+--- NS_STANDALONE with np=32 ---
+Start: Sun Jan 11 09:58:06 CST 2026
+End: Sun Jan 11 09:58:06 CST 2026
+
+
+========== TEST: MAGNETIZATION_STANDALONE ==========
+
+--- MAGNETIZATION_STANDALONE with np=1 ---
+Start: Sun Jan 11 09:58:06 CST 2026
+End: Sun Jan 11 09:58:06 CST 2026
+
+
+--- MAGNETIZATION_STANDALONE with np=2 ---
+Start: Sun Jan 11 09:58:06 CST 2026
+End: Sun Jan 11 09:58:06 CST 2026
+
+
+--- MAGNETIZATION_STANDALONE with np=4 ---
+Start: Sun Jan 11 09:58:06 CST 2026
+End: Sun Jan 11 09:58:06 CST 2026
+
+
+--- MAGNETIZATION_STANDALONE with np=8 ---
+Start: Sun Jan 11 09:58:06 CST 2026
+End: Sun Jan 11 09:58:06 CST 2026
+
+
+--- MAGNETIZATION_STANDALONE with np=16 ---
+Start: Sun Jan 11 09:58:06 CST 2026
+End: Sun Jan 11 09:58:06 CST 2026
+
+
+--- MAGNETIZATION_STANDALONE with np=24 ---
+Start: Sun Jan 11 09:58:06 CST 2026
+End: Sun Jan 11 09:58:07 CST 2026
+
+
+--- MAGNETIZATION_STANDALONE with np=32 ---
+Start: Sun Jan 11 09:58:07 CST 2026
+End: Sun Jan 11 09:58:07 CST 2026
+
+
+========== TEST: POISSON_MAGNETIZATION ==========
+
+--- POISSON_MAGNETIZATION with np=1 ---
+Start: Sun Jan 11 09:58:07 CST 2026
+End: Sun Jan 11 09:58:07 CST 2026
+
+
+--- POISSON_MAGNETIZATION with np=2 ---
+Start: Sun Jan 11 09:58:07 CST 2026
+End: Sun Jan 11 09:58:07 CST 2026
+
+
+--- POISSON_MAGNETIZATION with np=4 ---
+Start: Sun Jan 11 09:58:07 CST 2026
+End: Sun Jan 11 09:58:07 CST 2026
+
+
+--- POISSON_MAGNETIZATION with np=8 ---
+Start: Sun Jan 11 09:58:07 CST 2026
+End: Sun Jan 11 09:58:07 CST 2026
+
+
+--- POISSON_MAGNETIZATION with np=16 ---
+Start: Sun Jan 11 09:58:07 CST 2026
+End: Sun Jan 11 09:58:07 CST 2026
+
+
+--- POISSON_MAGNETIZATION with np=24 ---
+Start: Sun Jan 11 09:58:07 CST 2026
+End: Sun Jan 11 09:58:08 CST 2026
+
+
+--- POISSON_MAGNETIZATION with np=32 ---
+Start: Sun Jan 11 09:58:08 CST 2026
+End: Sun Jan 11 09:58:08 CST 2026
+
+
+========== TEST: CH_NS_CAPILLARY ==========
+
+--- CH_NS_CAPILLARY with np=1 ---
+Start: Sun Jan 11 09:58:08 CST 2026
+End: Sun Jan 11 09:58:08 CST 2026
+
+
+--- CH_NS_CAPILLARY with np=2 ---
+Start: Sun Jan 11 09:58:08 CST 2026
+End: Sun Jan 11 09:58:08 CST 2026
+
+
+--- CH_NS_CAPILLARY with np=4 ---
+Start: Sun Jan 11 09:58:08 CST 2026
+End: Sun Jan 11 09:58:08 CST 2026
+
+
+--- CH_NS_CAPILLARY with np=8 ---
+Start: Sun Jan 11 09:58:08 CST 2026
+End: Sun Jan 11 09:58:08 CST 2026
+
+
+--- CH_NS_CAPILLARY with np=16 ---
+Start: Sun Jan 11 09:58:08 CST 2026
+End: Sun Jan 11 09:58:08 CST 2026
+
+
+--- CH_NS_CAPILLARY with np=24 ---
+Start: Sun Jan 11 09:58:08 CST 2026
+End: Sun Jan 11 09:58:09 CST 2026
+
+
+--- CH_NS_CAPILLARY with np=32 ---
+Start: Sun Jan 11 09:58:09 CST 2026
+End: Sun Jan 11 09:58:09 CST 2026
+
+==============================================
+All MMS tests completed: Sun Jan 11 09:58:09 CST 2026
+==============================================

@@ -1,8 +1,7 @@
 // ============================================================================
 // mms/ch/ch_mms_test.h - CH MMS Test Interface (Parallel Version)
 //
-// This file declares the test interface for CH MMS verification.
-// Implementation uses MMSContext which calls PRODUCTION code:
+// Uses PRODUCTION code directly (no MMSContext):
 //   - setup_ch_coupled_system() from setup/ch_setup.h
 //   - assemble_ch_system() from assembly/ch_assembler.h
 //   - solve_ch_system() from solvers/ch_solver.h
@@ -38,6 +37,11 @@ struct CHMMSResult
     unsigned int n_dofs = 0;
 
     // Errors
+    double theta_L2_error = 0.0;  // Alias for mms_verification.cc compatibility
+    double theta_H1_error = 0.0;
+    double psi_L2_error = 0.0;
+
+    // Direct access names
     double theta_L2 = 0.0;
     double theta_H1 = 0.0;
     double psi_L2 = 0.0;
@@ -106,6 +110,17 @@ CHMMSConvergenceResult run_ch_mms_standalone(
     CHSolverType solver_type = CHSolverType::GMRES_AMG,
     unsigned int n_time_steps = 10,
     MPI_Comm mpi_communicator = MPI_COMM_WORLD);
+
+/**
+ * @brief Run CH MMS (wrapper for mms_verification.cc compatibility)
+ *
+ * Same as run_ch_mms_standalone but with simplified interface
+ */
+CHMMSConvergenceResult run_ch_mms_parallel(
+    const std::vector<unsigned int>& refinements,
+    const Parameters& params,
+    unsigned int n_time_steps,
+    MPI_Comm mpi_communicator);
 
 /**
  * @brief Run single refinement level

@@ -23,7 +23,6 @@
 #include "mms/ch/ch_mms.h"
 #include "mms/ns/ns_mms.h"
 
-#include "../mms_core/mms_context.h"
 #include "assembly/ch_assembler.h"
 #include "solvers/ch_solver.h"
 #include "setup/ns_setup.h"
@@ -435,7 +434,8 @@ CoupledMMSConvergenceResult run_ch_ns_mms(
         result.results.push_back(r);
         if (rank == 0)
             std::cout << "θ_L2=" << std::scientific << std::setprecision(2) << r.theta_L2
-                      << ", ux_L2=" << r.ux_L2 << "\n";
+                      << ", ux_L2=" << r.ux_L2
+                      << ", time=" << std::fixed << std::setprecision(1) << r.total_time << "s\n";
     }
 
     result.compute_rates();

@@ -1,0 +1,7 @@
+step,time,message
+2,1.500000e-03,"theta bounds violated: [-1.000000, 1.001112]"
+3,2.000000e-03,"theta bounds violated: [-1.000001, 1.001239]"
+4,2.500000e-03,"theta bounds violated: [-1.000001, 1.001343]"
+5,3.000000e-03,"theta bounds violated: [-1.053036, 1.092436]"
+5,3.000000e-03,"divU large: L2=0.884692, Linf=145.216600"
+5,3.000000e-03,"internal energy increasing: dE_internal/dt=208.137908"

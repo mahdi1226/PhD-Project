@@ -1,0 +1,3 @@
+step,time,message
+1,5.000000e-04,"divU large: L2=0.389883, Linf=12.692348"
+1,5.000000e-04,"internal energy increasing: dE_internal/dt=0.921194"

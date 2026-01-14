@@ -1,0 +1,2 @@
+step,time,E_CH,E_kin,E_mag,E_internal,E_total,dE_internal_dt,dE_total_dt
+0,5.000000e-04,9.433684e-01,nan,0.000000e+00,nan,nan,0.000000e+00,0.000000e+00

@@ -573,19 +573,35 @@ static NSMMSConvergenceResult run_phase_internal(
             total_assembly_time += std::chrono::duration<double>(assembly_end - assembly_start).count();
 
             // ==============================================================
-            // Solve using Block Schur preconditioner (PRODUCTION function)
+            // Solve using DIRECT solver (much faster for MMS verification)
+            // Falls back to Block Schur if direct fails
             // ==============================================================
             auto solve_start = std::chrono::high_resolution_clock::now();
 
             ns_solution = 0;
-            SolverInfo info = solve_ns_system_schur_parallel(
+
+            // Use direct solver for MMS (removes iterative solver error)
+            SolverInfo info = solve_ns_system_direct_parallel(
                 ns_matrix, ns_rhs, ns_solution, ns_constraints,
-                pressure_mass,
-                ux_to_ns_map, uy_to_ns_map, p_to_ns_map,
-                ns_owned, vel_owned, p_owned,
+                p_to_ns_map,    // <-- needed for pressure pinning
+                ns_owned,
                 mpi_comm,
-                nu,
                 false);  // verbose
+
+            // Fallback to Block Schur if direct solver failed
+            if (!info.converged)
+            {
+                pcout << "[NS MMS] Direct solver failed, falling back to Block Schur\n";
+                ns_solution = 0;
+                info = solve_ns_system_schur_parallel(
+                    ns_matrix, ns_rhs, ns_solution, ns_constraints,
+                    pressure_mass,
+                    ux_to_ns_map, uy_to_ns_map, p_to_ns_map,
+                    ns_owned, vel_owned, p_owned,
+                    mpi_comm,
+                    nu,
+                    false);  // verbose
+            }
 
             auto solve_end = std::chrono::high_resolution_clock::now();
             total_solve_time += std::chrono::duration<double>(solve_end - solve_start).count();

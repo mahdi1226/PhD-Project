@@ -7,6 +7,11 @@
 // solution from one subsystem appears in the equations of another.
 // The MMS source must account for these additional terms.
 //
+// Supports three coupled tests:
+//   1. CH_NS: Phase advection by velocity
+//   2. POISSON_MAGNETIZATION: φ ↔ M Picard iteration
+//   3. FULL_SYSTEM: All couplings (uses PhaseFieldProblem directly)
+//
 // Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
 // ============================================================================
 #ifndef COUPLED_MMS_SOURCES_H
@@ -39,7 +44,7 @@
 // ============================================================================
 
 // ============================================================================
-// POISSON + MAGNETIZATION COUPLING
+// POISSON + MAGNETIZATION COUPLING (for POISSON_MAGNETIZATION test)
 //
 // Poisson equation: -Δφ = -∇·M
 // Magnetization:    ∂M/∂t + M/τ_M = χ·H/τ_M, where H = -∇φ
@@ -126,7 +131,7 @@ dealii::Tensor<1, dim> compute_mag_mms_source_with_H(
 }
 
 // ============================================================================
-// CH + NS COUPLING
+// CH + NS COUPLING (for CH_NS test)
 //
 // CH equation: ∂θ/∂t + U·∇θ = γΔψ + f_θ
 //
@@ -187,14 +192,16 @@ double compute_ch_theta_mms_source_with_advection(
 }
 
 // ============================================================================
-// NS + KELVIN FORCE COUPLING
+// FULL SYSTEM COUPLING (for FULL_SYSTEM test)
 //
-// NS equation: ∂U/∂t + (U·∇)U - 2νΔU + ∇p = μ₀(M·∇)H + f_U
+// All couplings active:
+//   - CH with U·∇θ advection
+//   - Poisson with ∇·M source
+//   - Magnetization with χH relaxation AND U·∇M advection
+//   - NS with Kelvin force μ₀(M·∇)H + capillary force + variable viscosity
 //
-// Kelvin force: F_K = μ₀(M·∇)H = μ₀[Mx·∂H/∂x + My·∂H/∂y]
-//
-// Source for NS WITH Kelvin force:
-//   f_U = NS_source_standalone - Kelvin_force_exact
+// NOTE: The FULL_SYSTEM test uses PhaseFieldProblem directly with enable_mms=true.
+// The source terms below are for reference and debugging.
 // ============================================================================
 
 /**
@@ -247,23 +254,56 @@ dealii::Tensor<1, dim> compute_kelvin_force_exact(
 }
 
 /**
- * @brief NS MMS source WITH Kelvin force coupling
+ * @brief Compute exact capillary force from manufactured θ and ψ
  *
- * The Kelvin force is computed from the exact M and H fields and SUBTRACTED
- * from the standalone NS source (since it appears on the RHS of the equation).
+ * F_cap = -λ·ψ·∇θ (Paper Eq. 42b)
  */
 template <int dim>
-dealii::Tensor<1, dim> compute_ns_mms_source_with_kelvin(
+dealii::Tensor<1, dim> compute_capillary_force_exact(
+    const dealii::Point<dim>& pt,
+    double time,
+    double lambda)
+{
+    const double x = pt[0];
+    const double y = pt[1];
+    const double pi = M_PI;
+    const double t4 = time * time * time * time;
+
+    // ψ = t⁴·sin(πx)·sin(πy)
+    const double psi = t4 * std::sin(pi * x) * std::sin(pi * y);
+
+    // ∇θ where θ = t⁴·cos(πx)·cos(πy)
+    const double dtheta_dx = -t4 * pi * std::sin(pi * x) * std::cos(pi * y);
+    const double dtheta_dy = -t4 * pi * std::cos(pi * x) * std::sin(pi * y);
+
+    dealii::Tensor<1, dim> F_cap;
+    F_cap[0] = -lambda * psi * dtheta_dx;
+    F_cap[1] = -lambda * psi * dtheta_dy;
+
+    return F_cap;
+}
+
+/**
+ * @brief NS source for FULL SYSTEM with all forces
+ *
+ * Forces included:
+ *   - Kelvin: μ₀(M·∇)H
+ *   - Capillary: -λψ∇θ
+ *   - Variable viscosity: 2(∇ν)·T(U)
+ *
+ * f_U = f_NS_standalone - F_Kelvin - F_capillary + viscosity_correction
+ */
+template <int dim>
+dealii::Tensor<1, dim> compute_ns_mms_source_full_system(
     const dealii::Point<dim>& pt,
     double t_new,
     double t_old,
-    double nu,
+    double nu_f,
+    double nu_s,
     double mu_0,
+    double lambda,
     double L_y = 1.0)
 {
-    // Import the standalone NS source computation
-    // (from ns_mms.h - compute_unsteady_ns_mms_source)
-
     const double x = pt[0];
     const double y = pt[1];
     const double pi = M_PI;
@@ -309,98 +349,98 @@ dealii::Tensor<1, dim> compute_ns_mms_source_with_kelvin(
     const double d2uy_dy2 = -t_new * (2.0 * pi3 / (L_y * L_y)) * sin_2px * (cos_py * cos_py - sin_py * sin_py);
     const double lap_uy = d2uy_dx2 + d2uy_dy2;
 
-    // Pressure gradient (use pre-computed trig values)
+    // Pressure gradient
     const double dp_dx = -t_new * pi * sin_px * cos_py;
     const double dp_dy = -t_new * (pi / L_y) * cos_px * sin_py;
 
+    // Use average viscosity for base NS source
+    const double nu_avg = 0.5 * (nu_f + nu_s);
+
     // Standalone NS source
     dealii::Tensor<1, dim> f_ns;
-    f_ns[0] = dux_dt + convect_x - 2.0 * nu * lap_ux + dp_dx;
-    f_ns[1] = duy_dt + convect_y - 2.0 * nu * lap_uy + dp_dy;
+    f_ns[0] = dux_dt + convect_x - 2.0 * nu_avg * lap_ux + dp_dx;
+    f_ns[1] = duy_dt + convect_y - 2.0 * nu_avg * lap_uy + dp_dy;
 
-    // Kelvin force (computed from exact M and H)
+    // Subtract Kelvin force (it's on RHS of momentum equation)
     dealii::Tensor<1, dim> F_K = compute_kelvin_force_exact<dim>(pt, t_new, mu_0, L_y);
-
-    // f = f_ns_standalone - F_K (since F_K is on RHS)
     f_ns[0] -= F_K[0];
     f_ns[1] -= F_K[1];
 
-    return f_ns;
-}
-
-// ============================================================================
-// FULL SYSTEM COUPLING
-//
-// All couplings active:
-//   - CH with U·∇θ advection
-//   - Poisson with ∇·M source
-//   - Magnetization with χH relaxation
-//   - NS with Kelvin force + phase-dependent viscosity
-// ============================================================================
-
-/**
- * @brief NS source with BOTH Kelvin force AND variable viscosity
- *
- * ν(θ) = ν_f + (ν_s - ν_f)·(1 + θ)/2
- *
- * This adds the term: 2∇ν·T(U) to the momentum equation
- */
-template <int dim>
-dealii::Tensor<1, dim> compute_ns_mms_source_full_coupling(
-    const dealii::Point<dim>& pt,
-    double t_new,
-    double t_old,
-    double nu_f,
-    double nu_s,
-    double mu_0,
-    double L_y = 1.0)
-{
-    // Start with NS + Kelvin source
-    // Use average viscosity for now (full variable viscosity requires strain rate)
-    const double nu_avg = 0.5 * (nu_f + nu_s);
-    dealii::Tensor<1, dim> f = compute_ns_mms_source_with_kelvin<dim>(
-        pt, t_new, t_old, nu_avg, mu_0, L_y);
+    // Subtract capillary force
+    dealii::Tensor<1, dim> F_cap = compute_capillary_force_exact<dim>(pt, t_new, lambda);
+    f_ns[0] -= F_cap[0];
+    f_ns[1] -= F_cap[1];
 
     // Add variable viscosity correction: 2(∇ν)·T(U)
     // θ = t⁴·cos(πx)·cos(πy) at t_new
-    // ∇θ = [-t⁴·π·sin(πx)·cos(πy), -t⁴·π·cos(πx)·sin(πy)]
-    // ∇ν = (ν_s - ν_f)/2 · ∇θ
-
-    const double pi = M_PI;
-    const double x = pt[0];
-    const double y = pt[1];
     const double t4 = t_new * t_new * t_new * t_new;
+    const double cos_px_full = std::cos(pi * x);
+    const double cos_py_full = std::cos(pi * y);
+    const double sin_px_full = std::sin(pi * x);
+    const double sin_py_full = std::sin(pi * y);
 
-    const double cos_px = std::cos(pi * x);
-    const double cos_py = std::cos(pi * y);
-    const double sin_px = std::sin(pi * x);
-    const double sin_py = std::sin(pi * y);
+    // ∇ν = (ν_s - ν_f)/2 · ∇θ
+    const double dnu_dx = 0.5 * (nu_s - nu_f) * (-t4 * pi * sin_px_full * cos_py_full);
+    const double dnu_dy = 0.5 * (nu_s - nu_f) * (-t4 * pi * cos_px_full * sin_py_full);
 
-    // ∇ν
-    const double dnu_dx = 0.5 * (nu_s - nu_f) * (-t4 * pi * sin_px * cos_py);
-    const double dnu_dy = 0.5 * (nu_s - nu_f) * (-t4 * pi * cos_px * sin_py);
-
-    // Strain rate T(U) = ∇U + (∇U)^T components
-    // T_xx = 2·∂ux/∂x
-    // T_xy = T_yx = ∂ux/∂y + ∂uy/∂x
-    // T_yy = 2·∂uy/∂y
-    const double sin_2px = std::sin(2.0 * pi * x);
-    const double sin_2py = std::sin(2.0 * pi * y / L_y);
-    const double cos_2py = std::cos(2.0 * pi * y / L_y);
-
-    const double dux_dx = t_new * (pi * pi / L_y) * sin_2px * sin_2py;
-    const double dux_dy = t_new * (2.0 * pi * pi / (L_y * L_y)) * sin_px * sin_px * cos_2py;
-    const double duy_dx = -t_new * 2.0 * pi * pi * std::cos(2.0 * pi * x) * std::sin(pi * y / L_y) * std::sin(pi * y / L_y);
-    const double duy_dy = -t_new * (pi * pi / L_y) * sin_2px * sin_2py;
-
+    // Strain rate T(U)
     const double T_xx = 2.0 * dux_dx;
     const double T_xy = dux_dy + duy_dx;
     const double T_yy = 2.0 * duy_dy;
 
-    // Variable viscosity term: (∇ν)·T = [∇ν · T row 1, ∇ν · T row 2]
-    // = [dnu_dx·T_xx + dnu_dy·T_xy, dnu_dx·T_xy + dnu_dy·T_yy]
-    f[0] += dnu_dx * T_xx + dnu_dy * T_xy;
-    f[1] += dnu_dx * T_xy + dnu_dy * T_yy;
+    // Variable viscosity term
+    f_ns[0] += dnu_dx * T_xx + dnu_dy * T_xy;
+    f_ns[1] += dnu_dx * T_xy + dnu_dy * T_yy;
+
+    return f_ns;
+}
+
+/**
+ * @brief Magnetization source for FULL SYSTEM with advection
+ *
+ * Equation: ∂M/∂t + (U·∇)M + M/τ_M = χ·H/τ_M
+ * Source: f_M = ∂M/∂t + (U·∇)M + M/τ_M - χ·H/τ_M
+ */
+template <int dim>
+dealii::Tensor<1, dim> compute_mag_mms_source_full_system(
+    const dealii::Point<dim>& pt,
+    double t_new,
+    double t_old,
+    double tau_M,
+    double chi,
+    double L_y = 1.0)
+{
+    const double x = pt[0];
+    const double y = pt[1];
+    const double pi = M_PI;
+    const double dt = t_new - t_old;
+
+    // Start with basic source (time derivative + relaxation - χH)
+    dealii::Tensor<1, dim> f = compute_mag_mms_source_with_H<dim>(pt, t_new, t_old, tau_M, chi, L_y);
+
+    // Add advection term (U·∇)M at t_old (lagged)
+    // U at t_old
+    const double sin_px = std::sin(pi * x);
+    const double sin_py = std::sin(pi * y / L_y);
+    const double cos_px = std::cos(pi * x);
+    const double cos_py = std::cos(pi * y / L_y);
+
+    const double ux_old = t_old * (pi / L_y) * sin_px * sin_px * std::sin(2.0 * pi * y / L_y);
+    const double uy_old = -t_old * pi * std::sin(2.0 * pi * x) * sin_py * sin_py;
+
+    // M at t_old
+    const double Mx_old = t_old * sin_px * sin_py;
+    const double My_old = t_old * cos_px * cos_py;
+
+    // ∇M at t_old
+    const double dMx_dx = t_old * pi * cos_px * sin_py;
+    const double dMx_dy = t_old * (pi / L_y) * sin_px * cos_py;
+    const double dMy_dx = -t_old * pi * sin_px * cos_py;
+    const double dMy_dy = -t_old * (pi / L_y) * cos_px * sin_py;
+
+    // (U·∇)M
+    f[0] += ux_old * dMx_dx + uy_old * dMx_dy;
+    f[1] += ux_old * dMy_dx + uy_old * dMy_dy;
 
     return f;
 }

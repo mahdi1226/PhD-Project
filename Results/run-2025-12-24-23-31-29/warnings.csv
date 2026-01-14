@@ -1,0 +1,7 @@
+step,time,message
+1,1.000000e-04,"internal energy increasing: dE_internal/dt=0.000593"
+2,1.500000e-04,"internal energy increasing: dE_internal/dt=0.023684"
+3,2.000000e-04,"divU large: L2=0.176256, Linf=6.548254"
+3,2.000000e-04,"internal energy increasing: dE_internal/dt=0.192521"
+4,2.500000e-04,"divU large: L2=0.319552, Linf=8.614483"
+4,2.500000e-04,"internal energy increasing: dE_internal/dt=0.826813"

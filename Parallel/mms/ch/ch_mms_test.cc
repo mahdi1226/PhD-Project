@@ -1,36 +1,43 @@
 // ============================================================================
 // mms/ch/ch_mms_test.cc - CH MMS Test Implementation (Parallel Version)
 //
-// Uses MMSContext for setup, which calls PRODUCTION code:
+// Uses PRODUCTION code directly (no MMSContext):
 //   - setup_ch_coupled_system() from setup/ch_setup.h
 //   - assemble_ch_system() from assembly/ch_assembler.h
 //   - solve_ch_system() from solvers/ch_solver.h
 //
 // NO PARAMETER OVERRIDES - uses Parameters defaults from parameters.h
 //
-// CRITICAL FIX: All CH MMS classes now receive L_y parameter for consistency
-//               with the L_y-scaled exact solutions.
-//
 // Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
 // ============================================================================
 
 #include "mms/ch/ch_mms_test.h"
 #include "mms/ch/ch_mms.h"
-#include "../mms_core/mms_context.h"
 
 // PRODUCTION components
+#include "setup/ch_setup.h"
 #include "assembly/ch_assembler.h"
 #include "solvers/ch_solver.h"
 
 #include <deal.II/base/utilities.h>
-#include <deal.II/numerics/vector_tools.h>
+#include <deal.II/base/conditional_ostream.h>
+#include <deal.II/distributed/tria.h>
+#include <deal.II/dofs/dof_handler.h>
+#include <deal.II/dofs/dof_tools.h>
+#include <deal.II/fe/fe_q.h>
 #include <deal.II/fe/fe_values.h>
+#include <deal.II/grid/grid_generator.h>
+#include <deal.II/lac/trilinos_vector.h>
+#include <deal.II/lac/trilinos_sparse_matrix.h>
+#include <deal.II/numerics/vector_tools.h>
 
 #include <iostream>
 #include <iomanip>
 #include <fstream>
 #include <chrono>
 #include <cmath>
+
+constexpr int dim = 2;
 
 // ============================================================================
 // CHMMSConvergenceResult Implementation
@@ -159,21 +166,19 @@ bool CHMMSConvergenceResult::passes(double tol) const
 
 // ============================================================================
 // Parallel error computation helper
-// CRITICAL FIX: Added L_y parameter for consistent exact solutions
 // ============================================================================
-template <int dim>
 static CHMMSErrors compute_ch_mms_errors_parallel(
     const dealii::DoFHandler<dim>& theta_dof_handler,
     const dealii::DoFHandler<dim>& psi_dof_handler,
     const dealii::TrilinosWrappers::MPI::Vector& theta_solution,
     const dealii::TrilinosWrappers::MPI::Vector& psi_solution,
     double time,
-    double L_y,  // CRITICAL: L_y parameter for consistent exact solutions
+    double L_y,
     MPI_Comm mpi_communicator)
 {
     CHMMSErrors errors;
 
-    // Exact solutions - CRITICAL: pass L_y for consistency
+    // Exact solutions
     CHExactTheta<dim> exact_theta(L_y);
     CHExactPsi<dim> exact_psi(L_y);
     exact_theta.set_time(time);
@@ -254,10 +259,9 @@ static CHMMSErrors compute_ch_mms_errors_parallel(
 }
 
 // ============================================================================
-// run_ch_mms_single_impl - Single refinement test
+// run_ch_mms_single - Single refinement test (ALL SETUP INLINED)
 // ============================================================================
-template <int dim>
-static CHMMSResult run_ch_mms_single_impl(
+CHMMSResult run_ch_mms_single(
     unsigned int refinement,
     const Parameters& params,
     CHSolverType solver_type,
@@ -267,43 +271,179 @@ static CHMMSResult run_ch_mms_single_impl(
     CHMMSResult result;
     result.refinement = refinement;
 
+    dealii::ConditionalOStream pcout(std::cout,
+        dealii::Utilities::MPI::this_mpi_process(mpi_communicator) == 0);
+
     auto total_start = std::chrono::high_resolution_clock::now();
 
     // Time stepping parameters
     const double t_init = 0.1;
     const double t_final = 0.2;
     const double dt = (t_final - t_init) / n_time_steps;
-
-    // CRITICAL: Compute L_y from domain parameters
     const double L_y = params.domain.y_max - params.domain.y_min;
 
-    // ========================================================================
-    // Setup using MMSContext (calls PRODUCTION setup_ch_coupled_system)
-    // ========================================================================
-    MMSContext<dim> ctx(mpi_communicator);
-    ctx.setup_mesh(params, refinement);
-    ctx.setup_ch(params, t_init);
+    Parameters mms_params = params;
+    mms_params.enable_mms = true;
 
     // ========================================================================
-    // Apply MMS initial conditions
+    // Create mesh (INLINED from MMSContext::setup_mesh)
     // ========================================================================
-    ctx.apply_ch_initial_conditions(params, t_init);
+    dealii::parallel::distributed::Triangulation<dim> triangulation(
+        mpi_communicator,
+        typename dealii::Triangulation<dim>::MeshSmoothing(
+            dealii::Triangulation<dim>::smoothing_on_refinement |
+            dealii::Triangulation<dim>::smoothing_on_coarsening));
+
+    dealii::Point<dim> p1(params.domain.x_min, params.domain.y_min);
+    dealii::Point<dim> p2(params.domain.x_max, params.domain.y_max);
+
+    std::vector<unsigned int> subdivisions(dim);
+    subdivisions[0] = params.domain.initial_cells_x;
+    subdivisions[1] = params.domain.initial_cells_y;
+
+    dealii::GridGenerator::subdivided_hyper_rectangle(triangulation, subdivisions, p1, p2);
+
+    // Assign boundary IDs: 0=bottom, 1=right, 2=top, 3=left
+    for (const auto& cell : triangulation.active_cell_iterators())
+    {
+        if (!cell->is_locally_owned())
+            continue;
+
+        for (const auto& face : cell->face_iterators())
+        {
+            if (!face->at_boundary())
+                continue;
+
+            const auto center = face->center();
+            const double tol = 1e-10;
+
+            if (std::abs(center[1] - params.domain.y_min) < tol)
+                face->set_boundary_id(0);
+            else if (std::abs(center[0] - params.domain.x_max) < tol)
+                face->set_boundary_id(1);
+            else if (std::abs(center[1] - params.domain.y_max) < tol)
+                face->set_boundary_id(2);
+            else if (std::abs(center[0] - params.domain.x_min) < tol)
+                face->set_boundary_id(3);
+        }
+    }
+
+    triangulation.refine_global(refinement);
+
+    // ========================================================================
+    // Setup CH system (INLINED from MMSContext::setup_ch)
+    // ========================================================================
+    dealii::FE_Q<dim> fe_phase(params.fe.degree_phase);
+
+    dealii::DoFHandler<dim> theta_dof_handler(triangulation);
+    dealii::DoFHandler<dim> psi_dof_handler(triangulation);
+
+    theta_dof_handler.distribute_dofs(fe_phase);
+    psi_dof_handler.distribute_dofs(fe_phase);
+
+    const unsigned int n_theta = theta_dof_handler.n_dofs();
+    const unsigned int n_psi = psi_dof_handler.n_dofs();
+    const unsigned int n_total = n_theta + n_psi;
+
+    // IndexSets
+    dealii::IndexSet theta_locally_owned = theta_dof_handler.locally_owned_dofs();
+    dealii::IndexSet theta_locally_relevant = dealii::DoFTools::extract_locally_relevant_dofs(theta_dof_handler);
+    dealii::IndexSet psi_locally_owned = psi_dof_handler.locally_owned_dofs();
+    dealii::IndexSet psi_locally_relevant = dealii::DoFTools::extract_locally_relevant_dofs(psi_dof_handler);
+
+    // Combined IndexSets for coupled system
+    dealii::IndexSet ch_locally_owned, ch_locally_relevant;
+    ch_locally_owned.set_size(n_total);
+    ch_locally_relevant.set_size(n_total);
+
+    for (auto idx = theta_locally_owned.begin(); idx != theta_locally_owned.end(); ++idx)
+        ch_locally_owned.add_index(*idx);
+    for (auto idx = psi_locally_owned.begin(); idx != psi_locally_owned.end(); ++idx)
+        ch_locally_owned.add_index(n_theta + *idx);
+
+    for (auto idx = theta_locally_relevant.begin(); idx != theta_locally_relevant.end(); ++idx)
+        ch_locally_relevant.add_index(*idx);
+    for (auto idx = psi_locally_relevant.begin(); idx != psi_locally_relevant.end(); ++idx)
+        ch_locally_relevant.add_index(n_theta + *idx);
+
+    ch_locally_owned.compress();
+    ch_locally_relevant.compress();
+
+    // Index maps
+    std::vector<dealii::types::global_dof_index> theta_to_ch_map(n_theta);
+    std::vector<dealii::types::global_dof_index> psi_to_ch_map(n_psi);
+    for (unsigned int i = 0; i < n_theta; ++i)
+        theta_to_ch_map[i] = i;
+    for (unsigned int i = 0; i < n_psi; ++i)
+        psi_to_ch_map[i] = n_theta + i;
+
+    // Individual constraints with MMS BCs
+    dealii::AffineConstraints<double> theta_constraints;
+    dealii::AffineConstraints<double> psi_constraints;
+    theta_constraints.reinit(theta_locally_owned, theta_locally_relevant);
+    psi_constraints.reinit(psi_locally_owned, psi_locally_relevant);
+
+    CHMMSBoundaryTheta<dim> theta_bc(L_y);
+    CHMMSBoundaryPsi<dim> psi_bc(L_y);
+    theta_bc.set_time(t_init);
+    psi_bc.set_time(t_init);
+
+    for (unsigned int bid = 0; bid < 4; ++bid)
+    {
+        dealii::VectorTools::interpolate_boundary_values(theta_dof_handler, bid, theta_bc, theta_constraints);
+        dealii::VectorTools::interpolate_boundary_values(psi_dof_handler, bid, psi_bc, psi_constraints);
+    }
+    theta_constraints.close();
+    psi_constraints.close();
+
+    // PRODUCTION: Setup coupled system
+    dealii::AffineConstraints<double> ch_constraints;
+    dealii::TrilinosWrappers::SparseMatrix ch_matrix;
+
+    setup_ch_coupled_system<dim>(
+        theta_dof_handler, psi_dof_handler,
+        theta_constraints, psi_constraints,
+        ch_locally_owned, ch_locally_relevant,
+        theta_to_ch_map, psi_to_ch_map,
+        ch_constraints, ch_matrix,
+        mpi_communicator, pcout);
+
+    // Solution vectors
+    dealii::TrilinosWrappers::MPI::Vector theta_owned(theta_locally_owned, mpi_communicator);
+    dealii::TrilinosWrappers::MPI::Vector theta_relevant(theta_locally_owned, theta_locally_relevant, mpi_communicator);
+    dealii::TrilinosWrappers::MPI::Vector psi_owned(psi_locally_owned, mpi_communicator);
+    dealii::TrilinosWrappers::MPI::Vector psi_relevant(psi_locally_owned, psi_locally_relevant, mpi_communicator);
+    dealii::TrilinosWrappers::MPI::Vector ch_rhs(ch_locally_owned, mpi_communicator);
+
+    // ========================================================================
+    // Apply MMS initial conditions (INLINED from MMSContext)
+    // ========================================================================
+    CHMMSInitialTheta<dim> theta_ic(t_init, L_y);
+    CHMMSInitialPsi<dim> psi_ic(t_init, L_y);
+
+    dealii::VectorTools::interpolate(theta_dof_handler, theta_ic, theta_owned);
+    dealii::VectorTools::interpolate(psi_dof_handler, psi_ic, psi_owned);
+
+    theta_owned.compress(dealii::VectorOperation::insert);
+    psi_owned.compress(dealii::VectorOperation::insert);
+    theta_relevant = theta_owned;
+    psi_relevant = psi_owned;
 
     // ========================================================================
     // Create dummy velocity DoFHandlers (CH standalone has no velocity)
     // ========================================================================
     dealii::FE_Q<dim> fe_vel(params.fe.degree_velocity);
-    dealii::DoFHandler<dim> ux_dof_handler(ctx.triangulation);
-    dealii::DoFHandler<dim> uy_dof_handler(ctx.triangulation);
+    dealii::DoFHandler<dim> ux_dof_handler(triangulation);
+    dealii::DoFHandler<dim> uy_dof_handler(triangulation);
     ux_dof_handler.distribute_dofs(fe_vel);
     uy_dof_handler.distribute_dofs(fe_vel);
 
     dealii::IndexSet ux_locally_owned = ux_dof_handler.locally_owned_dofs();
-    dealii::IndexSet uy_locally_owned = uy_dof_handler.locally_owned_dofs();
-    dealii::TrilinosWrappers::MPI::Vector ux_relevant(ux_locally_owned, mpi_communicator);
-    dealii::TrilinosWrappers::MPI::Vector uy_relevant(uy_locally_owned, mpi_communicator);
-    ux_relevant = 0;
-    uy_relevant = 0;
+    dealii::IndexSet ux_locally_relevant = dealii::DoFTools::extract_locally_relevant_dofs(ux_dof_handler);
+    dealii::TrilinosWrappers::MPI::Vector ux_dummy(ux_locally_owned, ux_locally_relevant, mpi_communicator);
+    dealii::TrilinosWrappers::MPI::Vector uy_dummy(ux_locally_owned, ux_locally_relevant, mpi_communicator);
+    ux_dummy = 0;
+    uy_dummy = 0;
 
     // ========================================================================
     // Time stepping loop
@@ -311,32 +451,78 @@ static CHMMSResult run_ch_mms_single_impl(
     double total_solve_time = 0.0;
     unsigned int total_iterations = 0;
     double last_residual = 0.0;
-
     double current_time = t_init;
-
-    // Enable MMS in assembler - source terms are now added internally
-    Parameters mms_params = params;
-    mms_params.enable_mms = true;
 
     for (unsigned int step = 0; step < n_time_steps; ++step)
     {
         current_time += dt;
 
-        // Update boundary conditions for current time
-        ctx.update_ch_constraints(params, current_time);
+        // ====================================================================
+        // Update constraints for current time (INLINED from MMSContext)
+        // ====================================================================
+        theta_constraints.clear();
+        theta_constraints.reinit(theta_locally_owned, theta_locally_relevant);
+        psi_constraints.clear();
+        psi_constraints.reinit(psi_locally_owned, psi_locally_relevant);
+
+        theta_bc.set_time(current_time);
+        psi_bc.set_time(current_time);
+
+        for (unsigned int bid = 0; bid < 4; ++bid)
+        {
+            dealii::VectorTools::interpolate_boundary_values(theta_dof_handler, bid, theta_bc, theta_constraints);
+            dealii::VectorTools::interpolate_boundary_values(psi_dof_handler, bid, psi_bc, psi_constraints);
+        }
+        theta_constraints.close();
+        psi_constraints.close();
+
+        // Rebuild combined constraints
+        ch_constraints.clear();
+        ch_constraints.reinit(ch_locally_owned, ch_locally_relevant);
+
+        for (auto idx = theta_locally_relevant.begin(); idx != theta_locally_relevant.end(); ++idx)
+        {
+            const unsigned int i = *idx;
+            if (theta_constraints.is_constrained(i))
+            {
+                const auto* entries = theta_constraints.get_constraint_entries(i);
+                if (entries == nullptr || entries->empty())
+                {
+                    ch_constraints.add_line(theta_to_ch_map[i]);
+                    ch_constraints.set_inhomogeneity(theta_to_ch_map[i],
+                                                     theta_constraints.get_inhomogeneity(i));
+                }
+            }
+        }
+
+        for (auto idx = psi_locally_relevant.begin(); idx != psi_locally_relevant.end(); ++idx)
+        {
+            const unsigned int i = *idx;
+            if (psi_constraints.is_constrained(i))
+            {
+                const auto* entries = psi_constraints.get_constraint_entries(i);
+                if (entries == nullptr || entries->empty())
+                {
+                    ch_constraints.add_line(psi_to_ch_map[i]);
+                    ch_constraints.set_inhomogeneity(psi_to_ch_map[i],
+                                                     psi_constraints.get_inhomogeneity(i));
+                }
+            }
+        }
+        ch_constraints.close();
 
         // ====================================================================
-        // PRODUCTION assembly (MMS sources added internally when enable_mms=true)
+        // PRODUCTION assembly
         // ====================================================================
         assemble_ch_system<dim>(
-            ctx.theta_dof_handler, ctx.psi_dof_handler,
-            ctx.theta_relevant,
+            theta_dof_handler, psi_dof_handler,
+            theta_relevant,
             ux_dof_handler, uy_dof_handler,
-            ux_relevant, uy_relevant,
+            ux_dummy, uy_dummy,
             mms_params, dt, current_time,
-            ctx.theta_to_ch_map, ctx.psi_to_ch_map,
-            ctx.ch_constraints,
-            ctx.ch_matrix, ctx.ch_rhs);
+            theta_to_ch_map, psi_to_ch_map,
+            ch_constraints,
+            ch_matrix, ch_rhs);
 
         // ====================================================================
         // PRODUCTION solver
@@ -351,55 +537,59 @@ static CHMMSResult run_ch_mms_single_impl(
         }
 
         SolverInfo info = solve_ch_system(
-            ctx.ch_matrix, ctx.ch_rhs, ctx.ch_constraints,
-            ctx.ch_locally_owned, ctx.theta_locally_owned, ctx.psi_locally_owned,
-            ctx.theta_to_ch_map, ctx.psi_to_ch_map,
-            ctx.theta_owned, ctx.psi_owned,
+            ch_matrix, ch_rhs, ch_constraints,
+            ch_locally_owned, theta_locally_owned, psi_locally_owned,
+            theta_to_ch_map, psi_to_ch_map,
+            theta_owned, psi_owned,
             solver_params, mpi_communicator, false);
 
         total_iterations += info.iterations;
         last_residual = info.residual;
 
-        // Update ghost values for next time step
-        ctx.update_theta_ghosts();
-        ctx.update_psi_ghosts();
+        // Update ghost values
+        theta_owned.compress(dealii::VectorOperation::insert);
+        psi_owned.compress(dealii::VectorOperation::insert);
+        theta_relevant = theta_owned;
+        psi_relevant = psi_owned;
 
         auto solve_end = std::chrono::high_resolution_clock::now();
         total_solve_time += std::chrono::duration<double>(solve_end - solve_start).count();
     }
 
     // ========================================================================
-    // Compute errors (parallel reduction) - CRITICAL: pass L_y
+    // Compute errors (parallel reduction)
     // ========================================================================
-    CHMMSErrors errors = compute_ch_mms_errors_parallel<dim>(
-        ctx.theta_dof_handler, ctx.psi_dof_handler,
-        ctx.theta_relevant, ctx.psi_relevant,
+    CHMMSErrors errors = compute_ch_mms_errors_parallel(
+        theta_dof_handler, psi_dof_handler,
+        theta_relevant, psi_relevant,
         current_time, L_y, mpi_communicator);
 
     auto total_end = std::chrono::high_resolution_clock::now();
 
-    // Fill result
-    result.h = ctx.get_min_h();
-    result.n_dofs = ctx.n_ch_dofs();
+    // Compute h
+    double local_min_h = std::numeric_limits<double>::max();
+    for (const auto& cell : triangulation.active_cell_iterators())
+        if (cell->is_locally_owned())
+            local_min_h = std::min(local_min_h, cell->diameter());
+
+    double global_min_h = 0.0;
+    MPI_Allreduce(&local_min_h, &global_min_h, 1, MPI_DOUBLE, MPI_MIN, mpi_communicator);
+
+    // Fill result (set both direct and alias names for compatibility)
+    result.h = global_min_h;
+    result.n_dofs = n_total;
     result.theta_L2 = errors.theta_L2;
     result.theta_H1 = errors.theta_H1;
     result.psi_L2 = errors.psi_L2;
+    result.theta_L2_error = errors.theta_L2;  // Alias for mms_verification.cc
+    result.theta_H1_error = errors.theta_H1;
+    result.psi_L2_error = errors.psi_L2;
     result.solve_time = total_solve_time;
     result.total_time = std::chrono::duration<double>(total_end - total_start).count();
     result.solver_iterations = total_iterations;
     result.solver_residual = last_residual;
 
     return result;
-}
-
-CHMMSResult run_ch_mms_single(
-    unsigned int refinement,
-    const Parameters& params,
-    CHSolverType solver_type,
-    unsigned int n_time_steps,
-    MPI_Comm mpi_communicator)
-{
-    return run_ch_mms_single_impl<2>(refinement, params, solver_type, n_time_steps, mpi_communicator);
 }
 
 // ============================================================================
@@ -435,7 +625,7 @@ CHMMSConvergenceResult run_ch_mms_standalone(
                   << ", γ = " << params.physics.mobility << "\n";
         std::cout << "  FE degree = Q" << params.fe.degree_phase << "\n";
         std::cout << "  Solver = " << (solver_type == CHSolverType::Direct ? "Direct" : "GMRES+AMG") << "\n";
-        std::cout << "  Using PRODUCTION: ch_setup + ch_assembler + ch_solver\n";
+        std::cout << "  Using PRODUCTION: setup_ch_coupled_system + assemble_ch_system + solve_ch_system\n";
     }
 
     for (unsigned int ref : refinements)
@@ -452,6 +642,44 @@ CHMMSConvergenceResult run_ch_mms_standalone(
                       << ", θ_H1=" << single.theta_H1
                       << ", time=" << std::fixed << std::setprecision(1) << single.total_time << "s\n";
         }
+    }
+
+    result.compute_rates();
+    return result;
+}
+
+// ============================================================================
+// Wrapper for mms_verification.cc compatibility
+// ============================================================================
+CHMMSConvergenceResult run_ch_mms_parallel(
+    const std::vector<unsigned int>& refinements,
+    const Parameters& params,
+    unsigned int n_time_steps,
+    MPI_Comm mpi_communicator)
+{
+    // Convert to new result format
+    CHMMSConvergenceResult conv_result = run_ch_mms_standalone(
+        refinements, params, CHSolverType::GMRES_AMG, n_time_steps, mpi_communicator);
+
+    // Map to CHMMSConvergenceResult format expected by mms_verification.cc
+    CHMMSConvergenceResult result;
+    result.fe_degree = conv_result.fe_degree;
+    result.n_time_steps = conv_result.n_time_steps;
+    result.dt = conv_result.dt;
+    result.expected_L2_rate = conv_result.expected_L2_rate;
+    result.expected_H1_rate = conv_result.expected_H1_rate;
+
+    for (const auto& r : conv_result.results)
+    {
+        CHMMSResult mapped;
+        mapped.refinement = r.refinement;
+        mapped.h = r.h;
+        mapped.n_dofs = r.n_dofs;
+        mapped.theta_L2 = r.theta_L2;
+        mapped.theta_H1 = r.theta_H1;
+        mapped.psi_L2 = r.psi_L2;
+        mapped.total_time = r.total_time;
+        result.results.push_back(mapped);
     }
 
     result.compute_rates();

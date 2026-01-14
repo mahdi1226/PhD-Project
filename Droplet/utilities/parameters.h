@@ -1,0 +1,196 @@
+// ============================================================================
+// utilities/parameters.h - Runtime Configuration (Numerics Only)
+//
+// Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
+//
+// Physics constants are in physics/material_properties.h
+// ============================================================================
+#ifndef PARAMETERS_H
+#define PARAMETERS_H
+
+#include "solvers/solver_info.h"  // LinearSolverParams
+
+#include <deal.II/base/point.h>
+#include <deal.II/base/tensor.h>
+#include <vector>
+#include <string>
+#include <iostream>
+
+// ============================================================================
+// Runtime Parameters (Numerics / Configuration)
+// ============================================================================
+struct Parameters
+{
+    Parameters()
+    {
+        gravity_direction[0] = 0.0;
+        gravity_direction[1] = -1.0;
+    }
+
+    // ========================================================================
+    // Current simulation time (updated by time-stepping loop)
+    // ========================================================================
+    double current_time = 0.0;
+
+    // ========================================================================
+    // Domain geometry
+    // ========================================================================
+    struct Domain
+    {
+        double x_min = 0.0;
+        double x_max = 1.0;
+        double y_min = 0.0;
+        double y_max = 0.6;
+        unsigned int initial_cells_x = 10;
+        unsigned int initial_cells_y = 6;
+    } domain;
+
+    struct Dipoles
+    {
+        std::vector<dealii::Point<2>> positions;
+        std::vector<double> direction = {0.0, 1.0};
+        double intensity_max = 6000.0;
+        double ramp_time = 1.6;
+    } dipoles;
+
+    // Uniform applied field (alternative to dipoles, for Afkhami 2010 validation)
+    struct UniformField
+    {
+        bool enabled = false;
+        double magnitude = 0.0;           // H_a magnitude [A/m]
+        std::vector<double> direction = {0.0, 1.0};  // unit vector
+        double ramp_time = 0.0;           // time to reach full magnitude (0 = instant)
+    } uniform_field;
+
+    // ========================================================================
+    // Time-stepping
+    // ========================================================================
+    struct Time
+    {
+        double dt = 5e-4;
+        double t_final = 2.0;
+        unsigned int max_steps = 4000;
+        bool use_adaptive_dt = true;
+    } time;
+
+    struct IC
+    {
+        int type = 0;              // 0 = flat pool, 1 = circular droplet
+        double pool_depth = 0.2;
+        double perturbation = 0.0;
+        int perturbation_modes = 0;
+        // Droplet parameters (used when type = 1)
+        double droplet_center_x = 0.5;
+        double droplet_center_y = 0.5;
+        double droplet_radius = 0.25;
+    } ic;
+
+    // ========================================================================
+    // Mesh / AMR
+    // ========================================================================
+    struct Mesh
+    {
+        unsigned int initial_refinement = 5;
+        bool use_amr = true;
+        unsigned int amr_min_level = 4;
+        unsigned int amr_max_level = 7;
+        unsigned int amr_interval = 5;
+        double amr_upper_fraction = 0.3;
+        double amr_lower_fraction = 0.1;
+        double interface_coarsen_threshold = 0.8;
+    } mesh;
+
+    // ========================================================================
+    // Finite element degrees
+    // ========================================================================
+    struct FE
+    {
+        unsigned int degree_phase = 2;
+        unsigned int degree_velocity = 2;
+        unsigned int degree_pressure = 1;
+        unsigned int degree_potential = 2;
+        unsigned int degree_magnetization = 0;
+    } fe;
+
+    // ========================================================================
+    // Output
+    // ========================================================================
+    struct Output
+    {
+        std::string folder = "../Results";
+        unsigned int frequency = 25;
+        bool verbose = false;
+    } output;
+
+    // ========================================================================
+    // Subsystem enables (for debugging)
+    // ========================================================================
+    bool enable_magnetic = true;
+    bool enable_ns = true;
+    bool enable_gravity = true;
+    bool enable_mms = false;
+    bool use_dg_transport = false;
+    bool use_langevin = false;          // Langevin nonlinear magnetization
+
+    // MMS
+    double mms_t_init = 0.0;
+
+    // Gravity direction (unit vector)
+    dealii::Tensor<1, 2> gravity_direction;
+
+    // ========================================================================
+    // Picard iteration settings
+    // ========================================================================
+    unsigned int picard_iterations = 3;
+
+    // ========================================================================
+    // Solver parameters
+    // ========================================================================
+    struct Solvers
+    {
+        LinearSolverParams ch = {
+            LinearSolverParams::Type::GMRES,
+            LinearSolverParams::Preconditioner::ILU,
+            1e-8, 1e-12, 2000, 50, 1.2,
+            true, true, false
+        };
+
+        LinearSolverParams poisson = {
+            LinearSolverParams::Type::CG,
+            LinearSolverParams::Preconditioner::SSOR,
+            1e-8, 1e-12, 2000, 50, 1.2,
+            true, true, false
+        };
+
+        LinearSolverParams magnetization = {
+            LinearSolverParams::Type::Direct,
+            LinearSolverParams::Preconditioner::None,
+            1e-8, 1e-12, 1000, 50, 1.2,
+            false, true, false  // Direct solver for small DG system
+        };
+
+        LinearSolverParams ns = {
+            LinearSolverParams::Type::FGMRES,
+            LinearSolverParams::Preconditioner::BlockSchur,
+            1e-6, 1e-10, 1500, 100, 1.2,
+            true, true, false
+        };
+    } solvers;
+
+    // ========================================================================
+    // Preset configurations (numerics only)
+    // ========================================================================
+    void setup_rosensweig();
+    void setup_hedgehog();
+    void setup_droplet();
+    void setup_droplet_magnetic();                   // Droplet with uniform field (Afkhami 2010)
+    void setup_dome();                               // Dome configuration
+    bool use_reduced_magnetic_field = false;        // Dome set-up h = h_a only
+
+    // ========================================================================
+    // Command line parsing
+    // ========================================================================
+    static Parameters parse_command_line(int argc, char* argv[]);
+};
+
+#endif // PARAMETERS_H

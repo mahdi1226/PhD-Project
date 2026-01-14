@@ -1,0 +1,69 @@
+#!/bin/bash
+#SBATCH --job-name=mms_full
+#SBATCH --output=mms_full_%j.out
+#SBATCH --error=mms_full_%j.err
+#SBATCH --partition=general
+#SBATCH --time=2-00:00:00
+#SBATCH --mem=128G
+#SBATCH --nodes=1
+#SBATCH --ntasks=32
+#SBATCH --cpus-per-task=1
+#SBATCH --mail-type=BEGIN,END,FAIL
+#SBATCH --mail-user=mg6f4@mst.edu
+
+# Load deal.II with UMFPACK
+module load dealii/9.7.1_umfpack
+source /share/apps/common/SPACK_v110_release_a2/spack/opt/spack/linux-x86_64/dealii-9.7.1-kr766e7zm3gq6q7t67vefndkrhcyvmrw/.spack/spack-build-env.txt
+
+# Paths
+EXE=/home/mg6f4/PhD-Project/Parallel/build-release/test_mms
+WORKDIR=/share/ceph/scratch/mg6f4/mms_tests
+mkdir -p $WORKDIR
+cd $WORKDIR
+
+# Tests to run (6 ready tests)
+TESTS=(
+    "CH_STANDALONE"
+    "POISSON_STANDALONE"
+    "NS_STANDALONE"
+    "MAGNETIZATION_STANDALONE"
+    "POISSON_MAGNETIZATION"
+    "CH_NS_CAPILLARY"
+)
+
+# MPI rank configurations
+RANKS=(1 2 4 8 16 24 32)
+
+# Refinement levels
+REFS="3 4 5 6 7"
+
+# Time steps
+STEPS=10
+
+echo "=============================================="
+echo "MMS Full Test Suite"
+echo "Started: $(date)"
+echo "=============================================="
+
+for TEST in "${TESTS[@]}"; do
+    echo ""
+    echo "========== TEST: $TEST =========="
+
+    for NP in "${RANKS[@]}"; do
+        echo ""
+        echo "--- $TEST with np=$NP ---"
+        echo "Start: $(date)"
+
+        mpirun -np $NP $EXE \
+            --level $TEST \
+            --refs $REFS \
+            --steps $STEPS
+
+        echo "End: $(date)"
+        echo ""
+    done
+done
+
+echo "=============================================="
+echo "All MMS tests completed: $(date)"
+echo "=============================================="

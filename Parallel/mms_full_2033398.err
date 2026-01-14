@@ -1,0 +1,22 @@
+execute: source /share/apps/common/SPACK_v110_release_a2/spack/opt/spack/linux-x86_64/dealii-9.7.1-kr766e7zm3gq6q7t67vefndkrhcyvmrw/.spack/spack-build-env.txt
+Assertion failed in file src/binding/c/request/waitall.c at line 67: HANDLE_INDEX(array_of_requests[i]) < MPIR_REQUEST_N_BUILTIN
+/share/apps/common/SPACK_v110_release_a2/spack/opt/spack/linux-x86_64/mpich-4.3.2-cl2qwpkesfblulhes47ljdc7uyozf4vn/lib/libmpi.so.12(+0x5620a0) [0x7fef9d2500a0]
+/share/apps/common/SPACK_v110_release_a2/spack/opt/spack/linux-x86_64/mpich-4.3.2-cl2qwpkesfblulhes47ljdc7uyozf4vn/lib/libmpi.so.12(+0x467ac4) [0x7fef9d155ac4]
+/share/apps/common/SPACK_v110_release_a2/spack/opt/spack/linux-x86_64/mpich-4.3.2-cl2qwpkesfblulhes47ljdc7uyozf4vn/lib/libmpi.so.12(+0x1a9368) [0x7fef9ce97368]
+/share/apps/common/SPACK_v110_release_a2/spack/opt/spack/linux-x86_64/trilinos-14.2.0-atcxefhzcmqxzomczoc44nrvuj6r3sle/lib/libepetra.so.14(_ZN21Epetra_MpiDistributor2DoEPciRPiRiRS0_+0x165) [0x7fefa9c2f975]
+/share/apps/common/SPACK_v110_release_a2/spack/opt/spack/linux-x86_64/trilinos-14.2.0-atcxefhzcmqxzomczoc44nrvuj6r3sle/lib/libepetra.so.14(_ZN17Epetra_DistObject10DoTransferERK20Epetra_SrcDistObject18Epetra_CombineModeiiiiPiS4_S4_S4_RiRPcS5_S7_R18Epetra_DistributorbPK18Epetra_OffsetIndex+0x634) [0x7fefa9ba9564]
+/share/apps/common/SPACK_v110_release_a2/spack/opt/spack/linux-x86_64/trilinos-14.2.0-atcxefhzcmqxzomczoc44nrvuj6r3sle/lib/libepetra.so.14(_ZN17Epetra_DistObject6ImportERK20Epetra_SrcDistObjectRK13Epetra_Import18Epetra_CombineModePK18Epetra_OffsetIndex+0x4f) [0x7fefa9ba9ccf]
+/share/apps/common/SPACK_v110_release_a2/spack/opt/spack/linux-x86_64/trilinos-14.2.0-atcxefhzcmqxzomczoc44nrvuj6r3sle/lib/libamesos.so.14(_ZN10Amesos_Klu14ExportToSerialEv+0x93) [0x7fefab105303]
+/share/apps/common/SPACK_v110_release_a2/spack/opt/spack/linux-x86_64/trilinos-14.2.0-atcxefhzcmqxzomczoc44nrvuj6r3sle/lib/libamesos.so.14(_ZN10Amesos_Klu21SymbolicFactorizationEv+0x4cd) [0x7fefab10ae3d]
+/share/apps/common/SPACK_v110_release_a2/spack/opt/spack/linux-x86_64/dealii-9.7.1-kr766e7zm3gq6q7t67vefndkrhcyvmrw/lib/libdeal_II.so.9.7.1(_ZN6dealii16TrilinosWrappers12SolverDirect8do_solveEv+0x96) [0x7fefbc5bd1a6]
+/home/mg6f4/PhD-Project/Parallel/build-release/parallel_test_mms(_Z15solve_ch_systemRKN6dealii16TrilinosWrappers12SparseMatrixERKNS0_3MPI6VectorERKNS_17AffineConstraintsIdEERKNS_8IndexSetESE_SE_RKSt6vectorIjSaIjEESJ_RS5_SK_RK18LinearSolverParamsib+0x9e7) [0x4d5d27]
+/home/mg6f4/PhD-Project/Parallel/build-release/parallel_test_mms() [0x46bb16]
+/home/mg6f4/PhD-Project/Parallel/build-release/parallel_test_mms(_Z21run_ch_mms_standaloneRKSt6vectorIjSaIjEERK10Parameters12CHSolverTypeji+0xf0) [0x46cf90]
+/home/mg6f4/PhD-Project/Parallel/build-release/parallel_test_mms(_Z12run_mms_test8MMSLevelRKSt6vectorIjSaIjEERK10Parametersji+0x295) [0x456a75]
+/home/mg6f4/PhD-Project/Parallel/build-release/parallel_test_mms(main+0x63e) [0x45118e]
+/lib64/libc.so.6(__libc_start_main+0xe5) [0x7fef93b687e5]
+/home/mg6f4/PhD-Project/Parallel/build-release/parallel_test_mms(_start+0x2e) [0x45369e]
+Abort(1) on node 0: Internal error
+srun: Job step aborted: Waiting up to 32 seconds for job step to finish.
+slurmstepd: error: *** STEP 2033398.14 ON compute-14-19 CANCELLED AT 2026-01-13T19:16:44 DUE TO TIME LIMIT ***
+slurmstepd: error: *** JOB 2033398 ON compute-14-19 CANCELLED AT 2026-01-13T19:16:44 DUE TO TIME LIMIT ***

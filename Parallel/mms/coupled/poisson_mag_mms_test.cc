@@ -1,11 +1,19 @@
 // ============================================================================
 // mms/coupled/poisson_mag_mms_test.cc - Poisson + Magnetization Coupled MMS
 //
-// Tests the bidirectional coupling:
+// Tests the bidirectional coupling with PICARD ITERATION (matches production):
 //   1. Poisson: -Δφ = -∇·M (M appears as source)
 //   2. Magnetization: ∂M/∂t + M/τ_M = χH/τ_M where H = -∇φ
 //
-// Uses PRODUCTION code for both subsystems.
+// Uses PRODUCTION code paths:
+//   - setup_poisson_constraints_and_sparsity() for Poisson setup
+//   - assemble_poisson_matrix() once (matrix is constant)
+//   - assemble_poisson_rhs() each Picard iteration (depends on M)
+//   - PoissonSolver with cached AMG preconditioner
+//   - setup_magnetization_sparsity() for DG setup
+//   - MagnetizationAssembler (cached, reused)
+//   - MagnetizationSolver (MUMPS direct)
+//   - Picard iteration with under-relaxation (matches production)
 //
 // Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
 // ============================================================================
@@ -42,8 +50,7 @@
 
 #include <deal.II/lac/trilinos_vector.h>
 #include <deal.II/lac/trilinos_sparse_matrix.h>
-
-#include <deal.II/numerics/vector_tools.h>
+#include <deal.II/lac/full_matrix.h>
 
 #include <deal.II/numerics/vector_tools.h>
 
@@ -51,6 +58,7 @@
 #include <iomanip>
 #include <chrono>
 #include <cmath>
+#include <memory>
 
 constexpr int dim = 2;
 
@@ -63,7 +71,6 @@ std::string to_string(CoupledMMSLevel level)
     {
         case CoupledMMSLevel::POISSON_MAGNETIZATION: return "POISSON_MAGNETIZATION";
         case CoupledMMSLevel::CH_NS:                 return "CH_NS";
-        case CoupledMMSLevel::NS_POISSON_MAG:        return "NS_POISSON_MAG";
         case CoupledMMSLevel::FULL_SYSTEM:           return "FULL_SYSTEM";
         default:                                      return "UNKNOWN";
     }
@@ -78,7 +85,7 @@ void CoupledMMSConvergenceResult::compute_rates()
     if (n < 2) return;
 
     auto compute_rate = [](double e_fine, double e_coarse, double h_fine, double h_coarse) {
-        if (e_coarse < 1e-15 || e_fine < 1e-15) return 0.0;
+        if (e_fine < 1e-14 || e_coarse < 1e-14) return 0.0;
         return std::log(e_coarse / e_fine) / std::log(h_coarse / h_fine);
     };
 
@@ -93,17 +100,17 @@ void CoupledMMSConvergenceResult::compute_rates()
 
     for (size_t i = 1; i < n; ++i)
     {
-        const double h_fine = results[i].h;
-        const double h_coarse = results[i-1].h;
+        const auto& fine = results[i];
+        const auto& coarse = results[i-1];
 
-        theta_L2_rate[i] = compute_rate(results[i].theta_L2, results[i-1].theta_L2, h_fine, h_coarse);
-        theta_H1_rate[i] = compute_rate(results[i].theta_H1, results[i-1].theta_H1, h_fine, h_coarse);
-        ux_L2_rate[i] = compute_rate(results[i].ux_L2, results[i-1].ux_L2, h_fine, h_coarse);
-        ux_H1_rate[i] = compute_rate(results[i].ux_H1, results[i-1].ux_H1, h_fine, h_coarse);
-        p_L2_rate[i] = compute_rate(results[i].p_L2, results[i-1].p_L2, h_fine, h_coarse);
-        phi_L2_rate[i] = compute_rate(results[i].phi_L2, results[i-1].phi_L2, h_fine, h_coarse);
-        phi_H1_rate[i] = compute_rate(results[i].phi_H1, results[i-1].phi_H1, h_fine, h_coarse);
-        M_L2_rate[i] = compute_rate(results[i].M_L2, results[i-1].M_L2, h_fine, h_coarse);
+        theta_L2_rate[i] = compute_rate(fine.theta_L2, coarse.theta_L2, fine.h, coarse.h);
+        theta_H1_rate[i] = compute_rate(fine.theta_H1, coarse.theta_H1, fine.h, coarse.h);
+        ux_L2_rate[i] = compute_rate(fine.ux_L2, coarse.ux_L2, fine.h, coarse.h);
+        ux_H1_rate[i] = compute_rate(fine.ux_H1, coarse.ux_H1, fine.h, coarse.h);
+        p_L2_rate[i] = compute_rate(fine.p_L2, coarse.p_L2, fine.h, coarse.h);
+        phi_L2_rate[i] = compute_rate(fine.phi_L2, coarse.phi_L2, fine.h, coarse.h);
+        phi_H1_rate[i] = compute_rate(fine.phi_H1, coarse.phi_H1, fine.h, coarse.h);
+        M_L2_rate[i] = compute_rate(fine.M_L2, coarse.M_L2, fine.h, coarse.h);
     }
 }
 
@@ -111,107 +118,112 @@ bool CoupledMMSConvergenceResult::passes(double tol) const
 {
     if (results.size() < 2) return false;
 
-    const size_t last = results.size() - 1;
+    bool pass = true;
+    const double L2_min = expected_L2_rate - tol;
+    const double H1_min = expected_H1_rate - tol;
+    const double DG_min = 2.0 - tol;  // DG-Q1 gets rate 2
 
-    // Check relevant rates based on test level
-    switch (level)
+    for (size_t i = 1; i < results.size(); ++i)
     {
-        case CoupledMMSLevel::POISSON_MAGNETIZATION:
-            return (phi_L2_rate[last] >= expected_L2_rate - tol) &&
-                   (phi_H1_rate[last] >= expected_H1_rate - tol) &&
-                   (M_L2_rate[last] >= expected_L2_rate - tol);
+        switch (level)
+        {
+            case CoupledMMSLevel::POISSON_MAGNETIZATION:
+                if (phi_L2_rate[i] < L2_min) pass = false;
+                if (phi_H1_rate[i] < H1_min) pass = false;
+                if (M_L2_rate[i] < DG_min) pass = false;
+                break;
 
-        case CoupledMMSLevel::CH_NS:
-            return (theta_L2_rate[last] >= expected_L2_rate - tol) &&
-                   (theta_H1_rate[last] >= expected_H1_rate - tol) &&
-                   (ux_L2_rate[last] >= expected_L2_rate - tol);
+            case CoupledMMSLevel::CH_NS:
+                if (theta_L2_rate[i] < L2_min) pass = false;
+                if (theta_H1_rate[i] < H1_min) pass = false;
+                if (ux_L2_rate[i] < L2_min) pass = false;
+                if (ux_H1_rate[i] < H1_min) pass = false;
+                break;
 
-        case CoupledMMSLevel::NS_POISSON_MAG:
-            return (ux_L2_rate[last] >= expected_L2_rate - tol) &&
-                   (phi_L2_rate[last] >= expected_L2_rate - tol) &&
-                   (M_L2_rate[last] >= expected_L2_rate - tol);
-
-        case CoupledMMSLevel::FULL_SYSTEM:
-            return (theta_L2_rate[last] >= expected_L2_rate - tol) &&
-                   (ux_L2_rate[last] >= expected_L2_rate - tol) &&
-                   (phi_L2_rate[last] >= expected_L2_rate - tol) &&
-                   (M_L2_rate[last] >= expected_L2_rate - tol);
-
-        default:
-            return false;
+            case CoupledMMSLevel::FULL_SYSTEM:
+                if (theta_L2_rate[i] < L2_min) pass = false;
+                if (phi_L2_rate[i] < L2_min) pass = false;
+                if (M_L2_rate[i] < DG_min) pass = false;
+                if (ux_L2_rate[i] < L2_min) pass = false;
+                break;
+        }
     }
+
+    return pass;
 }
 
 void CoupledMMSConvergenceResult::print() const
 {
+    const int this_rank = dealii::Utilities::MPI::this_mpi_process(MPI_COMM_WORLD);
+    if (this_rank != 0) return;
+
     std::cout << "\n========================================\n";
-    std::cout << "Coupled MMS Results: " << to_string(level) << "\n";
+    std::cout << "MMS Convergence Results: " << to_string(level) << "\n";
     std::cout << "========================================\n";
 
-    // Print header based on level
-    if (level == CoupledMMSLevel::POISSON_MAGNETIZATION)
+    if (level == CoupledMMSLevel::POISSON_MAGNETIZATION ||
+        level == CoupledMMSLevel::FULL_SYSTEM)
     {
-        std::cout << std::left
-                  << std::setw(5) << "Ref"
-                  << std::setw(10) << "h"
-                  << std::setw(10) << "φ_L2" << std::setw(6) << "rate"
-                  << std::setw(10) << "φ_H1" << std::setw(6) << "rate"
-                  << std::setw(10) << "M_L2" << std::setw(6) << "rate"
-                  << std::setw(10) << "time"
-                  << "\n";
-        std::cout << std::string(73, '-') << "\n";
+        std::cout << "--- Poisson Errors ---\n";
+        std::cout << std::setw(5) << "Ref" << std::setw(10) << "h"
+                  << std::setw(10) << "φ_L2" << std::setw(7) << "rate"
+                  << std::setw(10) << "φ_H1" << std::setw(7) << "rate" << "\n";
+        std::cout << std::string(49, '-') << "\n";
 
         for (size_t i = 0; i < results.size(); ++i)
         {
-            std::cout << std::left << std::setw(5) << results[i].refinement
-                      << std::scientific << std::setprecision(2)
-                      << std::setw(10) << results[i].h
+            std::cout << std::setw(5) << results[i].refinement
+                      << std::setw(10) << std::scientific << std::setprecision(2) << results[i].h
                       << std::setw(10) << results[i].phi_L2
-                      << std::fixed << std::setprecision(2) << std::setw(6) << phi_L2_rate[i]
-                      << std::scientific << std::setw(10) << results[i].phi_H1
-                      << std::fixed << std::setw(6) << phi_H1_rate[i]
-                      << std::scientific << std::setw(10) << results[i].M_L2
-                      << std::fixed << std::setw(6) << M_L2_rate[i]
-                      << std::setw(10) << results[i].total_time
-                      << "\n";
+                      << std::setw(7) << std::fixed << std::setprecision(2) << phi_L2_rate[i]
+                      << std::setw(10) << std::scientific << results[i].phi_H1
+                      << std::setw(7) << std::fixed << phi_H1_rate[i] << "\n";
+        }
+
+        std::cout << "--- Magnetization Errors ---\n";
+        std::cout << std::setw(5) << "Ref" << std::setw(10) << "h"
+                  << std::setw(10) << "M_L2" << std::setw(7) << "rate" << "\n";
+        std::cout << std::string(32, '-') << "\n";
+
+        for (size_t i = 0; i < results.size(); ++i)
+        {
+            std::cout << std::setw(5) << results[i].refinement
+                      << std::setw(10) << std::scientific << std::setprecision(2) << results[i].h
+                      << std::setw(10) << results[i].M_L2
+                      << std::setw(7) << std::fixed << std::setprecision(2) << M_L2_rate[i] << "\n";
         }
     }
-    // Add similar blocks for other coupling levels...
 
     std::cout << "========================================\n";
-    std::cout << (passes() ? "[PASS]" : "[FAIL]") << " Convergence test\n";
+    if (passes())
+        std::cout << "[PASS] All rates within tolerance!\n";
+    else
+        std::cout << "[FAIL] Some rates below expected!\n";
 }
 
 void CoupledMMSConvergenceResult::write_csv(const std::string& filename) const
 {
+    const int this_rank = dealii::Utilities::MPI::this_mpi_process(MPI_COMM_WORLD);
+    if (this_rank != 0) return;
+
     std::ofstream file(filename);
-    if (!file.is_open())
-    {
-        std::cerr << "[Coupled MMS] Failed to open " << filename << "\n";
-        return;
-    }
+    if (!file.is_open()) return;
 
-    file << "refinement,h,phi_L2,phi_L2_rate,phi_H1,phi_H1_rate,"
-         << "M_L2,M_L2_rate,total_time\n";
-
+    file << "refinement,h,phi_L2,phi_L2_rate,phi_H1,phi_H1_rate,M_L2,M_L2_rate,time\n";
     for (size_t i = 0; i < results.size(); ++i)
     {
         file << results[i].refinement << ","
-             << std::scientific << std::setprecision(6) << results[i].h << ","
-             << results[i].phi_L2 << "," << std::fixed << phi_L2_rate[i] << ","
-             << std::scientific << results[i].phi_H1 << "," << std::fixed << phi_H1_rate[i] << ","
-             << std::scientific << results[i].M_L2 << "," << std::fixed << M_L2_rate[i] << ","
+             << results[i].h << ","
+             << results[i].phi_L2 << "," << phi_L2_rate[i] << ","
+             << results[i].phi_H1 << "," << phi_H1_rate[i] << ","
+             << results[i].M_L2 << "," << M_L2_rate[i] << ","
              << results[i].total_time << "\n";
     }
-
-    file.close();
-    std::cout << "[Coupled MMS] Results written to " << filename << "\n";
 }
 
 // ============================================================================
-// Poisson + Magnetization coupled test
+// Single refinement test - matches production solve_poisson_magnetization_picard()
 // ============================================================================
-
 static CoupledMMSResult run_poisson_mag_single(
     unsigned int refinement,
     const Parameters& params,
@@ -221,14 +233,19 @@ static CoupledMMSResult run_poisson_mag_single(
     CoupledMMSResult result;
     result.refinement = refinement;
 
-    dealii::ConditionalOStream pcout(std::cout,
-        dealii::Utilities::MPI::this_mpi_process(mpi_communicator) == 0);
+    const unsigned int this_rank = dealii::Utilities::MPI::this_mpi_process(mpi_communicator);
+    dealii::ConditionalOStream pcout(std::cout, this_rank == 0);
 
+    // Parameters
     const double L_y = params.domain.y_max - params.domain.y_min;
     const double t_start = 0.1;
     const double t_end = 0.2;
     const double dt = (t_end - t_start) / n_time_steps;
-    // tau_M and chi_0 are accessed via mms_params in the assembler
+
+    // Picard iteration parameters (match production)
+    const double picard_tol = params.picard_tolerance;
+    const double omega = 0.35;  // Under-relaxation factor
+    const unsigned int max_picard = params.picard_iterations;
 
     Parameters mms_params = params;
     mms_params.enable_mms = true;
@@ -236,7 +253,7 @@ static CoupledMMSResult run_poisson_mag_single(
     auto total_start = std::chrono::high_resolution_clock::now();
 
     // ========================================================================
-    // Create distributed mesh
+    // Create mesh
     // ========================================================================
     dealii::parallel::distributed::Triangulation<dim> triangulation(
         mpi_communicator,
@@ -244,92 +261,134 @@ static CoupledMMSResult run_poisson_mag_single(
             dealii::Triangulation<dim>::smoothing_on_refinement |
             dealii::Triangulation<dim>::smoothing_on_coarsening));
 
-    dealii::Point<dim> p1(params.domain.x_min, params.domain.y_min);
-    dealii::Point<dim> p2(params.domain.x_max, params.domain.y_max);
+    dealii::GridGenerator::subdivided_hyper_rectangle(
+        triangulation,
+        {10, static_cast<unsigned int>(std::round(10 * L_y))},
+        dealii::Point<dim>(0.0, 0.0),
+        dealii::Point<dim>(1.0, L_y));
 
-    std::vector<unsigned int> subdivisions(dim);
-    subdivisions[0] = params.domain.initial_cells_x;
-    subdivisions[1] = params.domain.initial_cells_y;
-
-    dealii::GridGenerator::subdivided_hyper_rectangle(triangulation, subdivisions, p1, p2);
     triangulation.refine_global(refinement);
+    result.h = 1.0 / (10.0 * std::pow(2.0, refinement));
 
     // ========================================================================
-    // Setup DoF handlers
+    // Finite elements
     // ========================================================================
-    // Poisson (CG)
-    dealii::FE_Q<dim> fe_phi(params.fe.degree_potential);
+    dealii::FE_Q<dim> fe_phi(2);     // Q2 for Poisson
+    dealii::FE_DGQ<dim> fe_M(1);     // DG-Q1 for magnetization
+
+    // ========================================================================
+    // DoF handlers
+    // ========================================================================
     dealii::DoFHandler<dim> phi_dof_handler(triangulation);
-    phi_dof_handler.distribute_dofs(fe_phi);
-
-    // Magnetization (DG)
-    dealii::FE_DGQ<dim> fe_M(params.fe.degree_magnetization);
     dealii::DoFHandler<dim> M_dof_handler(triangulation);
+
+    phi_dof_handler.distribute_dofs(fe_phi);
     M_dof_handler.distribute_dofs(fe_M);
 
+    // ========================================================================
     // IndexSets
+    // ========================================================================
     dealii::IndexSet phi_owned = phi_dof_handler.locally_owned_dofs();
     dealii::IndexSet phi_relevant = dealii::DoFTools::extract_locally_relevant_dofs(phi_dof_handler);
+
     dealii::IndexSet M_owned = M_dof_handler.locally_owned_dofs();
     dealii::IndexSet M_relevant = dealii::DoFTools::extract_locally_relevant_dofs(M_dof_handler);
 
     result.n_dofs = phi_dof_handler.n_dofs() + 2 * M_dof_handler.n_dofs();
 
-    // Compute min h
-    {
-        double local_min_h = std::numeric_limits<double>::max();
-        for (const auto& cell : triangulation.active_cell_iterators())
-            if (cell->is_locally_owned())
-                local_min_h = std::min(local_min_h, cell->diameter());
-        MPI_Allreduce(&local_min_h, &result.h, 1, MPI_DOUBLE, MPI_MIN, mpi_communicator);
-    }
-
     // ========================================================================
-    // Setup constraints and matrices
+    // Poisson setup (PRODUCTION: matrix assembled ONCE, AMG cached)
     // ========================================================================
-    // Poisson constraints (Neumann BC, pin one DoF)
     dealii::AffineConstraints<double> phi_constraints;
     dealii::TrilinosWrappers::SparseMatrix phi_matrix;
 
     setup_poisson_constraints_and_sparsity<dim>(
-        phi_dof_handler,
-        phi_owned, phi_relevant,
+        phi_dof_handler, phi_owned, phi_relevant,
         phi_constraints, phi_matrix,
         mpi_communicator, pcout);
 
-    // Magnetization sparsity
+    // Assemble Poisson matrix ONCE (it's constant: -Δ)
+    assemble_poisson_matrix<dim>(phi_dof_handler, phi_constraints, phi_matrix);
+
+    // Create cached Poisson solver with AMG preconditioner
+    std::unique_ptr<PoissonSolver> poisson_solver = std::make_unique<PoissonSolver>(
+        mms_params.solvers.poisson, phi_owned, mpi_communicator);
+    poisson_solver->initialize(phi_matrix);
+
+    dealii::TrilinosWrappers::MPI::Vector phi_rhs(phi_owned, mpi_communicator);
+    dealii::TrilinosWrappers::MPI::Vector phi_solution(phi_owned, mpi_communicator);
+    dealii::TrilinosWrappers::MPI::Vector phi_relevant_vec(phi_owned, phi_relevant, mpi_communicator);
+
+    // ========================================================================
+    // Magnetization setup (PRODUCTION: DG flux sparsity)
+    // ========================================================================
     dealii::TrilinosWrappers::SparseMatrix M_matrix;
+
     setup_magnetization_sparsity<dim>(
         M_dof_handler, M_owned, M_relevant,
         M_matrix, mpi_communicator, pcout);
 
-    // ========================================================================
-    // Initialize vectors
-    // ========================================================================
-    // Poisson
-    dealii::TrilinosWrappers::MPI::Vector phi_solution(phi_owned, mpi_communicator);
-    dealii::TrilinosWrappers::MPI::Vector phi_rhs(phi_owned, mpi_communicator);
-    dealii::TrilinosWrappers::MPI::Vector phi_ghosted(phi_owned, phi_relevant, mpi_communicator);
-
-    // Magnetization
-    dealii::TrilinosWrappers::MPI::Vector Mx_owned(M_owned, mpi_communicator);
-    dealii::TrilinosWrappers::MPI::Vector My_owned(M_owned, mpi_communicator);
-    dealii::TrilinosWrappers::MPI::Vector Mx_old(M_owned, M_relevant, mpi_communicator);
-    dealii::TrilinosWrappers::MPI::Vector My_old(M_owned, M_relevant, mpi_communicator);
+    dealii::TrilinosWrappers::MPI::Vector Mx_solution(M_owned, mpi_communicator);
+    dealii::TrilinosWrappers::MPI::Vector My_solution(M_owned, mpi_communicator);
+    dealii::TrilinosWrappers::MPI::Vector Mx_old(M_owned, mpi_communicator);
+    dealii::TrilinosWrappers::MPI::Vector My_old(M_owned, mpi_communicator);
+    dealii::TrilinosWrappers::MPI::Vector Mx_relevant_vec(M_owned, M_relevant, mpi_communicator);
+    dealii::TrilinosWrappers::MPI::Vector My_relevant_vec(M_owned, M_relevant, mpi_communicator);
     dealii::TrilinosWrappers::MPI::Vector rhs_Mx(M_owned, mpi_communicator);
     dealii::TrilinosWrappers::MPI::Vector rhs_My(M_owned, mpi_communicator);
 
-    // Initialize M with exact solution at t_start using L² projection
+    // Dummy velocity/theta for assembler (no advection or χ(θ) variation in this test)
+    dealii::DoFHandler<dim> dummy_U_dof(triangulation);
+    dealii::DoFHandler<dim> dummy_theta_dof(triangulation);
+    dealii::FE_Q<dim> fe_dummy(1);
+    dummy_U_dof.distribute_dofs(fe_dummy);
+    dummy_theta_dof.distribute_dofs(fe_dummy);
+
+    dealii::IndexSet dummy_owned = dummy_U_dof.locally_owned_dofs();
+    dealii::IndexSet dummy_relevant = dealii::DoFTools::extract_locally_relevant_dofs(dummy_U_dof);
+    dealii::TrilinosWrappers::MPI::Vector Ux_dummy(dummy_owned, dummy_relevant, mpi_communicator);
+    dealii::TrilinosWrappers::MPI::Vector Uy_dummy(dummy_owned, dummy_relevant, mpi_communicator);
+    dealii::TrilinosWrappers::MPI::Vector theta_dummy(dummy_owned, dummy_relevant, mpi_communicator);
+    Ux_dummy = 0;
+    Uy_dummy = 0;
+    theta_dummy = 1.0;  // Constant θ=1 gives χ = χ_0
+
+    // PRODUCTION: Cached magnetization assembler and solver
+    std::unique_ptr<MagnetizationAssembler<dim>> mag_assembler =
+        std::make_unique<MagnetizationAssembler<dim>>(
+            mms_params, M_dof_handler, dummy_U_dof,
+            phi_dof_handler, dummy_theta_dof, mpi_communicator);
+
+    LinearSolverParams mag_solver_params;
+    mag_solver_params.use_iterative = false;  // MUMPS direct
+    mag_solver_params.rel_tolerance = 1e-10;
+
+    std::unique_ptr<MagnetizationSolver<dim>> mag_solver =
+        std::make_unique<MagnetizationSolver<dim>>(mag_solver_params, M_owned, mpi_communicator);
+
+    // ========================================================================
+    // Initialize fields with exact solutions at t_start
+    // ========================================================================
+    double current_time = t_start;
+
+    // Initialize φ
     {
-        MagExactMx<dim> exact_Mx(t_start, L_y);
-        MagExactMy<dim> exact_My(t_start, L_y);
+        PoissonExactSolution<dim> exact_phi(current_time, L_y);
+        dealii::VectorTools::interpolate(phi_dof_handler, exact_phi, phi_solution);
+        phi_relevant_vec = phi_solution;
+    }
 
-        const unsigned int dofs_per_cell = fe_M.n_dofs_per_cell();
+    // Initialize M (cell-wise L² projection for DG)
+    {
+        MagExactMx<dim> exact_Mx(current_time, L_y);
+        MagExactMy<dim> exact_My(current_time, L_y);
+
         dealii::QGauss<dim> quadrature(fe_M.degree + 2);
-        const unsigned int n_q_points = quadrature.size();
-
         dealii::FEValues<dim> fe_values(fe_M, quadrature,
             dealii::update_values | dealii::update_quadrature_points | dealii::update_JxW_values);
+
+        const unsigned int dofs_per_cell = fe_M.n_dofs_per_cell();
+        const unsigned int n_q_points = quadrature.size();
 
         dealii::FullMatrix<double> local_mass(dofs_per_cell, dofs_per_cell);
         dealii::FullMatrix<double> local_mass_inv(dofs_per_cell, dofs_per_cell);
@@ -350,12 +409,14 @@ static CoupledMMSResult run_poisson_mag_single(
             {
                 const double JxW = fe_values.JxW(q);
                 const auto& x_q = fe_values.quadrature_point(q);
+                const double Mx_exact = exact_Mx.value(x_q);
+                const double My_exact = exact_My.value(x_q);
 
                 for (unsigned int i = 0; i < dofs_per_cell; ++i)
                 {
                     const double phi_i = fe_values.shape_value(i, q);
-                    local_rhs_x(i) += exact_Mx.value(x_q) * phi_i * JxW;
-                    local_rhs_y(i) += exact_My.value(x_q) * phi_i * JxW;
+                    local_rhs_x(i) += Mx_exact * phi_i * JxW;
+                    local_rhs_y(i) += My_exact * phi_i * JxW;
 
                     for (unsigned int j = 0; j < dofs_per_cell; ++j)
                         local_mass(i, j) += phi_i * fe_values.shape_value(j, q) * JxW;
@@ -369,130 +430,126 @@ static CoupledMMSResult run_poisson_mag_single(
             cell->get_dof_indices(local_dofs);
             for (unsigned int i = 0; i < dofs_per_cell; ++i)
             {
-                Mx_owned[local_dofs[i]] = local_sol_x(i);
-                My_owned[local_dofs[i]] = local_sol_y(i);
+                Mx_solution[local_dofs[i]] = local_sol_x(i);
+                My_solution[local_dofs[i]] = local_sol_y(i);
             }
         }
-        Mx_owned.compress(dealii::VectorOperation::insert);
-        My_owned.compress(dealii::VectorOperation::insert);
-    }
+        Mx_solution.compress(dealii::VectorOperation::insert);
+        My_solution.compress(dealii::VectorOperation::insert);
 
-    Mx_old = Mx_owned;
-    My_old = My_owned;
-
-    // Initialize phi with exact solution
-    {
-        PoissonExactSolution<dim> exact_phi(t_start, L_y);
-        dealii::VectorTools::interpolate(phi_dof_handler, exact_phi, phi_solution);
-        phi_ghosted = phi_solution;
+        Mx_old = Mx_solution;
+        My_old = My_solution;
+        Mx_relevant_vec = Mx_solution;
+        My_relevant_vec = My_solution;
     }
 
     // ========================================================================
-    // Solver setup
+    // Time stepping with PICARD ITERATION (matches production)
     // ========================================================================
-    LinearSolverParams poisson_solver_params;
-    poisson_solver_params.type = LinearSolverParams::Type::CG;
-    poisson_solver_params.preconditioner = LinearSolverParams::Preconditioner::AMG;
-    poisson_solver_params.rel_tolerance = 1e-10;
-    poisson_solver_params.max_iterations = 500;
-    poisson_solver_params.use_iterative = true;
-
-    LinearSolverParams mag_solver_params;
-    mag_solver_params.use_iterative = true;
-    mag_solver_params.rel_tolerance = 1e-10;
-    mag_solver_params.max_iterations = 500;
-
-    MagnetizationSolver<dim> mag_solver(mag_solver_params, M_owned, mpi_communicator);
-
-    // ========================================================================
-    // Time stepping with COUPLED solve
-    // ========================================================================
-    double current_time = t_start;
-
     for (unsigned int step = 0; step < n_time_steps; ++step)
     {
         current_time += dt;
 
-        // Update old M
-        Mx_old = Mx_owned;
-        My_old = My_owned;
+        // Store M^{n-1} for time derivative
+        Mx_old = Mx_solution;
+        My_old = My_solution;
 
-        // --------------------------------------------------------------------
-        // Step 1: Solve Poisson with M source
-        // -Δφ = -∇·M + f_φ^MMS
-        //
-        // For MMS: We pass EMPTY M vectors so has_M=false in assembler.
-        // The MMS source f_φ = -Δφ_exact handles everything.
-        // This avoids issues with weak vs strong form of ∇·M.
-        // --------------------------------------------------------------------
-        phi_matrix = 0;
-        phi_rhs = 0;
+        // Vectors for Picard convergence check
+        dealii::TrilinosWrappers::MPI::Vector Mx_prev(M_owned, mpi_communicator);
+        dealii::TrilinosWrappers::MPI::Vector My_prev(M_owned, mpi_communicator);
 
-        // Pass empty M - the MMS source term handles the full RHS
-        dealii::TrilinosWrappers::MPI::Vector Mx_empty, My_empty;
+        // ====================================================================
+        // PICARD ITERATION (matches production solve_poisson_magnetization_picard)
+        // ====================================================================
+        for (unsigned int picard_iter = 0; picard_iter < max_picard; ++picard_iter)
+        {
+            // Store current M for convergence check
+            Mx_prev = Mx_solution;
+            My_prev = My_solution;
 
-        // Assemble Poisson - with empty M, assembler uses standalone MMS source
-        assemble_poisson_system<dim>(
-            phi_dof_handler, M_dof_handler,
-            Mx_empty, My_empty,
-            mms_params, current_time,
-            phi_constraints,
-            phi_matrix, phi_rhs);
+            // ----------------------------------------------------------------
+            // Step 1: Solve Poisson with current M as source
+            // -Δφ = -∇·M + f_φ^MMS
+            // PRODUCTION: assemble_poisson_rhs (matrix already assembled)
+            // ----------------------------------------------------------------
+            Mx_relevant_vec = Mx_solution;
+            My_relevant_vec = My_solution;
 
-        // Solve Poisson
-        solve_poisson_system(
-            phi_matrix, phi_rhs, phi_solution,
-            phi_constraints, phi_owned,
-            poisson_solver_params, mpi_communicator, false);
+            phi_rhs = 0;
+            assemble_poisson_rhs<dim>(
+                phi_dof_handler, M_dof_handler,
+                Mx_relevant_vec, My_relevant_vec,
+                mms_params, current_time,
+                phi_constraints, phi_rhs);
 
-        phi_ghosted = phi_solution;
+            poisson_solver->solve(phi_rhs, phi_solution, phi_constraints, false);
+            phi_relevant_vec = phi_solution;
 
-        // --------------------------------------------------------------------
-        // Step 2: Solve Magnetization with H = -∇φ
-        // ∂M/∂t + M/τ_M = χH/τ_M + f_M^MMS
-        // --------------------------------------------------------------------
-        // Compute H = -∇φ at quadrature points (handled inside assembler)
+            // ----------------------------------------------------------------
+            // Step 2: Solve Magnetization with just-computed φ
+            // ∂M/∂t + M/τ_M = χH/τ_M + f_M^MMS, where H = -∇φ
+            // PRODUCTION: MagnetizationAssembler
+            // ----------------------------------------------------------------
+            dealii::TrilinosWrappers::MPI::Vector Mx_old_rel(M_owned, M_relevant, mpi_communicator);
+            dealii::TrilinosWrappers::MPI::Vector My_old_rel(M_owned, M_relevant, mpi_communicator);
+            Mx_old_rel = Mx_old;
+            My_old_rel = My_old;
 
-        // Need dummy velocity/theta for assembler signature
-        dealii::DoFHandler<dim> dummy_U_dof(triangulation);
-        dealii::DoFHandler<dim> dummy_theta_dof(triangulation);
-        dealii::FE_Q<dim> fe_dummy(1);
-        dummy_U_dof.distribute_dofs(fe_dummy);
-        dummy_theta_dof.distribute_dofs(fe_dummy);
+            M_matrix = 0;
+            rhs_Mx = 0;
+            rhs_My = 0;
 
-        dealii::IndexSet dummy_owned = dummy_U_dof.locally_owned_dofs();
-        dealii::TrilinosWrappers::MPI::Vector Ux_dummy(dummy_owned, mpi_communicator);
-        dealii::TrilinosWrappers::MPI::Vector Uy_dummy(dummy_owned, mpi_communicator);
-        dealii::TrilinosWrappers::MPI::Vector theta_dummy(dummy_owned, mpi_communicator);
-        Ux_dummy = 0;
-        Uy_dummy = 0;
-        theta_dummy = 1.0;
+            mag_assembler->assemble(
+                M_matrix, rhs_Mx, rhs_My,
+                Ux_dummy, Uy_dummy, phi_relevant_vec, theta_dummy,
+                Mx_old_rel, My_old_rel,
+                dt, current_time);
 
-        // Create assembler that uses phi for H computation
-        MagnetizationAssembler<dim> assembler(
-            mms_params, M_dof_handler, dummy_U_dof,
-            phi_dof_handler, dummy_theta_dof, mpi_communicator);
+            // Initialize solver (factorization) - first Picard iteration only
+            if (picard_iter == 0)
+                mag_solver->initialize(M_matrix);
 
-        M_matrix = 0;
-        rhs_Mx = 0;
-        rhs_My = 0;
+            mag_solver->solve(Mx_solution, rhs_Mx);
+            mag_solver->solve(My_solution, rhs_My);
 
-        assembler.assemble(
-            M_matrix, rhs_Mx, rhs_My,
-            Ux_dummy, Uy_dummy, phi_ghosted, theta_dummy,
-            Mx_old, My_old,
-            dt, current_time);
+            // ----------------------------------------------------------------
+            // Apply under-relaxation (matches production)
+            // M^{k+1} = ω * M_new + (1-ω) * M_prev
+            // ----------------------------------------------------------------
+            if (omega < 1.0)
+            {
+                Mx_solution.sadd(omega, 1.0 - omega, Mx_prev);
+                My_solution.sadd(omega, 1.0 - omega, My_prev);
+            }
 
-        // Solve M
-        mag_solver.initialize(M_matrix);
-        mag_solver.solve(Mx_owned, rhs_Mx);
-        mag_solver.solve(My_owned, rhs_My);
+            // ----------------------------------------------------------------
+            // Check convergence
+            // ----------------------------------------------------------------
+            dealii::TrilinosWrappers::MPI::Vector Mx_diff(M_owned, mpi_communicator);
+            dealii::TrilinosWrappers::MPI::Vector My_diff(M_owned, mpi_communicator);
+            Mx_diff = Mx_solution;
+            My_diff = My_solution;
+            Mx_diff -= Mx_prev;
+            My_diff -= My_prev;
+
+            double M_change = Mx_diff.l2_norm() + My_diff.l2_norm();
+            double M_norm = Mx_solution.l2_norm() + My_solution.l2_norm() + 1e-14;
+            double picard_residual = M_change / M_norm;
+
+            if (picard_residual < picard_tol)
+                break;
+        }
+
+        // Update ghosted vectors
+        Mx_relevant_vec = Mx_solution;
+        My_relevant_vec = My_solution;
     }
 
     // ========================================================================
     // Compute errors
     // ========================================================================
-    // Poisson error (with mean correction for Neumann)
+
+    // Poisson error (with mean correction for Neumann BC)
     {
         dealii::TrilinosWrappers::MPI::Vector phi_rel(phi_owned, phi_relevant, mpi_communicator);
         phi_rel = phi_solution;
@@ -508,8 +565,8 @@ static CoupledMMSResult run_poisson_mag_single(
     {
         dealii::TrilinosWrappers::MPI::Vector Mx_rel(M_owned, M_relevant, mpi_communicator);
         dealii::TrilinosWrappers::MPI::Vector My_rel(M_owned, M_relevant, mpi_communicator);
-        Mx_rel = Mx_owned;
-        My_rel = My_owned;
+        Mx_rel = Mx_solution;
+        My_rel = My_solution;
 
         MagMMSError mag_err = compute_mag_mms_errors_parallel<dim>(
             M_dof_handler, Mx_rel, My_rel, current_time, L_y, mpi_communicator);
@@ -528,7 +585,6 @@ static CoupledMMSResult run_poisson_mag_single(
 // ============================================================================
 // Public interface
 // ============================================================================
-
 CoupledMMSConvergenceResult run_poisson_magnetization_mms(
     const std::vector<unsigned int>& refinements,
     const Parameters& params,
@@ -537,19 +593,16 @@ CoupledMMSConvergenceResult run_poisson_magnetization_mms(
 {
     CoupledMMSConvergenceResult result;
     result.level = CoupledMMSLevel::POISSON_MAGNETIZATION;
-    result.expected_L2_rate = params.fe.degree_potential + 1;
-    result.expected_H1_rate = params.fe.degree_potential;
 
     const unsigned int this_rank = dealii::Utilities::MPI::this_mpi_process(mpi_communicator);
-    const unsigned int n_ranks = dealii::Utilities::MPI::n_mpi_processes(mpi_communicator);
 
     if (this_rank == 0)
     {
-        std::cout << "\n[POISSON_MAGNETIZATION] Running coupled MMS test...\n";
-        std::cout << "  MPI ranks: " << n_ranks << "\n";
+        std::cout << "\n[POISSON_MAG] Running coupled MMS test with Picard iteration...\n";
+        std::cout << "  MPI ranks: " << dealii::Utilities::MPI::n_mpi_processes(mpi_communicator) << "\n";
         std::cout << "  Time steps: " << n_time_steps << "\n";
-        std::cout << "  Expected rates: L2 = " << result.expected_L2_rate
-                  << ", H1 = " << result.expected_H1_rate << "\n\n";
+        std::cout << "  Picard tol: " << params.picard_tolerance << ", max iter: " << params.picard_iterations << "\n";
+        std::cout << "  Expected rates: φ L2 = 3, φ H1 = 2, M L2 = 2\n";
     }
 
     for (unsigned int ref : refinements)
