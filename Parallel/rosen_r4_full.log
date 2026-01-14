@@ -1,9 +1,0 @@
---------------------------------------------------------------------------
-prterun was unable to launch the specified application as it lacked
-permissions to execute an executable:
-
-   Executable: ./ferrofluid
-   Node: Mahdis-MacBook-Pro-2
-
-while attempting to start process rank 0.
---------------------------------------------------------------------------
