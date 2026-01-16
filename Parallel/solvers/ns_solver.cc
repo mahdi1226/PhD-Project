@@ -496,6 +496,10 @@ void extract_ns_solutions_parallel(
 
 // ============================================================================
 // Assemble pressure mass matrix
+// Works for both CG and DG pressure elements:
+// - CG: produces coupled mass matrix
+// - DG: produces block-diagonal mass matrix (each cell independent)
+// Paper requirement (A1): DG pressure enables element-local incompressibility
 // ============================================================================
 template <int dim>
 void assemble_pressure_mass_matrix_parallel(

@@ -19,7 +19,6 @@
 // ============================================================================
 
 #include "mms/coupled/coupled_mms_test.h"
-#include "mms/coupled/coupled_mms_sources.h"
 
 // Individual MMS solutions
 #include "mms/poisson/poisson_mms.h"
@@ -226,7 +225,7 @@ void CoupledMMSConvergenceResult::write_csv(const std::string& filename) const
 // ============================================================================
 static CoupledMMSResult run_poisson_mag_single(
     unsigned int refinement,
-    const Parameters& params,
+    Parameters params,      // Changed from const Parameters& to Parameters (copy)
     unsigned int n_time_steps,
     MPI_Comm mpi_communicator)
 {
@@ -236,19 +235,24 @@ static CoupledMMSResult run_poisson_mag_single(
     const unsigned int this_rank = dealii::Utilities::MPI::this_mpi_process(mpi_communicator);
     dealii::ConditionalOStream pcout(std::cout, this_rank == 0);
 
-    // Parameters
+    // Get parameters from params (no hardcoding!)
     const double L_y = params.domain.y_max - params.domain.y_min;
     const double t_start = 0.1;
     const double t_end = 0.2;
     const double dt = (t_end - t_start) / n_time_steps;
 
-    // Picard iteration parameters (match production)
+    // Picard iteration parameters from params
     const double picard_tol = params.picard_tolerance;
     const double omega = 0.35;  // Under-relaxation factor
     const unsigned int max_picard = params.picard_iterations;
 
-    Parameters mms_params = params;
-    mms_params.enable_mms = true;
+    if (this_rank == 0)
+    {
+        std::cout << "[COUPLED] ref=" << refinement
+                  << ", tau_M=" << params.physics.tau_M
+                  << ", chi_0=" << params.physics.chi_0
+                  << ", dt=" << dt << "\n";
+    }
 
     auto total_start = std::chrono::high_resolution_clock::now();
 
@@ -263,18 +267,19 @@ static CoupledMMSResult run_poisson_mag_single(
 
     dealii::GridGenerator::subdivided_hyper_rectangle(
         triangulation,
-        {10, static_cast<unsigned int>(std::round(10 * L_y))},
-        dealii::Point<dim>(0.0, 0.0),
-        dealii::Point<dim>(1.0, L_y));
+        {params.domain.initial_cells_x,
+         static_cast<unsigned int>(std::round(params.domain.initial_cells_x * L_y))},
+        dealii::Point<dim>(params.domain.x_min, params.domain.y_min),
+        dealii::Point<dim>(params.domain.x_max, params.domain.y_max));
 
     triangulation.refine_global(refinement);
-    result.h = 1.0 / (10.0 * std::pow(2.0, refinement));
+    result.h = 1.0 / (params.domain.initial_cells_x * std::pow(2.0, refinement));
 
     // ========================================================================
-    // Finite elements
+    // Finite elements (from params)
     // ========================================================================
-    dealii::FE_Q<dim> fe_phi(2);     // Q2 for Poisson
-    dealii::FE_DGQ<dim> fe_M(1);     // DG-Q1 for magnetization
+    dealii::FE_Q<dim> fe_phi(params.fe.degree_velocity);
+    dealii::FE_DGQ<dim> fe_M(params.fe.degree_magnetization);
 
     // ========================================================================
     // DoF handlers
@@ -312,7 +317,7 @@ static CoupledMMSResult run_poisson_mag_single(
 
     // Create cached Poisson solver with AMG preconditioner
     std::unique_ptr<PoissonSolver> poisson_solver = std::make_unique<PoissonSolver>(
-        mms_params.solvers.poisson, phi_owned, mpi_communicator);
+        params.solvers.poisson, phi_owned, mpi_communicator);
     poisson_solver->initialize(phi_matrix);
 
     dealii::TrilinosWrappers::MPI::Vector phi_rhs(phi_owned, mpi_communicator);
@@ -356,7 +361,7 @@ static CoupledMMSResult run_poisson_mag_single(
     // PRODUCTION: Cached magnetization assembler and solver
     std::unique_ptr<MagnetizationAssembler<dim>> mag_assembler =
         std::make_unique<MagnetizationAssembler<dim>>(
-            mms_params, M_dof_handler, dummy_U_dof,
+            params, M_dof_handler, dummy_U_dof,
             phi_dof_handler, dummy_theta_dof, mpi_communicator);
 
     LinearSolverParams mag_solver_params;
@@ -392,13 +397,16 @@ static CoupledMMSResult run_poisson_mag_single(
 
         dealii::FullMatrix<double> local_mass(dofs_per_cell, dofs_per_cell);
         dealii::FullMatrix<double> local_mass_inv(dofs_per_cell, dofs_per_cell);
-        dealii::Vector<double> local_rhs_x(dofs_per_cell), local_rhs_y(dofs_per_cell);
-        dealii::Vector<double> local_sol_x(dofs_per_cell), local_sol_y(dofs_per_cell);
+        dealii::Vector<double> local_rhs_x(dofs_per_cell);
+        dealii::Vector<double> local_rhs_y(dofs_per_cell);
+        dealii::Vector<double> local_sol_x(dofs_per_cell);
+        dealii::Vector<double> local_sol_y(dofs_per_cell);
         std::vector<dealii::types::global_dof_index> local_dofs(dofs_per_cell);
 
         for (const auto& cell : M_dof_handler.active_cell_iterators())
         {
-            if (!cell->is_locally_owned()) continue;
+            if (!cell->is_locally_owned())
+                continue;
 
             fe_values.reinit(cell);
             local_mass = 0;
@@ -409,6 +417,7 @@ static CoupledMMSResult run_poisson_mag_single(
             {
                 const double JxW = fe_values.JxW(q);
                 const auto& x_q = fe_values.quadrature_point(q);
+
                 const double Mx_exact = exact_Mx.value(x_q);
                 const double My_exact = exact_My.value(x_q);
 
@@ -419,7 +428,10 @@ static CoupledMMSResult run_poisson_mag_single(
                     local_rhs_y(i) += My_exact * phi_i * JxW;
 
                     for (unsigned int j = 0; j < dofs_per_cell; ++j)
-                        local_mass(i, j) += phi_i * fe_values.shape_value(j, q) * JxW;
+                    {
+                        const double phi_j = fe_values.shape_value(j, q);
+                        local_mass(i, j) += phi_i * phi_j * JxW;
+                    }
                 }
             }
 
@@ -436,34 +448,31 @@ static CoupledMMSResult run_poisson_mag_single(
         }
         Mx_solution.compress(dealii::VectorOperation::insert);
         My_solution.compress(dealii::VectorOperation::insert);
-
-        Mx_old = Mx_solution;
-        My_old = My_solution;
-        Mx_relevant_vec = Mx_solution;
-        My_relevant_vec = My_solution;
     }
 
+    Mx_old = Mx_solution;
+    My_old = My_solution;
+    Mx_relevant_vec = Mx_solution;
+    My_relevant_vec = My_solution;
+
     // ========================================================================
-    // Time stepping with PICARD ITERATION (matches production)
+    // Time stepping with Picard iteration
     // ========================================================================
+    dealii::TrilinosWrappers::MPI::Vector Mx_prev(M_owned, mpi_communicator);
+    dealii::TrilinosWrappers::MPI::Vector My_prev(M_owned, mpi_communicator);
+
     for (unsigned int step = 0; step < n_time_steps; ++step)
     {
         current_time += dt;
 
-        // Store M^{n-1} for time derivative
+        // Save old solution for time derivative
         Mx_old = Mx_solution;
         My_old = My_solution;
 
-        // Vectors for Picard convergence check
-        dealii::TrilinosWrappers::MPI::Vector Mx_prev(M_owned, mpi_communicator);
-        dealii::TrilinosWrappers::MPI::Vector My_prev(M_owned, mpi_communicator);
-
-        // ====================================================================
-        // PICARD ITERATION (matches production solve_poisson_magnetization_picard)
-        // ====================================================================
+        // Picard iteration for nonlinear coupling
         for (unsigned int picard_iter = 0; picard_iter < max_picard; ++picard_iter)
         {
-            // Store current M for convergence check
+            // Save for convergence check and under-relaxation
             Mx_prev = Mx_solution;
             My_prev = My_solution;
 
@@ -479,7 +488,7 @@ static CoupledMMSResult run_poisson_mag_single(
             assemble_poisson_rhs<dim>(
                 phi_dof_handler, M_dof_handler,
                 Mx_relevant_vec, My_relevant_vec,
-                mms_params, current_time,
+                params, current_time,
                 phi_constraints, phi_rhs);
 
             poisson_solver->solve(phi_rhs, phi_solution, phi_constraints, false);
@@ -587,7 +596,7 @@ static CoupledMMSResult run_poisson_mag_single(
 // ============================================================================
 CoupledMMSConvergenceResult run_poisson_magnetization_mms(
     const std::vector<unsigned int>& refinements,
-    const Parameters& params,
+    Parameters params,
     unsigned int n_time_steps,
     MPI_Comm mpi_communicator)
 {
@@ -602,20 +611,22 @@ CoupledMMSConvergenceResult run_poisson_magnetization_mms(
         std::cout << "  MPI ranks: " << dealii::Utilities::MPI::n_mpi_processes(mpi_communicator) << "\n";
         std::cout << "  Time steps: " << n_time_steps << "\n";
         std::cout << "  Picard tol: " << params.picard_tolerance << ", max iter: " << params.picard_iterations << "\n";
+        std::cout << "  tau_M: " << params.physics.tau_M << ", chi_0: " << params.physics.chi_0 << "\n";
         std::cout << "  Expected rates: φ L2 = 3, φ H1 = 2, M L2 = 2\n";
     }
 
+    // Set MMS mode
+    params.enable_mms = true;
+
     for (unsigned int ref : refinements)
     {
-        if (this_rank == 0)
-            std::cout << "  Refinement " << ref << "... " << std::flush;
-
         CoupledMMSResult r = run_poisson_mag_single(ref, params, n_time_steps, mpi_communicator);
         result.results.push_back(r);
 
         if (this_rank == 0)
         {
-            std::cout << "φ_L2=" << std::scientific << std::setprecision(2) << r.phi_L2
+            std::cout << "  ref=" << ref
+                      << " φ_L2=" << std::scientific << std::setprecision(2) << r.phi_L2
                       << ", M_L2=" << r.M_L2
                       << ", time=" << std::fixed << std::setprecision(1) << r.total_time << "s\n";
         }

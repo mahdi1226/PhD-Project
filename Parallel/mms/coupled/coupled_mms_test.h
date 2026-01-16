@@ -139,7 +139,7 @@ CoupledMMSConvergenceResult run_ch_ns_mms(
  */
 CoupledMMSConvergenceResult run_poisson_magnetization_mms(
     const std::vector<unsigned int>& refinements,
-    const Parameters& params,
+    Parameters params,
     unsigned int n_time_steps,
     MPI_Comm mpi_communicator);
 

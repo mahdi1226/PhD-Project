@@ -129,6 +129,10 @@ void print_usage(const char* program_name)
 
 int main(int argc, char* argv[])
 {
+    std::cout << "[STARTUP TEST] Creating Parameters...\n";
+    Parameters test1;
+    std::cout << "[STARTUP TEST] tau_M = " << test1.physics.tau_M << "\n";
+
     // Initialize MPI
     dealii::Utilities::MPI::MPI_InitFinalize mpi_init(argc, argv);
 

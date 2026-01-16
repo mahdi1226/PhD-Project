@@ -95,7 +95,26 @@ double compute_poisson_mms_source_standalone(
 // ============================================================================
 // MMS source for COUPLED Poisson-Magnetization test
 //
-// f_MMS = -Δφ_exact - ∇·M_exact
+// Weak form: (∇φ, ∇χ) = (-M, ∇χ) + (f_mms, χ)
+//
+// Using IBP on (-M, ∇χ) with M*·n = 0 on ∂Ω:
+//   (-M*, ∇χ) = (∇·M*, χ)
+//
+// So we need:
+//   (∇φ*, ∇χ) = (∇·M*, χ) + (f_mms, χ)
+//
+// Using IBP on LHS with ∂φ*/∂n = 0:
+//   -(Δφ*, χ) = (∇·M*, χ) + (f_mms, χ)
+//
+// Therefore:
+//   f_mms = -Δφ* - ∇·M*
+//
+// With:
+//   Mx* = t·sin(πx)·sin(πy/L_y)
+//   My* = t·cos(πx)·sin(πy/L_y)
+//
+// ∇·M* = ∂Mx*/∂x + ∂My*/∂y
+//      = t·π·cos(πx)·sin(πy/L_y) + t·(π/L_y)·cos(πx)·cos(πy/L_y)
 // ============================================================================
 template <int dim>
 double compute_poisson_mms_source_coupled(
@@ -106,13 +125,16 @@ double compute_poisson_mms_source_coupled(
     const double x = pt[0];
     const double y = pt[1];
 
-    // -Δφ_exact
+    // -Δφ_exact where φ* = t·cos(πx)·cos(πy/L_y)
     const double neg_laplacian_phi = time * M_PI * M_PI * (1.0 + 1.0/(L_y*L_y))
                                      * std::cos(M_PI * x) * std::cos(M_PI * y / L_y);
 
-    // ∇·M_exact (assuming M from magnetization_mms.h)
-    const double div_M = time * M_PI * std::cos(M_PI * x) * std::sin(M_PI * y / L_y)
-                       - time * (M_PI / L_y) * std::cos(M_PI * x) * std::sin(M_PI * y / L_y);
+    // ∇·M* with Mx* = t·sin(πx)·sin(πy/L_y), My* = t·cos(πx)·sin(πy/L_y)
+    // ∂Mx*/∂x = t·π·cos(πx)·sin(πy/L_y)
+    // ∂My*/∂y = t·(π/L_y)·cos(πx)·cos(πy/L_y)
+    const double dMx_dx = time * M_PI * std::cos(M_PI * x) * std::sin(M_PI * y / L_y);
+    const double dMy_dy = time * (M_PI / L_y) * std::cos(M_PI * x) * std::cos(M_PI * y / L_y);
+    const double div_M = dMx_dx + dMy_dy;
 
     return neg_laplacian_phi - div_M;
 }

@@ -132,6 +132,9 @@ void MagnetizationAssembler<dim>::assemble(
     // Parameters
     const double tau = dt;
     const double tau_M_val = params_.physics.tau_M;
+    // DEBUG ONLY: const double tau_M_val = params_.physics.tau_M;
+    std::cout << "[ASSEMBLER DEBUG] tau_M_val = " << tau_M_val
+              << ", dt = " << dt << std::endl;
     const double mass_coeff = (tau_M_val > 0.0) ? (1.0/tau + 1.0/tau_M_val) : 1.0/tau;
     const double relax_coeff = (tau_M_val > 0.0) ? 1.0/tau_M_val : 0.0;
     const double old_coeff = 1.0/tau;

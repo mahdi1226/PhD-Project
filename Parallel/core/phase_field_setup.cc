@@ -145,7 +145,10 @@ void PhaseFieldProblem<dim>::setup_dof_handlers()
     {
         ux_dof_handler_.distribute_dofs(fe_Q2_);
         uy_dof_handler_.distribute_dofs(fe_Q2_);
-        p_dof_handler_.distribute_dofs(fe_Q1_);
+        // PAPER REQUIREMENT (A1): DG pressure for element-local incompressibility
+        // This ensures (Q, div U^k)_T = 0 for each element T (Eq. 70)
+        // Also satisfies M_h = [P_h]^d (A2) since magnetization uses same fe_DG_
+        p_dof_handler_.distribute_dofs(fe_DG_);
 
         ux_locally_owned_ = ux_dof_handler_.locally_owned_dofs();
         ux_locally_relevant_ = dealii::DoFTools::extract_locally_relevant_dofs(ux_dof_handler_);
@@ -404,10 +407,12 @@ void PhaseFieldProblem<dim>::setup_ns_system()
             uy_dof_handler_, bid, dealii::Functions::ZeroFunction<dim>(), uy_constraints_);
     uy_constraints_.close();
 
-    // Pressure constraints (pin DoF 0)
+    // Pressure constraints for DG pressure (Paper requirement A1)
+    // DG elements have no hanging node constraints (no inter-element continuity)
+    // Pin DoF 0 to fix pressure constant (null space of pure Neumann problem)
     p_constraints_.clear();
     p_constraints_.reinit(p_locally_owned_, p_locally_relevant_);
-    dealii::DoFTools::make_hanging_node_constraints(p_dof_handler_, p_constraints_);
+    // NO hanging node constraints for DG!
     if (p_locally_owned_.is_element(0))
     {
         p_constraints_.add_line(0);

@@ -202,10 +202,14 @@ BlockSchurPreconditionerParallel::BlockSchurPreconditionerParallel(
     A_preconditioner_.initialize(velocity_block_, amg_data_A);
 
     // Initialize AMG for pressure mass (SPD)
+    // PAPER REQUIREMENT (A1): With DG pressure, the mass matrix is block-diagonal
+    // (each cell's DoFs only couple within that cell). AMG converges quickly on
+    // this structure since there's no inter-cell coupling. For even better
+    // performance, consider switching to PreconditionJacobi for DG pressure.
     dealii::TrilinosWrappers::PreconditionAMG::AdditionalData amg_data_S;
     amg_data_S.elliptic = true;
-    amg_data_S.higher_order_elements = true;
-    amg_data_S.smoother_sweeps = 2;
+    amg_data_S.higher_order_elements = false;  // DG blocks are small
+    amg_data_S.smoother_sweeps = 1;            // Fewer sweeps needed for block-diagonal
     amg_data_S.aggregation_threshold = 0.02;
     amg_data_S.output_details = false;
 

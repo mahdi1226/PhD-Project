@@ -293,7 +293,9 @@ void setup_ns_velocity_constraints_parallel(
 }
 
 // ============================================================================
-// Pressure constraints (hanging nodes + pin DoF 0 for uniqueness)
+// Pressure constraints for DG pressure (Paper requirement A1)
+// DG elements have no hanging node constraints
+// Pin DoF 0 to fix pressure constant (null space)
 // ============================================================================
 template <int dim>
 void setup_ns_pressure_constraints_parallel(
@@ -308,8 +310,8 @@ void setup_ns_pressure_constraints_parallel(
     p_constraints.clear();
     p_constraints.reinit(p_owned, p_relevant);
 
-    // Hanging node constraints
-    dealii::DoFTools::make_hanging_node_constraints(p_dof_handler, p_constraints);
+    // DG pressure: NO hanging node constraints (no inter-element continuity)
+    // This is key for paper requirement (A1) - element-local incompressibility
 
     // Pin pressure DoF 0 to fix the constant (same as serial code)
     // For pure Neumann problem (Stokes), pressure is determined up to a constant.

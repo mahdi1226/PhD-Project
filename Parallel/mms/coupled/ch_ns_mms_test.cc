@@ -19,7 +19,6 @@
 // ============================================================================
 
 #include "mms/coupled/coupled_mms_test.h"
-#include "mms/coupled/coupled_mms_sources.h"
 #include "mms/ch/ch_mms.h"
 #include "mms/ns/ns_mms.h"
 

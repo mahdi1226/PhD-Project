@@ -1,9 +1,12 @@
 // ============================================================================
 // mms/magnetization/magnetization_mms.h - Magnetization MMS (PARALLEL)
 //
-// EXACT SOLUTIONS:
+// EXACT SOLUTIONS (chosen so M*·n = 0 on all boundaries):
 //   Mx = t·sin(πx)·sin(πy/L_y)
-//   My = t·cos(πx)·cos(πy/L_y)
+//   My = t·cos(πx)·sin(πy/L_y)   ← sin(πy/L_y) ensures My=0 at y=0,L_y
+//
+// This ensures the boundary integral ∫_{∂Ω} (M*·n) χ ds = 0
+// which is required for the coupled Poisson-Magnetization MMS test.
 //
 // PARALLEL VERSION:
 //   - Adds compute_mag_mms_errors_parallel() with MPI reductions
@@ -30,6 +33,12 @@
 
 // ============================================================================
 // Exact Mx = t·sin(πx)·sin(πy/L_y)
+//
+// Boundary values:
+//   x=0: Mx = 0
+//   x=1: Mx = 0
+//   y=0: Mx = 0
+//   y=L_y: Mx = 0
 // ============================================================================
 template <int dim>
 class MagExactMx : public dealii::Function<dim>
@@ -61,7 +70,16 @@ private:
 };
 
 // ============================================================================
-// Exact My = t·cos(πx)·cos(πy/L_y)
+// Exact My = t·cos(πx)·sin(πy/L_y)
+//
+// CRITICAL: Using sin(πy/L_y) ensures My = 0 at y=0 and y=L_y
+// This makes M*·n = 0 on horizontal boundaries (required for coupled MMS)
+//
+// Boundary values:
+//   x=0: My = t·sin(πy/L_y)  (but n = (-1,0), so M·n = -Mx = 0)
+//   x=1: My = -t·sin(πy/L_y) (but n = (1,0), so M·n = Mx = 0)
+//   y=0: My = 0
+//   y=L_y: My = 0
 // ============================================================================
 template <int dim>
 class MagExactMy : public dealii::Function<dim>
@@ -73,15 +91,18 @@ public:
     virtual double value(const dealii::Point<dim>& p,
                          const unsigned int = 0) const override
     {
-        return time_ * std::cos(M_PI * p[0]) * std::cos(M_PI * p[1] / L_y_);
+        // Changed from cos(πy/L_y) to sin(πy/L_y) for zero BC at y=0,L_y
+        return time_ * std::cos(M_PI * p[0]) * std::sin(M_PI * p[1] / L_y_);
     }
 
     virtual dealii::Tensor<1, dim> gradient(const dealii::Point<dim>& p,
                                             const unsigned int = 0) const override
     {
         dealii::Tensor<1, dim> grad;
-        grad[0] = -time_ * M_PI * std::sin(M_PI * p[0]) * std::cos(M_PI * p[1] / L_y_);
-        grad[1] = -time_ * (M_PI / L_y_) * std::cos(M_PI * p[0]) * std::sin(M_PI * p[1] / L_y_);
+        // ∂My/∂x = -t·π·sin(πx)·sin(πy/L_y)
+        grad[0] = -time_ * M_PI * std::sin(M_PI * p[0]) * std::sin(M_PI * p[1] / L_y_);
+        // ∂My/∂y = t·(π/L_y)·cos(πx)·cos(πy/L_y)
+        grad[1] = time_ * (M_PI / L_y_) * std::cos(M_PI * p[0]) * std::cos(M_PI * p[1] / L_y_);
         return grad;
     }
 
@@ -103,14 +124,17 @@ dealii::Tensor<1, dim> mag_mms_exact_M(
 {
     dealii::Tensor<1, dim> M;
     M[0] = time * std::sin(M_PI * p[0]) * std::sin(M_PI * p[1] / L_y);
-    M[1] = time * std::cos(M_PI * p[0]) * std::cos(M_PI * p[1] / L_y);
+    M[1] = time * std::cos(M_PI * p[0]) * std::sin(M_PI * p[1] / L_y);  // sin, not cos
     return M;
 }
 
 // ============================================================================
-// MMS source for STANDALONE test (U=0)
+// MMS source for STANDALONE test (U=0, H=0)
 //
-// f_M = (M^n - M^{n-1})/τ + M^n/τ_M
+// Equation: ∂M/∂t + M/τ_M = f_M
+// Discretized: (M^n - M^{n-1})/τ + M^n/τ_M = f_M
+//
+// f_M = (M*^n - M*^{n-1})/τ + M*^n/τ_M
 // ============================================================================
 template <int dim>
 dealii::Tensor<1, dim> compute_mag_mms_source_standalone(
@@ -140,7 +164,12 @@ dealii::Tensor<1, dim> compute_mag_mms_source_standalone(
 }
 
 // ============================================================================
-// MMS source WITH transport (U ≠ 0)
+// MMS source WITH transport (U ≠ 0) or coupling (H ≠ 0)
+//
+// Full equation: ∂M/∂t + (U·∇)M + ½(∇·U)M + (M - χH)/τ_M = f_M
+//
+// Uses DISCRETE H (passed in), not analytical, so that terms cancel properly
+// in the weak form.
 // ============================================================================
 template <int dim>
 dealii::Tensor<1, dim> compute_mag_mms_source_with_transport(
@@ -149,7 +178,7 @@ dealii::Tensor<1, dim> compute_mag_mms_source_with_transport(
     double t_old,
     double tau_M,
     double chi_val,
-    const dealii::Tensor<1, dim>& H,
+    const dealii::Tensor<1, dim>& H,  // Discrete H from Poisson solve
     const dealii::Tensor<1, dim>& U,
     double div_U,
     double L_y = 1.0)
@@ -163,13 +192,15 @@ dealii::Tensor<1, dim> compute_mag_mms_source_with_transport(
     const double x = pt[0];
     const double y = pt[1];
 
+    // ∇Mx where Mx = t·sin(πx)·sin(πy/L_y)
     dealii::Tensor<1, dim> grad_Mx;
     grad_Mx[0] = t_new * M_PI * std::cos(M_PI * x) * std::sin(M_PI * y / L_y);
     grad_Mx[1] = t_new * (M_PI / L_y) * std::sin(M_PI * x) * std::cos(M_PI * y / L_y);
 
+    // ∇My where My = t·cos(πx)·sin(πy/L_y)
     dealii::Tensor<1, dim> grad_My;
-    grad_My[0] = -t_new * M_PI * std::sin(M_PI * x) * std::cos(M_PI * y / L_y);
-    grad_My[1] = -t_new * (M_PI / L_y) * std::cos(M_PI * x) * std::sin(M_PI * y / L_y);
+    grad_My[0] = -t_new * M_PI * std::sin(M_PI * x) * std::sin(M_PI * y / L_y);
+    grad_My[1] = t_new * (M_PI / L_y) * std::cos(M_PI * x) * std::cos(M_PI * y / L_y);
 
     // Convection: (U·∇)M
     const double convect_Mx = U[0] * grad_Mx[0] + U[1] * grad_Mx[1];
@@ -179,7 +210,7 @@ dealii::Tensor<1, dim> compute_mag_mms_source_with_transport(
     const double skew_Mx = 0.5 * div_U * M_new[0];
     const double skew_My = 0.5 * div_U * M_new[1];
 
-    // Equilibrium: χ·H
+    // Equilibrium: χ·H (using DISCRETE H so it cancels in weak form)
     const double chi_H_x = chi_val * H[0];
     const double chi_H_y = chi_val * H[1];
 

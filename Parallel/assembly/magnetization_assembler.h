@@ -110,7 +110,7 @@ public:
         double current_time) const;  // NEW: added current_time parameter
 
 private:
-    const Parameters& params_;
+    const Parameters params_;
     const dealii::DoFHandler<dim>& M_dof_handler_;
     const dealii::DoFHandler<dim>& U_dof_handler_;
     const dealii::DoFHandler<dim>& phi_dof_handler_;
