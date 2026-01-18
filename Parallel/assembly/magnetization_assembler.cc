@@ -35,22 +35,52 @@ MagnetizationAssembler<dim>::MagnetizationAssembler(
     const dealii::DoFHandler<dim>& theta_dof,
     MPI_Comm mpi_communicator)
     : params_(params)
-    , M_dof_handler_(M_dof)
-    , U_dof_handler_(U_dof)
-    , phi_dof_handler_(phi_dof)
-    , theta_dof_handler_(theta_dof)
-    , mpi_communicator_(mpi_communicator)
+      , M_dof_handler_(M_dof)
+      , U_dof_handler_(U_dof)
+      , phi_dof_handler_(phi_dof)
+      , theta_dof_handler_(theta_dof)
+      , mpi_communicator_(mpi_communicator)
 {
 }
 
+
 // ============================================================================
-// Susceptibility function: χ(θ)
+// TEST FUNCTION TO VERIFY THE FIX
 // ============================================================================
+// Add this method to MagnetizationAssembler class to test the fix:
+
 template <int dim>
-double MagnetizationAssembler<dim>::chi(double theta_val) const
+void MagnetizationAssembler<dim>::verify_susceptibility_fix() const
 {
-    return susceptibility(theta_val, params_.physics.epsilon, params_.physics.chi_0);
+    const double chi_0 = params_.physics.chi_0;
+
+    std::cout << "\n=== SUSCEPTIBILITY VERIFICATION ===\n";
+
+    const double chi_ferro     = params_.physics.chi_0;   // ferrofluid (θ = +1)
+    const double chi_water     = 0.0;                     // non-magnetic phase (θ = −1)
+    const double chi_interface = 0.5 * params_.physics.chi_0; // θ = 0 midpoint
+
+    std::cout << "χ(θ=+1, ferrofluid) = " << chi_ferro
+        << " (expect ≈ " << chi_0 << ")\n";
+    std::cout << "χ(θ=-1, water)        = " << chi_water
+        << " (expect ≈ 0)\n";
+    std::cout << "χ(θ=0, interface)   = " << chi_interface
+        << " (expect ≈ " << chi_0 / 2.0 << ")\n";
+
+    bool is_correct = (chi_ferro > 0.9 * chi_0) && (chi_water < 0.1 * chi_0);
+
+    if (is_correct)
+    {
+        std::cout << "\n✅ SUCCESS: Susceptibility function is now CORRECT!\n";
+        std::cout << "You should now see Rosensweig SPIKES instead of domes.\n";
+    }
+    else
+    {
+        std::cout << "\n❌ ERROR: Susceptibility function still appears wrong.\n";
+        std::cout << "Please check the implementation.\n";
+    }
 }
+
 
 // ============================================================================
 // Main assembly routine (PARALLEL) - OPTIMIZED
@@ -82,25 +112,26 @@ void MagnetizationAssembler<dim>::assemble(
 
     // Quadrature
     dealii::QGauss<dim> quadrature_cell(fe_M.degree + 2);
-    dealii::QGauss<dim-1> quadrature_face(fe_M.degree + 2);
+    dealii::QGauss<dim - 1> quadrature_face(fe_M.degree + 2);
 
     const unsigned int n_q_cell = quadrature_cell.size();
     const unsigned int n_q_face = quadrature_face.size();
 
     // FEValues for cells - created ONCE
     dealii::FEValues<dim> fe_values_M(fe_M, quadrature_cell,
-        dealii::update_values | dealii::update_gradients |
-        dealii::update_quadrature_points | dealii::update_JxW_values);
+                                      dealii::update_values | dealii::update_gradients |
+                                      dealii::update_quadrature_points | dealii::update_JxW_values);
     dealii::FEValues<dim> fe_values_U(fe_U, quadrature_cell,
-        dealii::update_values | dealii::update_gradients);
+                                      dealii::update_values | dealii::update_gradients);
     dealii::FEValues<dim> fe_values_phi(fe_phi, quadrature_cell,
-        dealii::update_gradients | dealii::update_quadrature_points);
+                                        dealii::update_gradients | dealii::update_quadrature_points);
     dealii::FEValues<dim> fe_values_theta(fe_theta, quadrature_cell,
-        dealii::update_values);
+                                          dealii::update_values);
 
     // FEInterfaceValues for faces - created ONCE, reinit per face
     dealii::FEInterfaceValues<dim> fe_interface_M(fe_M, quadrature_face,
-        dealii::update_values | dealii::update_JxW_values | dealii::update_normal_vectors);
+                                                  dealii::update_values | dealii::update_JxW_values |
+                                                  dealii::update_normal_vectors);
 
     // OPTIMIZATION: FEFaceValues for U created ONCE outside face loop
     dealii::FEFaceValues<dim> fe_face_U(fe_U, quadrature_face, dealii::update_values);
@@ -132,12 +163,9 @@ void MagnetizationAssembler<dim>::assemble(
     // Parameters
     const double tau = dt;
     const double tau_M_val = params_.physics.tau_M;
-    // DEBUG ONLY: const double tau_M_val = params_.physics.tau_M;
-    std::cout << "[ASSEMBLER DEBUG] tau_M_val = " << tau_M_val
-              << ", dt = " << dt << std::endl;
-    const double mass_coeff = (tau_M_val > 0.0) ? (1.0/tau + 1.0/tau_M_val) : 1.0/tau;
-    const double relax_coeff = (tau_M_val > 0.0) ? 1.0/tau_M_val : 0.0;
-    const double old_coeff = 1.0/tau;
+    const double mass_coeff = (tau_M_val > 0.0) ? (1.0 / tau + 1.0 / tau_M_val) : 1.0 / tau;
+    const double relax_coeff = (tau_M_val > 0.0) ? 1.0 / tau_M_val : 0.0;
+    const double old_coeff = 1.0 / tau;
 
     // Initialize
     system_matrix = 0;
@@ -153,7 +181,7 @@ void MagnetizationAssembler<dim>::assemble(
     auto cell_theta = theta_dof_handler_.begin_active();
 
     for (; cell_M != M_dof_handler_.end();
-         ++cell_M, ++cell_U, ++cell_phi, ++cell_theta)
+           ++cell_M, ++cell_U, ++cell_phi, ++cell_theta)
     {
         // PARALLEL: Only process locally owned cells
         if (!cell_M->is_locally_owned())
@@ -199,7 +227,42 @@ void MagnetizationAssembler<dim>::assemble(
             H[1] = h_a[1] + grad_phi[q][1];
 
             // Susceptibility
-            const double chi_theta = chi(theta_vals[q]);
+            const double chi_theta =
+                susceptibility(theta_vals[q],
+                               params_.physics.epsilon,
+                               params_.physics.chi_0);
+
+            /* BETA TERM, FOR FUTURE
+            // ================================================================
+            // EXTENSION: β M×(M×H) Landau-Lifshitz damping term
+            // Reference: Zhang-He-Yang SIAM J. Sci. Comput. 2021, Eq. 2.8
+            //
+            // In 2D: M×H = Mx*Hy - My*Hx (z-component, scalar)
+            //        M×(M×H) = (M×H)×M = (Mx*Hy - My*Hx) * (-My, Mx)
+            //
+            // This term goes on the RHS (explicit treatment using M_old)
+            // ================================================================
+            dealii::Tensor<1, dim> beta_term;
+            beta_term[0] = 0.0;
+            beta_term[1] = 0.0;
+
+            if (params_.physics.enable_beta_term && params_.physics.beta != 0.0)
+            {
+                const double Mx = Mx_old_vals[q];
+                const double My = My_old_vals[q];
+                const double Hx = H[0];
+                const double Hy = H[1];
+
+                // M×H (z-component)
+                const double MxH_z = Mx * Hy - My * Hx;
+
+                // M×(M×H) = (MxH_z) × M = MxH_z * (-My, Mx)
+                // Note: This is the term that gets ADDED to RHS
+                // The equation is: ∂M/∂t + ... = ... + β M×(M×H)
+                // So we add +β * M×(M×H) to the RHS
+                beta_term[0] = params_.physics.beta * (-MxH_z * My);
+                beta_term[1] = params_.physics.beta * ( MxH_z * Mx);
+            } */
 
             // MMS source term
             dealii::Tensor<1, dim> F_mms;
@@ -229,13 +292,13 @@ void MagnetizationAssembler<dim>::assemble(
                     local_matrix(i, j) += (mass + transport) * JxW;
                 }
 
-                // RHS: (1/τ_M)(χ H, φ_i) + (1/τ)(M^old, φ_i) + (F_mms, φ_i)
+                // RHS: (1/τ_M)(χ H, φ_i) + (1/τ)(M^old, φ_i) + β M×(M×H) + (F_mms, φ_i)
                 local_rhs_x(i) += (relax_coeff * chi_theta * H[0]
-                                 + old_coeff * Mx_old_vals[q]
-                                 + F_mms[0]) * phi_i * JxW;
+                    + old_coeff * Mx_old_vals[q]
+                    + F_mms[0]) * phi_i * JxW;
                 local_rhs_y(i) += (relax_coeff * chi_theta * H[1]
-                                 + old_coeff * My_old_vals[q]
-                                 + F_mms[1]) * phi_i * JxW;
+                    + old_coeff * My_old_vals[q]
+                    + F_mms[1]) * phi_i * JxW;
             }
         }
 
@@ -274,7 +337,7 @@ void MagnetizationAssembler<dim>::assemble(
                 const unsigned int neighbor_subface = neighbor_info.second;
 
                 fe_interface_M.reinit(cell_M, f, dealii::numbers::invalid_unsigned_int,
-                                       neighbor_M, neighbor_face, neighbor_subface);
+                                      neighbor_M, neighbor_face, neighbor_subface);
 
                 // OPTIMIZATION: Reinit pre-allocated FEFaceValues
                 fe_face_U.reinit(cell_U, f);
@@ -340,7 +403,7 @@ void MagnetizationAssembler<dim>::assemble(
                 const unsigned int nf = cell_M->neighbor_of_neighbor(f);
 
                 fe_interface_M.reinit(cell_M, f, dealii::numbers::invalid_unsigned_int,
-                                       neighbor_M, nf, dealii::numbers::invalid_unsigned_int);
+                                      neighbor_M, nf, dealii::numbers::invalid_unsigned_int);
 
                 // OPTIMIZATION: Reinit pre-allocated FEFaceValues
                 fe_face_U.reinit(cell_U, f);
@@ -421,7 +484,7 @@ void MagnetizationAssembler<dim>::assemble_rhs_only(
     const dealii::TrilinosWrappers::MPI::Vector& Mx_old,
     const dealii::TrilinosWrappers::MPI::Vector& My_old,
     double dt,
-    double current_time) const  // NEW: added current_time parameter
+    double current_time) const // NEW: added current_time parameter
 {
     const dealii::FiniteElement<dim>& fe_M = M_dof_handler_.get_fe();
     const dealii::FiniteElement<dim>& fe_phi = phi_dof_handler_.get_fe();
@@ -434,11 +497,12 @@ void MagnetizationAssembler<dim>::assemble_rhs_only(
 
     // FIX: Added update_quadrature_points for h_a computation
     dealii::FEValues<dim> fe_values_M(fe_M, quadrature_cell,
-        dealii::update_values | dealii::update_quadrature_points | dealii::update_JxW_values);
+                                      dealii::update_values | dealii::update_quadrature_points |
+                                      dealii::update_JxW_values);
     dealii::FEValues<dim> fe_values_phi(fe_phi, quadrature_cell,
-        dealii::update_gradients);
+                                        dealii::update_gradients);
     dealii::FEValues<dim> fe_values_theta(fe_theta, quadrature_cell,
-        dealii::update_values);
+                                          dealii::update_values);
 
     std::vector<dealii::Tensor<1, dim>> grad_phi(n_q_cell);
     std::vector<double> theta_vals(n_q_cell);
@@ -450,8 +514,8 @@ void MagnetizationAssembler<dim>::assemble_rhs_only(
 
     const double tau = dt;
     const double tau_M_val = params_.physics.tau_M;
-    const double relax_coeff = (tau_M_val > 0.0) ? 1.0/tau_M_val : 0.0;
-    const double old_coeff = 1.0/tau;
+    const double relax_coeff = (tau_M_val > 0.0) ? 1.0 / tau_M_val : 0.0;
+    const double old_coeff = 1.0 / tau;
 
     rhs_x = 0;
     rhs_y = 0;
@@ -499,14 +563,36 @@ void MagnetizationAssembler<dim>::assemble_rhs_only(
                 H[1] = h_a[1] + grad_phi[q][1];
             }
 
-            const double chi_theta = chi(theta_vals[q]);
+            const double chi_theta =
+                susceptibility(theta_vals[q],
+                               params_.physics.epsilon,
+                               params_.physics.chi_0);
+            /* // EXTENSION: β M×(M×H) Landau-Lifshitz damping term
+             dealii::Tensor<1, dim> beta_term;
+             beta_term[0] = 0.0;
+             beta_term[1] = 0.0;
+
+             if (params_.physics.enable_beta_term && params_.physics.beta != 0.0)
+             {
+                 const double Mx = Mx_old_vals[q];
+                 const double My = My_old_vals[q];
+                 const double Hx = H[0];
+                 const double Hy = H[1];
+
+                 const double MxH_z = Mx * Hy - My * Hx;
+                 beta_term[0] = params_.physics.beta * (-MxH_z * My);
+                 beta_term[1] = params_.physics.beta * ( MxH_z * Mx);
+             }
+             */
 
             for (unsigned int i = 0; i < dofs_per_cell; ++i)
             {
                 const double phi_i = fe_values_M.shape_value(i, q);
 
-                local_rhs_x(i) += (relax_coeff * chi_theta * H[0] + old_coeff * Mx_old_vals[q]) * phi_i * JxW;
-                local_rhs_y(i) += (relax_coeff * chi_theta * H[1] + old_coeff * My_old_vals[q]) * phi_i * JxW;
+                local_rhs_x(i) += (relax_coeff * chi_theta * H[0]
+                    + old_coeff * Mx_old_vals[q]) * phi_i * JxW;
+                local_rhs_y(i) += (relax_coeff * chi_theta * H[1]
+                    + old_coeff * My_old_vals[q]) * phi_i * JxW;
             }
         }
 

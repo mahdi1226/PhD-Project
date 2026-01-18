@@ -111,6 +111,10 @@ struct Parameters
         double mu_0 = 1.0;          // permeability of free space
         double tau_M = 1e-6;        // magnetization relaxation time
 
+        // Shliomis extension: Landau-Lifshitz damping (Zhang-He-Yang 2021)
+        //double beta = 0.0;          // β coefficient (0 = base Nochetto model)
+        //bool enable_beta_term = false;  // explicit enable flag
+
         // Density / Gravity (Eq. 19)
         double rho = 1.0;           // reference density
         double r = 0.1;             // density ratio

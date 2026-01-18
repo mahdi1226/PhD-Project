@@ -302,16 +302,23 @@ bool MMSConvergenceResult::passes(double tolerance) const
 // Standalone Test Runners
 // ============================================================================
 
-static MMSConvergenceResult run_ch_standalone(
+static MMSConvergenceResult run_ch_single(
     const std::vector<unsigned int>& refinements,
     Parameters params,
     unsigned int n_time_steps,
     MPI_Comm mpi_communicator)
 {
+    // MMS is handled internally by CH MMS driver
     params.enable_mms = true;
 
-    CHMMSConvergenceResult ch_result = run_ch_mms_standalone(
-        refinements, params, CHSolverType::GMRES_AMG, n_time_steps, mpi_communicator);
+    // Call CH MMS driver (PRODUCTION-consistent)
+    CHMMSConvergenceResult ch_result =
+        run_ch_mms_standalone(
+            refinements,
+            params,
+            CHSolverType::GMRES_AMG,
+            n_time_steps,
+            mpi_communicator);
 
     MMSConvergenceResult result;
     result.level = MMSLevel::CH_STANDALONE;
@@ -326,12 +333,15 @@ static MMSConvergenceResult run_ch_standalone(
         result.h_values.push_back(r.h);
         result.n_dofs.push_back(r.n_dofs);
         result.wall_times.push_back(r.total_time);
+
         result.theta_L2.push_back(r.theta_L2);
         result.theta_H1.push_back(r.theta_H1);
         result.psi_L2.push_back(r.psi_L2);
     }
 
-    result.n_mpi_ranks = dealii::Utilities::MPI::n_mpi_processes(mpi_communicator);
+    result.n_mpi_ranks =
+        dealii::Utilities::MPI::n_mpi_processes(mpi_communicator);
+
     result.total_wall_time = 0.0;
     for (const auto& t : result.wall_times)
         result.total_wall_time += t;
@@ -470,7 +480,7 @@ MMSConvergenceResult run_mms_test(
     switch (level)
     {
     case MMSLevel::CH_STANDALONE:
-        return run_ch_standalone(refinements, mutable_params, n_time_steps, mpi_communicator);
+        return run_ch_single(refinements, mutable_params, n_time_steps, mpi_communicator);
 
     case MMSLevel::POISSON_STANDALONE:
         return run_poisson_standalone(refinements, mutable_params, mpi_communicator);

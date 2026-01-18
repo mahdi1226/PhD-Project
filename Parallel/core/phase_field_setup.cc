@@ -372,6 +372,8 @@ void PhaseFieldProblem<dim>::setup_magnetization_system()
         theta_dof_handler_,
         mpi_communicator_);
 
+    if (timestep_number_ == 0) magnetization_assembler_->verify_susceptibility_fix();
+
     // ========================================================================
     // OPTIMIZATION: Create cached solver (avoids recreation each timestep)
     // The solver will cache MUMPS factorization between Mx/My solves

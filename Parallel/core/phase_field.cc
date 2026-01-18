@@ -75,6 +75,12 @@ void PhaseFieldProblem<dim>::run()
 
     pcout_ << "[3/5] Setting up CH system...\n";
     setup_ch_system();
+/*
+    if (params_.physics.beta > 0) {
+        pcout_ << "[WARNING] Beta is active - potential infinite loop source\n";
+        // UNCOMMENT TO TEST: params_.physics.beta = 0.0;
+    } */
+    // pcout_ << "\n";
 
     if (params_.enable_magnetic)
     {
@@ -240,6 +246,7 @@ void PhaseFieldProblem<dim>::run()
         // CH and NS are already decoupled by the semi-implicit time discretization.
         // ====================================================================
 
+
         // Step 1: Solve CH ONCE (uses U^{n-1} from previous timestep)
         {
             CumulativeTimer t;
@@ -248,6 +255,7 @@ void PhaseFieldProblem<dim>::run()
             t.stop();
             step_timing.ch_time = t.last();
         }
+
 
         // Step 2: Solve Magnetic subsystem (Picard iteration for Poisson ↔ Mag)
         if (params_.enable_magnetic)
@@ -262,16 +270,20 @@ void PhaseFieldProblem<dim>::run()
             // Split time between Poisson and Magnetization
             step_timing.poisson_time = t.last() * 0.3;
             step_timing.mag_time = t.last() * 0.7;
+
+
         }
 
         // Step 3: Solve NS ONCE (uses θ^{n-1}, converged M^n, H^n)
         if (params_.enable_ns)
         {
+
             CumulativeTimer t;
             t.start();
             solve_ns(dt);
             t.stop();
             step_timing.ns_time = t.last();
+
         }
 
         // ====================================================================
@@ -453,6 +465,10 @@ void PhaseFieldProblem<dim>::run()
 template <int dim>
 unsigned int PhaseFieldProblem<dim>::solve_poisson_magnetization_picard(double dt)
 {
+
+    //DEBUG ONLY:
+    pcout_ << "[DEBUG] Entering Picard, time_ = " << std::setprecision(10) << time_ << "\n";
+
     // Update ghosted theta for magnetization (from CH solve)
     theta_relevant_ = theta_solution_;
 
@@ -490,6 +506,14 @@ unsigned int PhaseFieldProblem<dim>::solve_poisson_magnetization_picard(double d
             phi_dof_handler_, M_dof_handler_,
             Mx_relevant_, My_relevant_,
             params_, time_, phi_constraints_, phi_rhs_);
+
+        //DEBUG ONLY:
+        pcout_ << "[DEBUG] dipoles.positions.size() = " << params_.dipoles.positions.size() << "\n";
+        pcout_ << "[DEBUG] time = " << time_ << ", ramp_time = " << params_.dipoles.ramp_time << "\n";
+
+        //DEBUG ONLY:
+        // Around line 505, add:
+        pcout_ << "[DEBUG] phi_rhs L2 norm = " << phi_rhs_.l2_norm() << "\n";
 
         last_poisson_info_ = poisson_solver_->solve(
             phi_rhs_, phi_solution_, phi_constraints_, false);
@@ -634,19 +658,14 @@ void PhaseFieldProblem<dim>::solve_ch(double dt)
 
     // Solve coupled system and extract θ, ψ
     last_ch_info_ = solve_ch_system(
-        ch_matrix_,
-        ch_rhs_,
-        ch_constraints_,
-        ch_locally_owned_,
-        theta_locally_owned_,
-        psi_locally_owned_,
-        theta_to_ch_map_,
-        psi_to_ch_map_,
-        theta_solution_,
-        psi_solution_,
-        params_.solvers.ch,
-        mpi_communicator_,
-        params_.output.verbose);
+    ch_matrix_, ch_rhs_, ch_constraints_,
+    ch_locally_owned_,
+    ch_locally_relevant_,   // <-- ADD THIS
+    theta_locally_owned_, psi_locally_owned_,
+    theta_to_ch_map_, psi_to_ch_map_,
+    theta_solution_, psi_solution_,
+    params_.solvers.ch, mpi_communicator_,
+    params_.output.verbose);
 
     // Update ghosted vectors
     theta_relevant_ = theta_solution_;

@@ -49,6 +49,13 @@ inline dealii::Tensor<1, dim> compute_applied_field(
         h_a[0] = 0.0;
         h_a[1] = 0.0;
 
+        // FINAL CHECK--- Guard: no applied field if no dipoles ---
+        if (params.dipoles.positions.empty())
+        {
+            return h_a;
+        }
+
+
         const double min_dipole_dist = std::abs(params.dipoles.positions[0][1]);  // y-distance
         const double delta = 0.01 * min_dipole_dist;  // 1% of minimum distance
         const double delta_sq = delta * delta;

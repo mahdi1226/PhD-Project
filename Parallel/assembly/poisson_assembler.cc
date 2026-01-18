@@ -180,16 +180,11 @@ void assemble_poisson_rhs(
             }
 
             // RHS source: (h_a - M, ∇χ)
-            dealii::Tensor<1, dim> source;
-            if (mms_mode)
-            {
-                source = -M;
-            }
-            else
-            {
-                source[0] = h_a[0] - M[0];
-                source[1] = h_a[1] - M[1];
-            }
+            // RHS source: (h_a - M, ∇χ)
+// ALWAYS use the same operator for MMS and production
+dealii::Tensor<1, dim> source;
+source[0] = h_a[0] - M[0];
+source[1] = h_a[1] - M[1];
 
             // MMS source term
             double f_mms = 0.0;

@@ -87,7 +87,11 @@ inline double viscosity(double theta, double epsilon, double nu_water, double nu
  */
 inline double susceptibility(double theta, double epsilon, double chi_0)
 {
-    return chi_0 * heaviside(theta / epsilon);
+    // θ = +1 : ferrofluid  → χ = χ₀
+    // θ = -1 : non-magnetic → χ = 0
+    if (theta / epsilon > 20.0) return chi_0;  // avoid overflow
+    if (theta / epsilon < -20.0) return 0.0;   // avoid underflow
+    return chi_0 / (1.0 + std::exp(-theta / epsilon));
 }
 
 // ============================================================================
@@ -114,7 +118,7 @@ inline double permeability(double theta, double epsilon, double chi_0)
 //
 //   ρ(θ) = 1 + r H(θ/ε)
 //
-// where r = (ρ_ferro - ρ_air) / ρ_air is the density ratio parameter.
+// where r = (ρ_ferro - ρ_water) / ρ_water is the density ratio parameter.
 // ============================================================================
 
 /**

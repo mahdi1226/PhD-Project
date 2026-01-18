@@ -537,11 +537,12 @@ CHMMSResult run_ch_mms_single(
         }
 
         SolverInfo info = solve_ch_system(
-            ch_matrix, ch_rhs, ch_constraints,
-            ch_locally_owned, theta_locally_owned, psi_locally_owned,
-            theta_to_ch_map, psi_to_ch_map,
-            theta_owned, psi_owned,
-            solver_params, mpi_communicator, false);
+    ch_matrix, ch_rhs, ch_constraints,
+    ch_locally_owned, ch_locally_relevant,
+    theta_locally_owned, psi_locally_owned,
+    theta_to_ch_map, psi_to_ch_map,
+    theta_owned, psi_owned,
+    solver_params, mpi_communicator, false);
 
         total_iterations += info.iterations;
         last_residual = info.residual;

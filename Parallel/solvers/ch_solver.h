@@ -40,6 +40,7 @@ SolverInfo solve_ch_system(
     const dealii::TrilinosWrappers::MPI::Vector& rhs,
     const dealii::AffineConstraints<double>& constraints,
     const dealii::IndexSet& ch_locally_owned,
+    const dealii::IndexSet& ch_locally_relevant,
     const dealii::IndexSet& theta_locally_owned,
     const dealii::IndexSet& psi_locally_owned,
     const std::vector<dealii::types::global_dof_index>& theta_to_ch_map,

@@ -377,6 +377,17 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             params.enable_gravity = false;
         else if (std::strcmp(argv[i], "--no_ns") == 0)
             params.enable_ns = false;
+
+        /* Shliomis extension: beta term
+        else if (std::strcmp(argv[i], "--beta") == 0)
+        {
+            if (++i >= argc) { std::cerr << "--beta requires a value\n"; std::exit(1); }
+            params.physics.beta = std::stod(argv[i]);
+            params.physics.enable_beta_term = (params.physics.beta != 0.0);
+        }
+        else if (std::strcmp(argv[i], "--enable_beta") == 0)
+            params.physics.enable_beta_term = true; */
+
         else if (std::strcmp(argv[i], "--verbose") == 0 || std::strcmp(argv[i], "-v") == 0)
             params.output.verbose = true;
 
@@ -423,7 +434,12 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             std::cout << "  --no_magnetic         Disable magnetic forces\n";
             std::cout << "  --no_gravity          Disable gravity\n";
             std::cout << "  --no_ns               Disable Navier-Stokes\n";
-            std::cout << "  --verbose             Verbose output\n";
+            std::cout << "  --verbose             Verbose output\n\n";
+
+            std::cout << "EXTENSIONS (Shliomis model):\n";
+            // std::cout << "  --beta VALUE          Landau-Lifshitz damping coefficient\n";
+            std::cout << "                        (0 = disabled, typical: 0.1-1.0)\n";
+            std::cout << "                        Ref: Zhang-He-Yang, SIAM J. Sci. Comput. 2021\n";
 
             std::exit(0);
         }

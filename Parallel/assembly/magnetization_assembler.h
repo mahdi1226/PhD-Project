@@ -84,6 +84,7 @@ public:
         const dealii::TrilinosWrappers::MPI::Vector& My_old,
         double dt,
         double current_time = 0.0) const;
+    void verify_susceptibility_fix() const;
 
     /**
      * @brief Assemble only the RHS (for fixed matrix reuse)

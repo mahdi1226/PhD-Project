@@ -59,7 +59,7 @@ static CoupledMMSResult run_ch_ns_single(
     result.refinement = refinement;
 
     dealii::ConditionalOStream pcout(std::cout,
-        dealii::Utilities::MPI::this_mpi_process(mpi_communicator) == 0);
+                                     dealii::Utilities::MPI::this_mpi_process(mpi_communicator) == 0);
 
     const double L_y = params.domain.y_max - params.domain.y_min;
     const double t_start = 0.1;
@@ -165,9 +165,9 @@ static CoupledMMSResult run_ch_ns_single(
     dealii::TrilinosWrappers::SparsityPattern ns_sparsity;
 
     setup_ns_coupled_system_parallel<dim>(ux_dof, uy_dof, p_dof,
-        ux_constraints, uy_constraints, p_constraints,
-        ux_to_ns, uy_to_ns, p_to_ns, ns_owned, ns_relevant,
-        ns_constraints, ns_sparsity, mpi_communicator, pcout);
+                                          ux_constraints, uy_constraints, p_constraints,
+                                          ux_to_ns, uy_to_ns, p_to_ns, ns_owned, ns_relevant,
+                                          ns_constraints, ns_sparsity, mpi_communicator, pcout);
 
     dealii::TrilinosWrappers::SparseMatrix ns_matrix;
     ns_matrix.reinit(ns_sparsity);
@@ -175,7 +175,8 @@ static CoupledMMSResult run_ch_ns_single(
     dealii::TrilinosWrappers::MPI::Vector ns_solution(ns_owned, mpi_communicator);
 
     dealii::TrilinosWrappers::SparseMatrix pressure_mass;
-    assemble_pressure_mass_matrix_parallel<dim>(p_dof, p_constraints, p_owned, p_relevant, pressure_mass, mpi_communicator);
+    assemble_pressure_mass_matrix_parallel<dim>(p_dof, p_constraints, p_owned, p_relevant, pressure_mass,
+                                                mpi_communicator);
 
     dealii::IndexSet vel_owned(n_ux + n_uy);
     for (auto it = ux_owned.begin(); it != ux_owned.end(); ++it) vel_owned.add_index(*it);
@@ -214,7 +215,8 @@ static CoupledMMSResult run_ch_ns_single(
         for (const auto& cell : theta_dof.active_cell_iterators())
         {
             if (!cell->is_locally_owned()) continue;
-            typename dealii::DoFHandler<dim>::active_cell_iterator psi_cell(&triangulation, cell->level(), cell->index(), &psi_dof);
+            typename dealii::DoFHandler<dim>::active_cell_iterator psi_cell(
+                &triangulation, cell->level(), cell->index(), &psi_dof);
             cell->get_dof_indices(theta_dofs);
             psi_cell->get_dof_indices(psi_dofs);
 
@@ -282,21 +284,22 @@ static CoupledMMSResult run_ch_ns_single(
         ns_matrix = 0;
         ns_rhs = 0;
         assemble_ns_system_parallel<dim>(ux_dof, uy_dof, p_dof, ux_old, uy_old,
-            nu, dt, true, true,  // include_time_derivative, include_convection
-            ux_to_ns, uy_to_ns, p_to_ns, ns_owned, ns_constraints,
-            ns_matrix, ns_rhs, mpi_communicator,
-            true,                   // enable_mms
-            current_time,           // mms_time
-            current_time - dt,      // mms_time_old
-            L_y);                   // mms_L_y
+                                         nu, dt, true, true, // include_time_derivative, include_convection
+                                         ux_to_ns, uy_to_ns, p_to_ns, ns_owned, ns_constraints,
+                                         ns_matrix, ns_rhs, mpi_communicator,
+                                         true, // enable_mms
+                                         current_time, // mms_time
+                                         current_time - dt, // mms_time_old
+                                         L_y); // mms_L_y
 
         ns_solution = 0;
         solve_ns_system_schur_parallel(ns_matrix, ns_rhs, ns_solution, ns_constraints,
-            pressure_mass, ux_to_ns, uy_to_ns, p_to_ns,
-            ns_owned, vel_owned, p_owned, mpi_communicator, nu, false);
+                                       pressure_mass, ux_to_ns, uy_to_ns, p_to_ns,
+                                       ns_owned, vel_owned, p_owned, mpi_communicator, nu, false);
 
         extract_ns_solutions_parallel(ns_solution, ux_to_ns, uy_to_ns, p_to_ns,
-            ux_owned, uy_owned, p_owned, ns_owned, ns_relevant, ux_sol, uy_sol, p_sol, mpi_communicator);
+                                      ux_owned, uy_owned, p_owned, ns_owned, ns_relevant, ux_sol, uy_sol, p_sol,
+                                      mpi_communicator);
         ux_old = ux_sol;
         uy_old = uy_sol;
 
@@ -343,14 +346,16 @@ static CoupledMMSResult run_ch_ns_single(
         ch_matrix = 0;
         ch_rhs = 0;
         assemble_ch_system<dim>(theta_dof, psi_dof, theta_old,
-            ux_dof, uy_dof,            // Velocity DoF handlers
-            ux_old, uy_old,            // Velocity solutions (ghosted)
-            mms_params, dt, current_time, theta_to_ch, psi_to_ch,
-            ch_constraints, ch_matrix, ch_rhs);
+                                ux_dof, uy_dof, // Velocity DoF handlers
+                                ux_old, uy_old, // Velocity solutions (ghosted)
+                                mms_params, dt, current_time, theta_to_ch, psi_to_ch,
+                                ch_constraints, ch_matrix, ch_rhs);
 
-        solve_ch_system(ch_matrix, ch_rhs, ch_constraints, ch_owned, theta_owned, psi_owned,
-            theta_to_ch, psi_to_ch, theta_vec, psi_vec,
-            mms_params.solvers.ch, mpi_communicator, false);
+        solve_ch_system(ch_matrix, ch_rhs, ch_constraints, ch_owned, ch_relevant,
+                        theta_owned, psi_owned,
+                        theta_to_ch, psi_to_ch,
+                        theta_vec, psi_vec,
+                        mms_params.solvers.ch, mpi_communicator, false);
 
         theta_rel = theta_vec;
         psi_rel = psi_vec;
@@ -365,12 +370,14 @@ static CoupledMMSResult run_ch_ns_single(
     dealii::QGauss<dim> quad(fe_phase.degree + 2);
     dealii::Vector<double> cell_err(triangulation.n_active_cells());
 
-    dealii::VectorTools::integrate_difference(theta_dof, theta_rel, exact_theta, cell_err, quad, dealii::VectorTools::L2_norm);
+    dealii::VectorTools::integrate_difference(theta_dof, theta_rel, exact_theta, cell_err, quad,
+                                              dealii::VectorTools::L2_norm);
     double local_sq = cell_err.norm_sqr(), global_sq;
     MPI_Allreduce(&local_sq, &global_sq, 1, MPI_DOUBLE, MPI_SUM, mpi_communicator);
     result.theta_L2 = std::sqrt(global_sq);
 
-    dealii::VectorTools::integrate_difference(theta_dof, theta_rel, exact_theta, cell_err, quad, dealii::VectorTools::H1_seminorm);
+    dealii::VectorTools::integrate_difference(theta_dof, theta_rel, exact_theta, cell_err, quad,
+                                              dealii::VectorTools::H1_seminorm);
     local_sq = cell_err.norm_sqr();
     MPI_Allreduce(&local_sq, &global_sq, 1, MPI_DOUBLE, MPI_SUM, mpi_communicator);
     result.theta_H1 = std::sqrt(global_sq);
@@ -433,8 +440,8 @@ CoupledMMSConvergenceResult run_ch_ns_mms(
         result.results.push_back(r);
         if (rank == 0)
             std::cout << "θ_L2=" << std::scientific << std::setprecision(2) << r.theta_L2
-                      << ", ux_L2=" << r.ux_L2
-                      << ", time=" << std::fixed << std::setprecision(1) << r.total_time << "s\n";
+                << ", ux_L2=" << r.ux_L2
+                << ", time=" << std::fixed << std::setprecision(1) << r.total_time << "s\n";
     }
 
     result.compute_rates();
