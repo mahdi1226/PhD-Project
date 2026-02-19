@@ -1,0 +1,280 @@
+// ============================================================================
+// magnetization/tests/magnetization_mms.h — Manufactured Solutions
+//
+// EXACT SOLUTIONS (chosen so M*·n = 0 on all boundaries):
+//   Mx* = t·sin(πx)·sin(πy/L_y)
+//   My* = t·cos(πx)·sin(πy/L_y)
+//
+// MMS SOURCE (matches facade callback signature):
+//   f_M = ∂M*/∂t + (U·∇)M* + ½(∇·U)M* + (M* - χH)/τ_M
+//
+// The source function receives DISCRETE H (from the assembler quadrature
+// loop) so that the χH terms cancel properly in the weak form.
+//
+// Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
+// ============================================================================
+#ifndef MAGNETIZATION_MMS_H
+#define MAGNETIZATION_MMS_H
+
+#include <deal.II/base/point.h>
+#include <deal.II/base/tensor.h>
+#include <deal.II/base/function.h>
+#include <deal.II/base/quadrature_lib.h>
+#include <deal.II/dofs/dof_handler.h>
+#include <deal.II/fe/fe_values.h>
+#include <deal.II/lac/trilinos_vector.h>
+
+#include <mpi.h>
+#include <cmath>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
+// ============================================================================
+// Exact Mx* = t·sin(πx)·sin(πy/L_y)
+// ============================================================================
+template <int dim>
+class MagExactMx : public dealii::Function<dim>
+{
+public:
+    MagExactMx(double time = 1.0, double L_y = 1.0)
+        : dealii::Function<dim>(1), time_(time), L_y_(L_y) {}
+
+    virtual double value(const dealii::Point<dim>& p,
+                         const unsigned int = 0) const override
+    {
+        return time_ * std::sin(M_PI * p[0]) * std::sin(M_PI * p[1] / L_y_);
+    }
+
+    virtual dealii::Tensor<1, dim> gradient(const dealii::Point<dim>& p,
+                                            const unsigned int = 0) const override
+    {
+        dealii::Tensor<1, dim> grad;
+        grad[0] = time_ * M_PI * std::cos(M_PI * p[0])
+                  * std::sin(M_PI * p[1] / L_y_);
+        grad[1] = time_ * (M_PI / L_y_) * std::sin(M_PI * p[0])
+                  * std::cos(M_PI * p[1] / L_y_);
+        return grad;
+    }
+
+    void set_time(const double t) override { time_ = t; }
+
+private:
+    double time_;
+    double L_y_;
+};
+
+// ============================================================================
+// Exact My* = t·cos(πx)·sin(πy/L_y)
+// ============================================================================
+template <int dim>
+class MagExactMy : public dealii::Function<dim>
+{
+public:
+    MagExactMy(double time = 1.0, double L_y = 1.0)
+        : dealii::Function<dim>(1), time_(time), L_y_(L_y) {}
+
+    virtual double value(const dealii::Point<dim>& p,
+                         const unsigned int = 0) const override
+    {
+        return time_ * std::cos(M_PI * p[0]) * std::sin(M_PI * p[1] / L_y_);
+    }
+
+    virtual dealii::Tensor<1, dim> gradient(const dealii::Point<dim>& p,
+                                            const unsigned int = 0) const override
+    {
+        dealii::Tensor<1, dim> grad;
+        grad[0] = -time_ * M_PI * std::sin(M_PI * p[0])
+                  * std::sin(M_PI * p[1] / L_y_);
+        grad[1] = time_ * (M_PI / L_y_) * std::cos(M_PI * p[0])
+                  * std::cos(M_PI * p[1] / L_y_);
+        return grad;
+    }
+
+    void set_time(const double t) override { time_ = t; }
+
+private:
+    double time_;
+    double L_y_;
+};
+
+// ============================================================================
+// Exact M vector at a point
+// ============================================================================
+template <int dim>
+dealii::Tensor<1, dim> mag_mms_exact_M(
+    const dealii::Point<dim>& p,
+    double time,
+    double L_y = 1.0)
+{
+    dealii::Tensor<1, dim> M;
+    M[0] = time * std::sin(M_PI * p[0]) * std::sin(M_PI * p[1] / L_y);
+    M[1] = time * std::cos(M_PI * p[0]) * std::sin(M_PI * p[1] / L_y);
+    return M;
+}
+
+// ============================================================================
+// MMS source WITH transport (matches facade callback signature)
+//
+// Full PDE: ∂M/∂t + (U·∇)M + ½(∇·U)M + (M - χH)/τ_M = f_M
+//
+// Discretized (backward Euler):
+//   (M*^n - M*^{n-1})/τ + (U·∇)M*^n + ½(∇·U)M*^n
+//       + (M*^n - χ·H_discrete)/τ_M = f_M
+//
+// NOTE: Uses DISCRETE H (passed from assembler), not analytical H.
+//       This ensures proper cancellation in the weak form.
+// ============================================================================
+template <int dim>
+dealii::Tensor<1, dim> compute_mag_mms_source_with_transport(
+    const dealii::Point<dim>& pt,
+    double t_new,
+    double t_old,
+    double tau_M,
+    double chi_val,
+    const dealii::Tensor<1, dim>& H,       // discrete H from assembler
+    const dealii::Tensor<1, dim>& U,
+    double div_U,
+    double L_y = 1.0)
+{
+    const double dt = t_new - t_old;
+
+    dealii::Tensor<1, dim> M_new = mag_mms_exact_M<dim>(pt, t_new, L_y);
+    dealii::Tensor<1, dim> M_old = mag_mms_exact_M<dim>(pt, t_old, L_y);
+
+    // Gradient of exact M at new time
+    const double x = pt[0];
+    const double y = pt[1];
+
+    // ∇Mx* where Mx* = t·sin(πx)·sin(πy/L_y)
+    dealii::Tensor<1, dim> grad_Mx;
+    grad_Mx[0] = t_new * M_PI * std::cos(M_PI * x)
+                 * std::sin(M_PI * y / L_y);
+    grad_Mx[1] = t_new * (M_PI / L_y) * std::sin(M_PI * x)
+                 * std::cos(M_PI * y / L_y);
+
+    // ∇My* where My* = t·cos(πx)·sin(πy/L_y)
+    dealii::Tensor<1, dim> grad_My;
+    grad_My[0] = -t_new * M_PI * std::sin(M_PI * x)
+                 * std::sin(M_PI * y / L_y);
+    grad_My[1] = t_new * (M_PI / L_y) * std::cos(M_PI * x)
+                 * std::cos(M_PI * y / L_y);
+
+    // (U·∇)M*
+    const double convect_Mx = U[0] * grad_Mx[0] + U[1] * grad_Mx[1];
+    const double convect_My = U[0] * grad_My[0] + U[1] * grad_My[1];
+
+    // ½(∇·U)M*
+    const double skew_Mx = 0.5 * div_U * M_new[0];
+    const double skew_My = 0.5 * div_U * M_new[1];
+
+    // f = (M*^n - M*^{n-1})/dt + (U·∇)M* + ½(∇·U)M*
+    dealii::Tensor<1, dim> f;
+    f[0] = (M_new[0] - M_old[0]) / dt + convect_Mx + skew_Mx;
+    f[1] = (M_new[1] - M_old[1]) / dt + convect_My + skew_My;
+
+    // + (M* - χ·H_discrete)/τ_M
+    if (tau_M > 0.0)
+    {
+        f[0] += (M_new[0] - chi_val * H[0]) / tau_M;
+        f[1] += (M_new[1] - chi_val * H[1]) / tau_M;
+    }
+
+    return f;
+}
+
+// ============================================================================
+// Error results
+// ============================================================================
+struct MagMMSError
+{
+    double Mx_L2  = 0.0;
+    double My_L2  = 0.0;
+    double M_L2   = 0.0;   // combined √(Mx² + My²)
+    double Mx_Linf = 0.0;
+    double My_Linf = 0.0;
+    double M_Linf  = 0.0;  // max(|M_h - M*|) over all quadrature points
+};
+
+// ============================================================================
+// Compute errors (parallel, MPI-reduced)
+// ============================================================================
+template <int dim>
+MagMMSError compute_mag_mms_errors_parallel(
+    const dealii::DoFHandler<dim>& M_dof_handler,
+    const dealii::TrilinosWrappers::MPI::Vector& Mx_solution,
+    const dealii::TrilinosWrappers::MPI::Vector& My_solution,
+    double time,
+    double L_y,
+    MPI_Comm mpi_communicator)
+{
+    MagMMSError error;
+
+    const auto& fe = M_dof_handler.get_fe();
+    dealii::QGauss<dim> quadrature(fe.degree + 2);
+    const unsigned int n_q_points = quadrature.size();
+
+    dealii::FEValues<dim> fe_values(fe, quadrature,
+        dealii::update_values | dealii::update_quadrature_points |
+        dealii::update_JxW_values);
+
+    std::vector<double> Mx_values(n_q_points);
+    std::vector<double> My_values(n_q_points);
+
+    MagExactMx<dim> exact_Mx(time, L_y);
+    MagExactMy<dim> exact_My(time, L_y);
+
+    double local_Mx_L2_sq = 0.0;
+    double local_My_L2_sq = 0.0;
+    double local_Mx_Linf  = 0.0;
+    double local_My_Linf  = 0.0;
+
+    for (const auto& cell : M_dof_handler.active_cell_iterators())
+    {
+        if (!cell->is_locally_owned())
+            continue;
+
+        fe_values.reinit(cell);
+        fe_values.get_function_values(Mx_solution, Mx_values);
+        fe_values.get_function_values(My_solution, My_values);
+
+        for (unsigned int q = 0; q < n_q_points; ++q)
+        {
+            const double JxW = fe_values.JxW(q);
+            const auto& x_q = fe_values.quadrature_point(q);
+
+            const double Mx_err = Mx_values[q] - exact_Mx.value(x_q);
+            const double My_err = My_values[q] - exact_My.value(x_q);
+
+            local_Mx_L2_sq += Mx_err * Mx_err * JxW;
+            local_My_L2_sq += My_err * My_err * JxW;
+
+            local_Mx_Linf = std::max(local_Mx_Linf, std::abs(Mx_err));
+            local_My_Linf = std::max(local_My_Linf, std::abs(My_err));
+        }
+    }
+
+    double global_Mx_L2_sq = 0.0, global_My_L2_sq = 0.0;
+    double global_Mx_Linf = 0.0, global_My_Linf = 0.0;
+    MPI_Allreduce(&local_Mx_L2_sq, &global_Mx_L2_sq, 1,
+                  MPI_DOUBLE, MPI_SUM, mpi_communicator);
+    MPI_Allreduce(&local_My_L2_sq, &global_My_L2_sq, 1,
+                  MPI_DOUBLE, MPI_SUM, mpi_communicator);
+    MPI_Allreduce(&local_Mx_Linf, &global_Mx_Linf, 1,
+                  MPI_DOUBLE, MPI_MAX, mpi_communicator);
+    MPI_Allreduce(&local_My_Linf, &global_My_Linf, 1,
+                  MPI_DOUBLE, MPI_MAX, mpi_communicator);
+
+    error.Mx_L2 = std::sqrt(global_Mx_L2_sq);
+    error.My_L2 = std::sqrt(global_My_L2_sq);
+    error.M_L2  = std::sqrt(global_Mx_L2_sq + global_My_L2_sq);
+
+    error.Mx_Linf = global_Mx_Linf;
+    error.My_Linf = global_My_Linf;
+    error.M_Linf  = std::max(global_Mx_Linf, global_My_Linf);
+
+    return error;
+}
+
+#endif // MAGNETIZATION_MMS_H
