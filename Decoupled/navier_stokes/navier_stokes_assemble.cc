@@ -361,7 +361,7 @@ void NSSubsystem<dim>::assemble_coupled(
     FEValues<dim> theta_fe_values(theta_dof_handler.get_fe(), quadrature,
         update_values | update_gradients);
     FEValues<dim> psi_fe_values(psi_dof_handler.get_fe(), quadrature,
-        update_values);
+        update_values | update_gradients);
     FEValues<dim> phi_fe_values(phi_dof_handler.get_fe(), quadrature,
         update_values | update_gradients | update_hessians);
     FEValues<dim> M_fe_values(M_dof_handler.get_fe(), quadrature,
@@ -398,6 +398,7 @@ void NSSubsystem<dim>::assemble_coupled(
     std::vector<double>         theta_values(n_q_points);
     std::vector<Tensor<1,dim>>  theta_gradients(n_q_points);
     std::vector<double>         psi_values(n_q_points);
+    std::vector<Tensor<1,dim>>  psi_gradients(n_q_points);
     std::vector<double>         phi_values(n_q_points);
     std::vector<Tensor<1,dim>>  phi_gradients(n_q_points);
     std::vector<Tensor<2,dim>>  phi_hessians(n_q_points);
@@ -461,6 +462,7 @@ void NSSubsystem<dim>::assemble_coupled(
         theta_fe_values.get_function_values(theta_relevant, theta_values);
         theta_fe_values.get_function_gradients(theta_relevant, theta_gradients);
         psi_fe_values.get_function_values(psi_relevant, psi_values);
+        psi_fe_values.get_function_gradients(psi_relevant, psi_gradients);
         phi_fe_values.get_function_values(phi_relevant, phi_values);
         phi_fe_values.get_function_gradients(phi_relevant, phi_gradients);
         phi_fe_values.get_function_hessians(phi_relevant, phi_hessians);
@@ -489,23 +491,23 @@ void NSSubsystem<dim>::assemble_coupled(
                                           params_.physics.nu_water,
                                           params_.physics.nu_ferro);
 
-            // Magnetic field H = ∇φ + h_a
-            const Tensor<1, dim>& grad_phi = phi_gradients[q];
-            Tensor<1, dim> h_a = compute_applied_field<dim>(
-                x_q, params_, current_time);
-            Tensor<1, dim> H_total = grad_phi + h_a;
-
-            // Magnetization
+            // Magnetization (provided externally from DG field)
             Tensor<1, dim> M;
             M[0] = Mx_values[q];
             M[1] = My_values[q];
 
-            // Kelvin force: μ₀(M·∇)H  (simple form, no skew correction)
+            // Kelvin force: μ₀(M·∇)H
             //
-            // H = ∇φ + h_a, so ∇H = Hess(φ) (for uniform h_a)
-            // (M·∇)H[i] = Σ_j M[j] * ∂H_i/∂x_j = Σ_j M[j] * hess_phi[i][j]
+            // H = ∇φ + h_a, so ∇H = Hess(φ) + ∇h_a
+            // For spatially varying h_a (dipoles), ∇h_a ≠ 0.
             const Tensor<2, dim>& hess_phi = phi_hessians[q];
-            Tensor<1, dim> kelvin = KelvinForce::compute_M_grad_H<dim>(M, hess_phi);
+            Tensor<2, dim> grad_H = hess_phi;
+            {
+                Tensor<2, dim> grad_h_a = compute_applied_field_gradient<dim>(
+                    x_q, params_, current_time);
+                grad_H += grad_h_a;
+            }
+            Tensor<1, dim> kelvin = KelvinForce::compute_M_grad_H<dim>(M, grad_H);
 
             // Gravity body force: ρ(θ)g
             Tensor<1, dim> F_gravity;
@@ -516,16 +518,15 @@ void NSSubsystem<dim>::assemble_coupled(
                 F_gravity = rho_q * gravity;
             }
 
-            // Capillary force: λ ψ ∇θ  (Eq. 42e, Nochetto et al.)
+            // Capillary force: θ ∇ψ  (Zhang Eq 2.6: Φ∇W, Nochetto Eq 42e/65d)
             //
-            // ψ is the CH chemical potential from the previous CH solve.
-            // This term couples surface tension into the momentum equation,
-            // driving flow at the diffuse interface.
+            // ψ is the CH chemical potential from the SAV solve.
+            // SAV ψ = λ(-ε∆θ + (1/ε)f(θ)) already contains λ, so no
+            // extra λ factor is needed.  Direction: phase field × grad(W).
             Tensor<1, dim> F_capillary;
             {
-                const double psi_q = psi_values[q];
-                const Tensor<1, dim>& grad_theta_q = theta_gradients[q];
-                F_capillary = params_.physics.lambda * psi_q * grad_theta_q;
+                const Tensor<1, dim>& grad_psi_q = psi_gradients[q];
+                F_capillary = theta_q * grad_psi_q;
             }
 
             // Total RHS force
@@ -870,7 +871,7 @@ void NSSubsystem<dim>::assemble_coupled_algebraic_M(
     FEValues<dim> theta_fe_values(theta_dof_handler.get_fe(), quadrature,
         update_values | update_gradients);
     FEValues<dim> psi_fe_values(psi_dof_handler.get_fe(), quadrature,
-        update_values);
+        update_values | update_gradients);
     FEValues<dim> phi_fe_values(phi_dof_handler.get_fe(), quadrature,
         update_values | update_gradients | update_hessians);
 
@@ -905,6 +906,7 @@ void NSSubsystem<dim>::assemble_coupled_algebraic_M(
     std::vector<double>         theta_values(n_q_points);
     std::vector<Tensor<1,dim>>  theta_gradients(n_q_points);
     std::vector<double>         psi_values(n_q_points);
+    std::vector<Tensor<1,dim>>  psi_gradients(n_q_points);
     std::vector<Tensor<1,dim>>  phi_gradients(n_q_points);
     std::vector<Tensor<2,dim>>  phi_hessians(n_q_points);
 
@@ -915,7 +917,6 @@ void NSSubsystem<dim>::assemble_coupled_algebraic_M(
     const double eps    = params_.physics.epsilon;
     const double chi_0  = params_.physics.chi_0;
     const double mu_0   = params_.physics.mu_0;
-    const double lambda = params_.physics.lambda;
 
     // Gravity vector
     Tensor<1, dim> gravity;
@@ -970,6 +971,7 @@ void NSSubsystem<dim>::assemble_coupled_algebraic_M(
         theta_fe_values.get_function_values(theta_relevant, theta_values);
         theta_fe_values.get_function_gradients(theta_relevant, theta_gradients);
         psi_fe_values.get_function_values(psi_relevant, psi_values);
+        psi_fe_values.get_function_gradients(psi_relevant, psi_gradients);
         phi_fe_values.get_function_gradients(phi_relevant, phi_gradients);
         phi_fe_values.get_function_hessians(phi_relevant, phi_hessians);
 
@@ -1008,9 +1010,16 @@ void NSSubsystem<dim>::assemble_coupled_algebraic_M(
             Tensor<1, dim> M = chi_q * H_total;
 
             // Kelvin force: mu0 * (M . grad)H
-            // H = grad phi + h_a, grad H = Hess(phi) (h_a is spatially smooth)
+            // H = grad phi + h_a, so grad H = Hess(phi) + grad(h_a)
+            // For spatially varying h_a (dipoles), grad(h_a) != 0.
             const Tensor<2, dim>& hess_phi = phi_hessians[q];
-            Tensor<1, dim> kelvin = KelvinForce::compute_M_grad_H<dim>(M, hess_phi);
+            Tensor<2, dim> grad_H = hess_phi;
+            {
+                Tensor<2, dim> grad_h_a = compute_applied_field_gradient<dim>(
+                    x_q, params_, current_time);
+                grad_H += grad_h_a;
+            }
+            Tensor<1, dim> kelvin = KelvinForce::compute_M_grad_H<dim>(M, grad_H);
 
             // Gravity body force: rho(theta) * g
             Tensor<1, dim> F_gravity;
@@ -1020,12 +1029,12 @@ void NSSubsystem<dim>::assemble_coupled_algebraic_M(
                 F_gravity = rho_q * gravity;
             }
 
-            // Capillary force: lambda * psi * grad theta
+            // Capillary force: θ ∇ψ  (Zhang Eq 2.6: Φ∇W)
+            // SAV ψ = λ(-ε∆θ + (1/ε)f(θ)) already contains λ.
             Tensor<1, dim> F_capillary;
             {
-                const double psi_q = psi_values[q];
-                const Tensor<1, dim>& grad_theta_q = theta_gradients[q];
-                F_capillary = lambda * psi_q * grad_theta_q;
+                const Tensor<1, dim>& grad_psi_q = psi_gradients[q];
+                F_capillary = theta_q * grad_psi_q;
             }
 
             // Total RHS force

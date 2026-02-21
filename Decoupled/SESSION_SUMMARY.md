@@ -1,8 +1,8 @@
 # Decoupled Ferrofluid Solver -- Development Summary
 
 ## Reference
-Nochetto, Salgado & Tomas, *CMAME* **309** (2016) 497-531, Eq. 42a-42f
-Zhang, He & Yang, *CMAME* **371** (2020) -- Landau-Lifshitz extension
+Nochetto, Salgado & Tomas, *CMAME* **309** (2016) 497-531, Eq. 42a-42f -- PDE formulation
+Zhang, He & Yang, *SIAM J. Sci. Comput.* **43**(1) (2021) -- SAV scheme, parameters, validation
 
 ---
 
@@ -27,11 +27,11 @@ each with its own FE space, assembly, solver, and VTK output:
 
 ### Eq. 42d -- Poisson (Magnetostatic potential)
 ```
-(grad(phi), grad(X)) = (h_a - M, grad(X))
+((1 + chi(theta)) grad(phi), grad(X)) = ((1 - chi(theta)) h_a, grad(X))
 ```
+- Derived from -Laplacian(phi) = div(m) with algebraic m = chi(theta)(grad(phi) + h_a)
 - Neumann BC, DoF-0 pinned to zero
-- LHS assembled ONCE (constant coefficient Laplacian)
-- RHS reassembled each Picard iteration
+- LHS + RHS reassembled each step (variable chi(theta) coefficient)
 
 ### Eq. 42c / 56-57 -- Magnetization (DG transport + relaxation)
 ```
@@ -42,23 +42,32 @@ each with its own FE space, assembly, solver, and VTK output:
 - Mx, My solved sequentially sharing one matrix
 - Optional beta-term: beta * M x (M x H) (Landau-Lifshitz damping)
 
-### Eq. 42a-b -- Cahn-Hilliard (Phase field + chemical potential)
+### Eq. 42a-b -- Cahn-Hilliard (Phase field + chemical potential, SAV formulation)
 ```
-(1/dt)(theta^n, chi) + (U^{n-1} . grad(theta^n), chi) + gamma(grad(psi), grad(chi)) = (1/dt)(theta^{n-1}, chi)
-lambda*epsilon(grad(theta^n), grad(xi)) + (lambda/epsilon)(f(theta), xi) - (psi^n, xi) = 0
+(1/dt + S1)(theta^n, chi) + gamma(grad(psi^n), grad(chi)) = (1/dt + S1)(theta^{n-1}, chi) + (U^{n-1} . grad(chi)) theta^{n-1}
+(psi^n, xi) + lambda*epsilon(grad(theta^n), grad(xi)) = -(r/sqrt(E1+C0)) * (lambda/epsilon)(f(theta^{n-1}), xi)
 ```
-- Coupled theta-psi saddle-point system
-- Double-well potential: F(theta) = (1/4)(theta^2 - 1)^2
+- SAV (Scalar Auxiliary Variable) scheme from Zhang Eq 3.5-3.6
+- S1 = lambda/(4*epsilon) stabilization constant
+- r = sqrt(E1(theta) + C0) is the SAV variable
+- psi already contains lambda factor (important for NS capillary coupling)
+- Double-well potential: F(theta) = (1/4)(theta^2 - 1)^2, f = F' = theta^3 - theta
 
-### Eq. 42e-f -- Navier-Stokes (Velocity + pressure with Kelvin force)
+### Eq. 42e-f -- Navier-Stokes (Velocity + pressure with Kelvin + capillary force)
 ```
-(1/dt)(U^n, V) + (nu(theta) T(U^n), T(V))/2 + B_h(U^{n-1}; U^n, V)
-    - (P^n, div(V)) = (1/dt)(U^{n-1}, V) + mu_0 * B_h^m(V, H^k, M^k) + (f, V)
+(1/dt + S2)(U^n, V) + (nu(theta) T(U^n), T(V))/2 + B_h(U^{n-1}; U^n, V)
+    - (P^n, div(V)) = (1/dt + S2)(U^{n-1}, V)
+                     + mu_0 * (M . grad)H . V           [Kelvin force]
+                     + theta^{n-1} * grad(psi^n) . V    [Capillary force]
+                     + rho(theta) * g . V                [Gravity]
 (div(U^n), Q) = 0
 ```
 - Component-split: separate DoFHandler for ux, uy
-- Kelvin force: mu_0 * B_h^m(V, H, M) = mu_0 * [(M.grad)H.V + 0.5*div(M)(H.V)]
+- S2 = NS stabilization, adaptive: S2 = 1.5*mu0^2*(chi0*|H_max|)^2/(4*nu_min)
+- Kelvin force: mu_0 * (M . grad)H, where grad(H) = Hess(phi) + grad(h_a)
+- Capillary force: theta * grad(psi), where psi from SAV CH solve (contains lambda)
 - Variable viscosity: nu(theta) = nu_w + (nu_f - nu_w) * H(theta/epsilon)
+- **Algebraic M mode**: M = chi(theta) * H_total (no magnetization PDE needed)
 
 ---
 
@@ -118,7 +127,7 @@ Each subsystem follows an identical facade pattern:
   - `material_properties.h` -- Heaviside, chi(theta), nu(theta), rho(theta), F(theta)
   - `kelvin_force.h` -- Kelvin body force DG assembly kernels (cell + face)
   - `skew_forms.h` -- Skew-symmetric DG transport forms (scalar + vector)
-  - `applied_field.h` -- 2D line dipole computation with ramp
+  - `applied_field.h` -- 2D line dipole computation + gradient (Jacobian) for Kelvin force
 
 ### 4.3 Standalone Drivers (all 4 identical CLI)
 
@@ -206,7 +215,7 @@ physics/
   material_properties.h      -- Heaviside, chi(theta), nu(theta), F(theta), f(theta)
   kelvin_force.h             -- Kelvin force cell + face assembly kernels
   skew_forms.h               -- DG skew-symmetric transport forms
-  applied_field.h            -- 2D line dipole field computation
+  applied_field.h            -- 2D line dipole field + gradient computation
 
 poisson/
   poisson.h                  -- PoissonSubsystem<dim> facade
@@ -306,31 +315,52 @@ cd mms_tests/cmake-build-debug && cmake .. && ninja
 - Prints "not yet implemented" -- simpler than NS (no component split)
 - Just needs 3D mesh generation in the driver
 
-### 7.4 Production Coupled Driver
-- No unified top-level driver orchestrating all 4 subsystems together
-- The Picard coupling pattern exists in `mms_tests/poisson_mag_mms_test.cc`
-- Production driver needs: time loop, all 4 subsystems, VTK output, diagnostics
-- **Three coupling strategies planned:** fully decoupled, semi-coupled, fully coupled
+### 7.4 Production Coupled Driver -- IMPLEMENTED (Strategy A)
+- `drivers/decoupled_driver.cc` implements Strategy A (Gauss-Seidel splitting)
+- Uses SAV (Scalar Auxiliary Variable) energy-stable time integration
+- Supports algebraic magnetization M = chi(theta)*H (skips magnetization PDE)
+- Validation presets: `--validation square|droplet|droplet_nofield|rosensweig`
+- Build: `cd drivers/build && cmake .. -DCMAKE_BUILD_TYPE=Release && make -j8`
+- Run: `mpirun -np 2 ./ferrofluid_decoupled --validation droplet -r 7 --vtk_interval 100 --sav_S1 5000`
 
 ---
 
-## 8. Rosensweig Instability Parameters (Section 6.2)
+## 8. Validation Test Parameters
+
+### 8.1 Rosensweig Instability (Zhang Eq 4.4)
 
 ```
 Domain:        [0, 1] x [0, 0.6]
-Mesh:          10x6 initial cells, refinement level 5
-Interface:     epsilon = 0.01
-Susceptibility: chi_0 = 0.5
-Relaxation:    tau_M = 1e-6
+IC:            Flat interface at y = 0.2, NO perturbation
+Mesh:          refinement level 4
+epsilon:       5e-3
+chi_0:         0.5
+mu_0:          1.0
+Relaxation:    tau_M = 1e-6  (algebraic M = chi*H used instead)
 Viscosity:     nu_water = 1.0, nu_ferro = 2.0
 Density ratio: r = 0.1
-Gravity:       |g| = 30000, direction = (0, -1)
-CH mobility:   gamma = 0.0002
-Surface tension: lambda = 0.05
-Time step:     dt = 5e-4, t_final = 2.0
-Dipoles:       5 line dipoles at y = -15, x in {-0.5, 0, 0.5, 1, 1.5}
-               intensity = 6000, ramp time = 1.6s
-Picard:        max 7 iterations, tolerance 0.01
+Gravity:       |g| = 6e4, direction = (0, -1)
+CH mobility:   gamma = 2e-4
+lambda:        1
+Time step:     dt = 1e-3, max_steps = 2000
+Dipoles:       5 line dipoles at y = -0.15, x in {0, 0.25, 0.5, 0.75, 1.0}
+               ramp_slope = 5000, intensity_max = 8000
+```
+
+### 8.2 Droplet Deformation (Zhang Eq 4.8)
+
+```
+Domain:        [0, 1] x [0, 1]
+IC:            Circular droplet R = 0.1 at (0.5, 0.5)
+Mesh:          refinement level 7
+epsilon:       2e-3
+chi_0:         2
+mu_0:          0.1
+Viscosity:     nu_water = nu_ferro = 1
+lambda:        1
+gravity:       0
+ramp_slope:    1000
+Time step:     dt = 1e-3, max_steps = 1500
 ```
 
 ---

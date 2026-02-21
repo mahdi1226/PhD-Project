@@ -372,10 +372,55 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
                 params.sav.S1 = 0.0;   // auto-computed: S1 = 1/eps
                 params.sav.S2 = 0.0;   // start with 0
             }
+            else if (params.validation_test == "droplet_nofield")
+            {
+                // ============================================================
+                // Droplet baseline test — NO magnetic field.
+                // Same as droplet (Zhang Eq 4.8) but magnetic OFF.
+                // Circle should remain circular (pure CH + NS relaxation).
+                // ============================================================
+                params.domain.x_min = 0.0;
+                params.domain.x_max = 1.0;
+                params.domain.y_min = 0.0;
+                params.domain.y_max = 1.0;
+                params.domain.initial_cells_x = 1;
+                params.domain.initial_cells_y = 1;
+
+                params.enable_magnetic = false;
+                params.enable_ns       = true;
+                params.enable_gravity  = false;
+
+                params.uniform_field.enabled = false;
+                params.dipoles.positions.clear();
+                params.dipoles.intensity_max = 0.0;
+
+                params.physics.epsilon  = 2e-3;
+                params.physics.chi_0    = 2.0;
+                params.physics.mu_0     = 0.1;
+                params.physics.tau_M    = 1e-6;
+                params.physics.mobility = 2e-4;
+                params.physics.lambda   = 1.0;
+                params.physics.nu_water = 1.0;
+                params.physics.nu_ferro = 1.0;
+                params.physics.r        = 0.0;
+                params.physics.gravity_magnitude = 0.0;
+
+                params.time.dt        = 1e-3;
+                params.time.t_final   = 1.5;
+                params.time.max_steps = 1500;
+
+                params.mesh.initial_refinement = 7;
+
+                params.use_algebraic_magnetization = true;
+                params.use_sav = true;
+                params.sav.C0 = 1.0;
+                params.sav.S1 = 0.0;
+                params.sav.S2 = 0.0;
+            }
             else
             {
                 std::cerr << "Unknown validation test: " << params.validation_test
-                          << " (use 'square' or 'droplet')\n";
+                          << " (use 'square', 'droplet', or 'droplet_nofield')\n";
                 std::exit(1);
             }
         }

@@ -27,71 +27,59 @@ Navier-Stokes  (ux, uy, p)    -- Eq. 42e-f, momentum + continuity + Kelvin force
 | Magnetization | Cahn-Hilliard       | chi(theta) susceptibility                 |
 | Magnetization | Navier-Stokes       | U in transport: (U . grad)M              |
 | Cahn-Hilliard | Navier-Stokes       | U in convection: (U . grad)theta          |
-| Navier-Stokes | Cahn-Hilliard       | theta for nu(theta) viscosity             |
-| Navier-Stokes | Poisson             | H = grad(phi) for Kelvin force            |
-| Navier-Stokes | Magnetization       | M for Kelvin force: mu_0 * B_h^m(V, H, M)|
+| Navier-Stokes | Cahn-Hilliard       | theta for nu(theta), psi for capillary: theta*grad(psi) |
+| Navier-Stokes | Poisson             | H = grad(phi) + h_a, Hess(phi) + grad(h_a) for Kelvin |
+| Navier-Stokes | Magnetization       | M for Kelvin force (algebraic: M = chi*H, no PDE) |
 
 The three strategies below differ in HOW TIGHTLY these dependencies are resolved
 within each time step.
 
 ---
 
-## Strategy A: Fully Decoupled (Gauss-Seidel Splitting)
+## Strategy A: Fully Decoupled (Gauss-Seidel Splitting) -- IMPLEMENTED
 
-### Algorithm
+**Status: Implemented in `drivers/decoupled_driver.cc`**
+
+### Algorithm (with SAV energy-stable scheme, Zhang Eq 3.5-3.11)
 ```
 FOR each time step n (t_{n-1} -> t_n):
 
-  1. Cahn-Hilliard:
+  1. Cahn-Hilliard (SAV):
      Solve theta^n, psi^n using U^{n-1}
-     (Convection uses lagged velocity)
+     SAV variable: r^n = sqrt(E1(theta^{n-1}) + C0)
+     Stabilization: S1 = lambda/(4*epsilon)
+     psi = lambda*(-epsilon*Laplacian(theta) + (1/epsilon)*f(theta))
 
-  2. Poisson:
-     Solve phi^n using M^{n-1}
-     (Demagnetizing field uses lagged magnetization)
-     Compute H^n = grad(phi^n)
+  2. Poisson (with algebraic M = chi*H):
+     Solve ((1+chi)*grad(phi), grad(X)) = ((1-chi)*h_a, grad(X))
+     H_total = grad(phi) + h_a
 
-  3. Magnetization:
-     Solve M^n using H^n, U^{n-1}, theta^{n-1}
-     (Transport uses lagged velocity, susceptibility uses lagged theta)
+  3. Magnetization: SKIPPED (algebraic M = chi(theta) * H_total)
+     No PDE solve needed -- M computed inline in NS assembly
 
   4. Navier-Stokes:
-     Solve U^n, p^n using H^n, M^n, theta^{n-1}
-     (Kelvin force uses current H and M, viscosity uses lagged theta)
+     Solve U^n, p^n using H^n, theta^{n-1}, psi^n
+     Capillary force: theta^{n-1} * grad(psi^n)     [Phi * grad(W)]
+     Kelvin force:    mu_0 * (M . grad)H              [grad(H) = Hess(phi) + grad(h_a)]
+     Gravity:         rho(theta) * g
+     Stabilization:   S2 = 1.5*mu0^2*(chi0*|H_max|)^2/(4*nu_min)
 
   Output VTK if needed
   Advance time
 ```
 
 ### Characteristics
-- **Solves per step:** 4 (one per subsystem), NO iteration
+- **Solves per step:** 3 (CH, Poisson, NS) with algebraic M, NO iteration
 - **Cost per step:** Cheapest
-- **Stability:** First-order in time. Energy-stable IF lagged coefficients used
-  (Theorem 4.1 in paper). May require smaller dt for strong coupling (large chi_0).
-- **Accuracy:** O(dt) splitting error on top of O(dt) backward Euler.
-  For small dt this is acceptable; for large dt the splitting error dominates.
-- **When to use:** Production runs where dt is already small for accuracy reasons,
-  or when chi_0 is small (weak magnetic coupling).
+- **Stability:** Energy-stable via SAV with S1, S2 stabilizers (Zhang Theorem 3.1)
+- **Accuracy:** O(dt) splitting error on top of O(dt) backward Euler
+- **When to use:** Validation tests, production runs with small dt
 
-### Pros
-- Simplest to implement and debug
-- Each subsystem solved exactly once -- predictable runtime
-- No convergence issues (no iteration to fail)
-- Easily parallelizable (subsystems are independent linear solves)
-
-### Cons
-- Splitting error can be O(dt) -- not reduced by mesh refinement
-- For strong Poisson-Magnetization coupling (large chi_0), may need very small dt
-- No feedback within a time step -- lag can cause oscillations
-
-### Files to Create
-```
-drivers/
-  decoupled_driver.cc       -- Main time loop, Gauss-Seidel order
-  CMakeLists.txt            -- Links all 4 subsystem libraries
-```
-
-### Implementation Complexity: LOW (~200-300 lines)
+### Implementation
+- File: `drivers/decoupled_driver.cc` (~1500 lines)
+- Build: `cd drivers/build && cmake .. -DCMAKE_BUILD_TYPE=Release && make -j8`
+- Run: `mpirun -np 2 ./ferrofluid_decoupled --validation droplet -r 7 --vtk_interval 100`
+- Validation presets: `square`, `droplet`, `droplet_nofield`, `rosensweig`
 
 ---
 
@@ -429,17 +417,30 @@ mpirun -np 4 ./ferrofluid_coupled        --rosensweig --refinement 3 --t_final 0
 
 ## Energy Law (for Validation)
 
-The discrete energy (Theorem 4.1, Eq. 40):
+### SAV Energy (Zhang Theorem 3.1, Eq 3.38)
 
+With SAV stabilization, the modified energy:
 ```
-E^n = (1/2)||U^n||^2 + (lambda*epsilon/2)||grad(theta^n)||^2
-    + (lambda/epsilon)(F(theta^n), 1) + (mu_0/(2*tau_M))||M^n||^2
-    - mu_0(M^n, H^n)
+E_SAV^n = (1/2)||U^n||^2 + (r^n)^2 + (S1 - lambda*L/2)||theta^n||^2
+```
+where r^n = sqrt(E1(theta^n) + C0) is the SAV variable.
+
+The discrete energy inequality (Eq 3.41) guarantees:
+```
+E_SAV^n + dissipation_terms <= E_SAV^{n-1}
 ```
 
-Should be non-increasing (or bounded) for all 3 strategies.
-The fully coupled strategy should show the tightest energy decay.
-All drivers should log this energy at each time step for comparison.
+### Key stabilization constants
+- S1 = lambda/(4*epsilon) -- CH stabilization (depends only on CH parameters)
+- S2 = mu0^2 * (chi0 * |H_max|)^2 / (4 * nu_min) -- NS stabilization
+- S1 does NOT depend on dropped terms (beta, spin vorticity, Maxwell stress)
+- All dropped terms are dissipative (positive norms on LHS of energy inequality)
+- With algebraic M = chi*H, all 3 dropped terms are exactly zero
+
+### Note on algebraic magnetization
+When using algebraic M = chi(theta)*H (tau_M -> 0 limit), the Poisson-Magnetization
+Picard iteration is unnecessary. M is computed inline from the current H field.
+This eliminates the magnetization PDE solve entirely.
 
 ---
 

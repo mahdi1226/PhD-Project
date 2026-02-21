@@ -138,4 +138,103 @@ inline dealii::Tensor<1, dim> compute_applied_field(
     }
 }
 
+// ============================================================================
+// Compute the Jacobian ∇h_a at a point: (∇h_a)_{ij} = ∂(h_a)_i / ∂x_j
+//
+// For uniform field: ∇h_a = 0 (spatially constant).
+// For dipole sources: derived from differentiating the dipole formula.
+//
+// Dipole field per source s:
+//   h_a_i = α (-d_i/R² + 2(d·r)r_i/R⁴)
+//   where r = x_s - p,  R² = |r|² + δ²
+//
+// Jacobian w.r.t. evaluation point p (∂r_k/∂p_j = -δ_{kj}):
+//   ∂(h_a_i)/∂p_j = α/R⁴ [-2 d_i r_j - 2 d_j r_i - 2(d·r)δ_{ij}
+//                          + 8(d·r) r_i r_j / R²]
+//
+// Used by Kelvin force: (M·∇)H where H = ∇φ + h_a, ∇H = Hess(φ) + ∇h_a.
+// ============================================================================
+template <int dim>
+inline dealii::Tensor<2, dim> compute_applied_field_gradient(
+    const dealii::Point<dim>& p,
+    const Parameters& params,
+    double current_time)
+{
+    dealii::Tensor<2, dim> grad_h_a;  // zero-initialized
+
+    // ---- Mode 1: Uniform field — gradient is zero ----
+    if (params.uniform_field.enabled)
+    {
+        (void)p; (void)current_time;
+        return grad_h_a;
+    }
+
+    // ---- Mode 2: Dipole sources (2D only) ----
+    if constexpr (dim != 2)
+    {
+        (void)p; (void)params; (void)current_time;
+        return grad_h_a;
+    }
+    else
+    {
+        if (params.dipoles.positions.empty())
+            return grad_h_a;
+
+        // Ramp intensity (same logic as compute_applied_field)
+        double alpha;
+        if (params.dipoles.ramp_slope > 0.0)
+        {
+            alpha = params.dipoles.ramp_slope * current_time;
+            if (params.dipoles.intensity_max > 0.0)
+                alpha = std::min(alpha, params.dipoles.intensity_max);
+        }
+        else
+        {
+            const double ramp_factor = (params.dipoles.ramp_time > 0.0)
+                ? std::min(current_time / params.dipoles.ramp_time, 1.0)
+                : 1.0;
+            alpha = params.dipoles.intensity_max * ramp_factor;
+        }
+
+        const double d_x = params.dipoles.direction[0];
+        const double d_y = params.dipoles.direction[1];
+
+        const double min_dipole_dist = std::abs(params.dipoles.positions[0][1]);
+        const double delta = 0.01 * min_dipole_dist;
+        const double delta_sq = delta * delta;
+
+        // d vector as array for indexed access
+        const double d_vec[2] = {d_x, d_y};
+
+        for (const auto& dipole_pos : params.dipoles.positions)
+        {
+            const double rx = dipole_pos[0] - p[0];
+            const double ry = dipole_pos[1] - p[1];
+            const double r_vec[2] = {rx, ry};
+            const double r_sq = rx * rx + ry * ry;
+            const double R2 = r_sq + delta_sq;
+
+            if (R2 < 1e-12)
+                continue;
+
+            const double R4 = R2 * R2;
+            const double d_dot_r = d_x * rx + d_y * ry;
+
+            // ∂(h_a_i)/∂p_j = α/R⁴ [-2 d_i r_j - 2 d_j r_i
+            //                        - 2(d·r)δ_{ij} + 8(d·r)r_i r_j/R²]
+            for (unsigned int i = 0; i < 2; ++i)
+                for (unsigned int j = 0; j < 2; ++j)
+                {
+                    grad_h_a[i][j] += alpha / R4 * (
+                        - 2.0 * d_vec[i] * r_vec[j]
+                        - 2.0 * d_vec[j] * r_vec[i]
+                        - 2.0 * d_dot_r * (i == j ? 1.0 : 0.0)
+                        + 8.0 * d_dot_r * r_vec[i] * r_vec[j] / R2);
+                }
+        }
+
+        return grad_h_a;
+    }
+}
+
 #endif // APPLIED_FIELD_H
