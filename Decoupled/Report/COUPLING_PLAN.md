@@ -445,3 +445,4 @@ This eliminates the magnetization PDE solve entirely.
 ---
 
 *Plan created: February 2025*
+*Updated: February 21, 2026*

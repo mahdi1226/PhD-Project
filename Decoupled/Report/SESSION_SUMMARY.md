@@ -397,4 +397,5 @@ Time step:     dt = 1e-3, max_steps = 1500
 ---
 
 *Generated: February 2025*
+*Updated: February 21, 2026 (Session 3)*
 *Total source code: ~10,000 lines across 4 subsystems + shared libraries*

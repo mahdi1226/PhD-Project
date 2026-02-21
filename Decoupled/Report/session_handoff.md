@@ -17,7 +17,7 @@ Build: `cd /Users/mahdi/Projects/git/PhD-Project/Decoupled/drivers/build && cmak
 | Test | Status | Result | Directory |
 |------|--------|--------|-----------|
 | **Square** (CH-only) | Done | 5000 steps, theta in [-0.992, 1.01] | `Results/022126_051823_square_r6/` |
-| **Droplet WITH field** | Running (post-fix) | Step ~330/1500, theta in [-1.00, 1.01] | (in progress) |
+| **Droplet WITH field** (post-fix) | Done | 1500 steps, theta in [-1.00, 1.03] | `Results/022126_065225_droplet_wfield_r7/` |
 | **Droplet WITHOUT field** | Done | 1500 steps, theta in [-1.00, 1.01], |U|=0 | `Results/022126_055622_droplet_wofield_r7/` |
 | **Rosensweig** | Pending rerun | Previously unstable (theta overshoot to 1.63); bugs now fixed, needs rerun | -- |
 
@@ -72,14 +72,15 @@ User identified 6 potential bugs. Thorough audit against Zhang and Nochetto pape
 - Ran droplet without field test (passed, |U|=0 as expected)
 - Confirmed stabilizer S1 = lambda/(4*epsilon) does NOT depend on dropped terms (beta, spin vorticity, Maxwell stress) -- these are all dissipative and exactly zero for algebraic M = chi*H
 
+**Git commits:**
+- `4f53b44` -- SAV assembly fix, NS/Poisson coupling, Rosensweig correction (Sessions 1-2)
+- `af2ca79` -- Fix capillary force direction (theta*grad_psi) and add grad(h_a) to Kelvin force (Session 3)
+
 ---
 
 ## Pending Tasks (In Priority Order)
 
-### 1. Droplet WITH field (post-fix) -- Running Now
-Currently at step ~330/1500 with bug fixes applied. ETA ~1 hour.
-
-### 2. Rosensweig Test -- Rerun After Bug Fixes
+### 1. Rosensweig Test -- Rerun After Bug Fixes
 ```bash
 cd /Users/mahdi/Projects/git/PhD-Project/Decoupled/drivers/build
 mpirun -np 2 ./ferrofluid_decoupled --validation rosensweig -r 4 --vtk_interval 100
@@ -191,4 +192,4 @@ max_steps:  2000
 
 ---
 
-*Updated: February 21, 2025 (Session 3)*
+*Updated: February 21, 2026 (Session 3)*
