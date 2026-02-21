@@ -278,6 +278,37 @@ public:
     Diagnostics compute_diagnostics() const;
 
     // ========================================================================
+    // SAV Assembly — Zhang's energy-stable scheme
+    //
+    // Modified CH with:
+    //   - S1 stabilization: +S1(theta^{n+1} - theta^n, Lambda) in Eq 42a
+    //   - SAV nonlinear scaling: (r/sqrt(E1+C0)) * (1/eps) * f(theta^n) in Eq 42b
+    // ========================================================================
+    void assemble_sav(
+        const dealii::TrilinosWrappers::MPI::Vector& theta_old_relevant,
+        const std::vector<const dealii::TrilinosWrappers::MPI::Vector*>& velocity_components,
+        const dealii::DoFHandler<dim>& u_dof_handler,
+        double dt,
+        double current_time,
+        double S1,
+        double sav_factor);
+
+    // ========================================================================
+    // Compute bulk CH energy: E1(theta) = (lambda/eps) * integral F(theta) dOmega
+    // Used by SAV scheme: r(t) = sqrt(E1(theta) + C0)
+    // ========================================================================
+    double compute_bulk_energy(
+        const dealii::TrilinosWrappers::MPI::Vector& theta_relevant) const;
+
+    // ========================================================================
+    // Compute SAV inner product: (1/eps) * integral f(theta^n) * (theta^{n+1} - theta^n) dOmega
+    // Used for SAV update: r^{n+1} = r^n + inner_product / (2*sqrt(E1+C0))
+    // ========================================================================
+    double compute_sav_inner_product(
+        const dealii::TrilinosWrappers::MPI::Vector& theta_new_relevant,
+        const dealii::TrilinosWrappers::MPI::Vector& theta_old_relevant) const;
+
+    // ========================================================================
     // Internal — Setup (cahn_hilliard_setup.cc)
     // ========================================================================
 private:

@@ -15,11 +15,22 @@
 #include <mpi.h>
 
 // ============================================================================
-// Rosensweig preset (Section 6.2, p.520-522)
+// Rosensweig preset (Zhang, He & Yang, SIAM J. Sci. Comput. 43 (2021),
+// Section 4.3, Eq 4.4, Fig 4.7-4.9)
+//
+// Flat ferrofluid interface, applied H field from 5 dipoles below domain.
+// Spikes form via Rosensweig instability.
+//
+// Domain: [0,1] × [0,0.6]
+// IC: flat interface at y = 0.3, θ = tanh((0.3 - y)/(√2 ε))
+// ε = 5e-3, M (mobility) = 5e-4, β = 1, λ = 1
+// ν_f = ν_w = 1, μ₀ = 0.1, χ₀ = 2, g = 10
+// Applied field: 5 dipoles at y=-15, slope=1000
+// dt = 1e-4, h = 1/128
 // ============================================================================
 void Parameters::setup_rosensweig()
 {
-    // Domain (Section 6.2, p.522)
+    // Domain
     domain.x_min = 0.0;
     domain.x_max = 1.0;
     domain.y_min = 0.0;
@@ -27,49 +38,48 @@ void Parameters::setup_rosensweig()
     domain.initial_cells_x = 10;
     domain.initial_cells_y = 6;
 
-    // Physics — shared
-    physics.epsilon = 0.01;
-    physics.chi_0 = 0.5;
-    physics.mu_0 = 1.0;
+    // Physics — Zhang Eq 4.4 (SIAM J. Sci. Comput. 43(1), 2021, p.B186)
+    physics.epsilon = 5e-3;        // ε = 5e-3
+    physics.chi_0 = 0.5;          // χ₀ = 0.5
+    physics.mu_0 = 1.0;           // μ = 1
 
-    // Physics — Magnetization (Eq. 42c, Section 6.2)
-    physics.tau_M = 1e-6;
-    physics.beta = 0.0;
+    // Physics — Magnetization (algebraic: β, τ irrelevant)
+    physics.tau_M = 1e-4;         // Zhang: τ = 1e-4 (not used with algebraic M)
+    physics.beta = 0.0;           // dropped for now (only in mag PDE)
     physics.enable_beta_term = false;
 
-    // Physics — Cahn-Hilliard (Eq. 42a-b, Section 6.2)
-    physics.mobility = 0.0002;     // γ
-    physics.lambda = 0.05;         // λ (surface tension)
+    // Physics — Cahn-Hilliard
+    physics.mobility = 2e-4;      // Zhang Eq 4.4: M = 2e-4
+    physics.lambda = 1.0;         // Zhang Eq 4.4: λ = 1
 
-    // Physics — Navier-Stokes (Eq. 42e-f, Section 6.2, p.520)
-    //   "We choose the viscosities ν_w = 1.0 and ν_f = 2.0"
-    //   "the density ρ implicitly taken ... to be unitary"
-    //   "r = 0.1"
-    physics.nu_water = 1.0;
-    physics.nu_ferro = 2.0;
-    physics.r = 0.1;
-    physics.gravity_magnitude = 30000.0;
+    // Physics — Navier-Stokes
+    physics.nu_water = 1.0;       // Zhang Eq 4.4: ν_w = 1
+    physics.nu_ferro = 2.0;       // Zhang Eq 4.4: ν_f = 2
+    physics.r = 0.1;              // Zhang Eq 4.4: r = 0.1 (density ratio)
+    physics.gravity_magnitude = 6e4;    // Zhang Eq 4.4: g = 6e4
     physics.gravity_direction = {0.0, -1.0};
 
-    // Dipoles: 5 line dipoles below domain (Section 6.2, p.522)
-    dipoles.positions = {
-        dealii::Point<2>(-0.5, -15.0),
-        dealii::Point<2>( 0.0, -15.0),
-        dealii::Point<2>( 0.5, -15.0),
-        dealii::Point<2>( 1.0, -15.0),
-        dealii::Point<2>( 1.5, -15.0)
-    };
-    dipoles.direction = {0.0, 1.0};
-    dipoles.intensity_max = 6000.0;
-    dipoles.ramp_time = 1.6;
+    // Applied field: 5 dipoles far below domain (y = -15)
+    uniform_field.enabled = false;
+    dipoles.positions.clear();
+    dipoles.positions.push_back(dealii::Point<2>(-0.5, -15.0));
+    dipoles.positions.push_back(dealii::Point<2>( 0.0, -15.0));
+    dipoles.positions.push_back(dealii::Point<2>( 0.5, -15.0));
+    dipoles.positions.push_back(dealii::Point<2>( 1.0, -15.0));
+    dipoles.positions.push_back(dealii::Point<2>( 1.5, -15.0));
+    dipoles.direction    = {0.0, 1.0};
+    dipoles.ramp_slope   = 5000.0;   // Zhang: α from 0→8000 over [0,1.6], slope=8000/1.6=5000
+    dipoles.ramp_time    = 0.0;
+    dipoles.intensity_max = 8000.0;  // Zhang: cap at 8000 for t > 1.6
 
-    // Time stepping (Section 6.2)
-    time.dt = 5e-4;
+    // Time stepping — Zhang Eq 4.4: δt = 1e-3
+    time.dt = 1e-3;
     time.t_final = 2.0;
-    time.max_steps = 4000;
+    time.max_steps = 2000;
 
-    // Mesh
-    mesh.initial_refinement = 5;
+    // Mesh — Zhang Eq 4.4: h = 1e-2
+    // r=4: 10*16=160 cells in x (h_x=1/160≈0.00625), finer than h=0.01
+    mesh.initial_refinement = 4;
 
     // Subsystems
     enable_magnetic = true;
@@ -77,9 +87,16 @@ void Parameters::setup_rosensweig()
     enable_gravity = true;
     use_reduced_magnetic_field = false;
 
-    // Picard
+    // Picard (not used in decoupled driver, but set for completeness)
     picard_iterations = 7;
     picard_tolerance = 0.01;
+
+    // Zhang's SAV+ZEC framework — enable by default for Rosensweig
+    use_algebraic_magnetization = true;
+    use_sav = true;
+    sav.C0 = 1.0;
+    sav.S1 = 0.0;   // auto-computed: S1 = 1/eps
+    sav.S2 = 0.0;   // start with 0, increase if needed
 }
 
 // ============================================================================
@@ -132,6 +149,24 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
         {
             if (++i >= argc) { std::cerr << "--t_final requires a value\n"; std::exit(1); }
             params.time.t_final = std::stod(argv[i]);
+        }
+        else if (std::strcmp(argv[i], "--max_steps") == 0)
+        {
+            if (++i >= argc) { std::cerr << "--max_steps requires a value\n"; std::exit(1); }
+            params.time.max_steps = std::stoul(argv[i]);
+        }
+
+        // ---- Uniform applied field ----
+        else if (std::strcmp(argv[i], "--uniform_field") == 0)
+        {
+            if (++i >= argc) { std::cerr << "--uniform_field requires intensity value\n"; std::exit(1); }
+            params.uniform_field.enabled = true;
+            params.uniform_field.intensity_max = std::stod(argv[i]);
+        }
+        else if (std::strcmp(argv[i], "--field_ramp_time") == 0)
+        {
+            if (++i >= argc) { std::cerr << "--field_ramp_time requires a value\n"; std::exit(1); }
+            params.uniform_field.ramp_time = std::stod(argv[i]);
         }
 
         // ---- Magnetization physics ----
@@ -190,6 +225,31 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             params.picard_iterations = std::stoul(argv[i]);
         }
 
+        // ---- SAV + Algebraic Magnetization ----
+        else if (std::strcmp(argv[i], "--algebraic_M") == 0)
+            params.use_algebraic_magnetization = true;
+        else if (std::strcmp(argv[i], "--no_algebraic_M") == 0)
+            params.use_algebraic_magnetization = false;
+        else if (std::strcmp(argv[i], "--sav") == 0)
+            params.use_sav = true;
+        else if (std::strcmp(argv[i], "--no_sav") == 0)
+            params.use_sav = false;
+        else if (std::strcmp(argv[i], "--sav_S1") == 0)
+        {
+            if (++i >= argc) { std::cerr << "--sav_S1 requires a value\n"; std::exit(1); }
+            params.sav.S1 = std::stod(argv[i]);
+        }
+        else if (std::strcmp(argv[i], "--sav_S2") == 0)
+        {
+            if (++i >= argc) { std::cerr << "--sav_S2 requires a value\n"; std::exit(1); }
+            params.sav.S2 = std::stod(argv[i]);
+        }
+        else if (std::strcmp(argv[i], "--sav_C0") == 0)
+        {
+            if (++i >= argc) { std::cerr << "--sav_C0 requires a value\n"; std::exit(1); }
+            params.sav.C0 = std::stod(argv[i]);
+        }
+
         // ---- Subsystem enables ----
         else if (std::strcmp(argv[i], "--mms") == 0)
             params.enable_mms = true;
@@ -202,7 +262,130 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
         else if (std::strcmp(argv[i], "--no_gravity") == 0)
             params.enable_gravity = false;
 
+        // ---- Validation presets (Zhang, He & Yang, CMAME 371 (2020)) ----
+        else if (std::strcmp(argv[i], "--validation") == 0)
+        {
+            if (++i >= argc) { std::cerr << "--validation requires a value (square|droplet)\n"; std::exit(1); }
+            params.validation_test = argv[i];
+
+            if (params.validation_test == "square")
+            {
+                // ============================================================
+                // Square test (Section 4.2, Fig 4.3):
+                // Pure CH relaxation — diamond → circle, NO magnetic, NO NS.
+                //
+                // Domain: [0,1]², h = 1/64 (r=6 on 1-cell base grid)
+                // IC: diamond (L1 ball) radius 0.25 at center
+                // ε = 0.01, M(θ) = γε² with γ = 1 → mobility = ε² = 1e-4
+                // λ = 1/ε = 100 (for the energy functional)
+                // dt = 1e-3, t_final = 5.0
+                // ============================================================
+                params.domain.x_min = 0.0;
+                params.domain.x_max = 1.0;
+                params.domain.y_min = 0.0;
+                params.domain.y_max = 1.0;
+                params.domain.initial_cells_x = 1;
+                params.domain.initial_cells_y = 1;
+
+                params.enable_magnetic = false;
+                params.enable_ns       = false;
+                params.enable_gravity  = false;
+
+                params.uniform_field.enabled = false;
+                params.dipoles.positions.clear();
+                params.dipoles.intensity_max = 0.0;
+
+                params.physics.epsilon  = 0.01;
+                params.physics.mobility = 1e-4;   // γε² with γ=1
+                params.physics.lambda   = 100.0;  // 1/ε
+
+                params.time.dt        = 1e-3;
+                params.time.t_final   = 5.0;
+                params.time.max_steps = 5000;
+
+                params.mesh.initial_refinement = 6;  // h = 1/64
+            }
+            else if (params.validation_test == "droplet")
+            {
+                // ============================================================
+                // Droplet deformation test (Zhang, He & Yang, SIAM J. Sci.
+                // Comput. 43 (2021), Section 4.5, Eq 4.8, Fig 4.14-4.16):
+                //
+                // Circle in applied field → elongates vertically.
+                //
+                // Domain: [0,1]², h = 1/128 (r=7)
+                // IC: circle at center, R = 0.1
+                // ε = 2e-3, M (mobility) = 2e-4, β = 1, λ = 1
+                // ν_f = ν_w = 1, ρ uniform
+                // μ₀ = 0.1, χ₀ = 2, τ_M = 1e-6 (fast relaxation)
+                // Applied field: 5 dipoles at y = -15, direction (0,1),
+                //   intensity α(t) = 1000*t (linear ramp, slope=1000)
+                // No gravity
+                // dt = 1e-3, t_final = 1.5
+                // ============================================================
+                params.domain.x_min = 0.0;
+                params.domain.x_max = 1.0;
+                params.domain.y_min = 0.0;
+                params.domain.y_max = 1.0;
+                params.domain.initial_cells_x = 1;
+                params.domain.initial_cells_y = 1;
+
+                params.enable_magnetic = true;
+                params.enable_ns       = true;
+                params.enable_gravity  = false;
+
+                // Applied field: 5 dipoles far below domain (y = -15)
+                // This produces a nearly uniform vertical field inside [0,1]²
+                params.uniform_field.enabled = false;
+                params.dipoles.positions.clear();
+                params.dipoles.positions.push_back(dealii::Point<2>(-0.5, -15.0));
+                params.dipoles.positions.push_back(dealii::Point<2>( 0.0, -15.0));
+                params.dipoles.positions.push_back(dealii::Point<2>( 0.5, -15.0));
+                params.dipoles.positions.push_back(dealii::Point<2>( 1.0, -15.0));
+                params.dipoles.positions.push_back(dealii::Point<2>( 1.5, -15.0));
+                params.dipoles.direction    = {0.0, 1.0};
+                params.dipoles.ramp_slope   = 1000.0;   // α(t) = 1000*t
+                params.dipoles.ramp_time    = 0.0;
+                params.dipoles.intensity_max = 0.0;      // unused with ramp_slope
+
+                params.physics.epsilon  = 2e-3;    // Zhang Eq 4.8
+                params.physics.chi_0    = 2.0;     // Zhang Eq 4.8
+                params.physics.mu_0     = 0.1;     // Zhang Eq 4.8: μ = 0.1
+                params.physics.tau_M    = 1e-6;    // fast relaxation → algebraic limit
+                params.physics.mobility = 2e-4;    // Zhang Eq 4.8: M = 2e-4
+                params.physics.lambda   = 1.0;     // Zhang Eq 4.8
+                params.physics.nu_water = 1.0;     // Zhang Eq 4.8: ν_w = 1
+                params.physics.nu_ferro = 1.0;     // Zhang Eq 4.8: ν_f = 1
+                params.physics.r        = 0.0;     // uniform density
+                params.physics.gravity_magnitude = 0.0;
+
+                params.time.dt        = 1e-3;      // Zhang Eq 4.8: τ = 1e-3
+                params.time.t_final   = 1.5;
+                params.time.max_steps = 1500;
+
+                params.mesh.initial_refinement = 7;  // h = 1/128
+
+                // Zhang's SAV+ZEC framework — enable for droplet test
+                params.use_algebraic_magnetization = true;
+                params.use_sav = true;
+                params.sav.C0 = 1.0;
+                params.sav.S1 = 0.0;   // auto-computed: S1 = 1/eps
+                params.sav.S2 = 0.0;   // start with 0
+            }
+            else
+            {
+                std::cerr << "Unknown validation test: " << params.validation_test
+                          << " (use 'square' or 'droplet')\n";
+                std::exit(1);
+            }
+        }
+
         // ---- Output ----
+        else if (std::strcmp(argv[i], "--vtk_interval") == 0)
+        {
+            if (++i >= argc) { std::cerr << "--vtk_interval requires a value\n"; std::exit(1); }
+            params.output.vtk_interval = std::stoul(argv[i]);
+        }
         else if (std::strcmp(argv[i], "--verbose") == 0 ||
                  std::strcmp(argv[i], "-v") == 0)
             params.output.verbose = true;
@@ -219,7 +402,8 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             std::cout << "    --ref 2 3 4 5 6    Refinement levels for mms/temporal\n";
             std::cout << "    --steps N          Override number of time steps\n\n";
             std::cout << "  Presets:\n";
-            std::cout << "    --rosensweig        Rosensweig preset (Section 6.2)\n\n";
+            std::cout << "    --rosensweig        Rosensweig preset (Section 6.2)\n";
+            std::cout << "    --validation MODE   Validation test (droplet|square)\n\n";
             std::cout << "  Mesh:\n";
             std::cout << "    --refinement N      Mesh refinement level (2d/3d modes)\n\n";
             std::cout << "  Time stepping:\n";
@@ -285,6 +469,9 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
         std::cout << "  NS: " << (params.enable_ns ? "ON" : "OFF")
                   << ", Gravity: " << (params.enable_gravity ? "ON" : "OFF") << "\n";
         std::cout << "  MMS: " << (params.enable_mms ? "ON" : "OFF") << "\n";
+        if (params.uniform_field.enabled)
+            std::cout << "  Uniform field: ON, |H_a|=" << params.uniform_field.intensity_max
+                      << ", ramp=" << params.uniform_field.ramp_time << "\n";
         std::cout << "=====================\n";
     }
 

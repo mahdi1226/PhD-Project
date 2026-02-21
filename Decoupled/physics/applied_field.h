@@ -1,23 +1,17 @@
 // ============================================================================
 // physics/applied_field.h - Applied Magnetic Field h_a
 //
-// Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) Eq. 97-98, p.529
+// Two modes:
+//   1. Uniform field (Zhang, He & Yang, CMAME 371 (2020)):
+//      h_a(x, t) = direction * intensity_max * min(t/ramp_time, 1)
+//      Spatially constant, with optional linear time ramp.
 //
-// Computes the applied magnetic field h_a from line dipole sources.
+//   2. Dipole sources (Nochetto, Salgado & Tomas, CMAME 309 (2016)):
+//      h_a from 2D line dipoles (Eq. 97-98, p.529).
+//
 // Used by:
 //   - Poisson RHS (Eq. 42d):        (h_a - M, ∇χ)
 //   - Magnetization RHS (Eq. 42c):  H_total = h_a + ∇φ
-//
-// 2D line dipole formula (Eq. 97-98):
-//   h_a(x) = α Σ_i [ -d/|r_i|² + 2(d·r_i)r_i/|r_i|⁴ ]
-//
-// where:
-//   α = intensity × ramp(t)
-//   d = dipole direction (unit vector)
-//   r_i = dipole_position_i - x
-//   Regularization: |r|² → |r|² + δ² to avoid singularity
-//
-// 3D: Not yet implemented (requires point dipole formula).
 // ============================================================================
 #ifndef APPLIED_FIELD_H
 #define APPLIED_FIELD_H
@@ -31,7 +25,21 @@
 #include <algorithm>
 
 // ============================================================================
-// Compute h_a at a point from all configured dipoles
+// Check whether any applied field is configured
+// ============================================================================
+inline bool has_applied_field(const Parameters& params)
+{
+    if (params.uniform_field.enabled &&
+        (params.uniform_field.intensity_max > 0.0 || params.uniform_field.ramp_slope > 0.0))
+        return true;
+    if (!params.dipoles.positions.empty() &&
+        (params.dipoles.intensity_max > 0.0 || params.dipoles.ramp_slope > 0.0))
+        return true;
+    return false;
+}
+
+// ============================================================================
+// Compute h_a at a point
 // ============================================================================
 template <int dim>
 inline dealii::Tensor<1, dim> compute_applied_field(
@@ -41,29 +49,67 @@ inline dealii::Tensor<1, dim> compute_applied_field(
 {
     dealii::Tensor<1, dim> h_a;
 
+    // ---- Mode 1: Uniform field (Zhang, He & Yang 2020) ----
+    if (params.uniform_field.enabled)
+    {
+        // Two ramp modes:
+        //   1. ramp_slope > 0: α(t) = slope * t, capped at intensity_max
+        //   2. ramp_time > 0:  α(t) = intensity_max * min(t/ramp_time, 1)
+        //   3. both zero:      α = intensity_max (instant)
+        double alpha;
+        if (params.uniform_field.ramp_slope > 0.0)
+        {
+            alpha = params.uniform_field.ramp_slope * current_time;
+            if (params.uniform_field.intensity_max > 0.0)
+                alpha = std::min(alpha, params.uniform_field.intensity_max);
+        }
+        else
+        {
+            const double ramp_factor = (params.uniform_field.ramp_time > 0.0)
+                ? std::min(current_time / params.uniform_field.ramp_time, 1.0)
+                : 1.0;
+            alpha = params.uniform_field.intensity_max * ramp_factor;
+        }
+
+        for (unsigned int d = 0; d < dim && d < params.uniform_field.direction.size(); ++d)
+            h_a[d] = params.uniform_field.direction[d] * alpha;
+
+        (void)p;  // uniform: independent of position
+        return h_a;
+    }
+
+    // ---- Mode 2: Dipole sources (Nochetto et al. 2016) ----
     if constexpr (dim != 2)
     {
-        // 3D point dipole: not yet implemented
-        // static_assert will be removed when 3D formula is added
         (void)p; (void)params; (void)current_time;
         return h_a;
     }
     else
     {
-        // Guard: no applied field if no dipoles configured
         if (params.dipoles.positions.empty())
             return h_a;
 
-        // Time ramp: linearly increase from 0 to full over ramp_time
-        const double ramp_factor = (params.dipoles.ramp_time > 0.0)
-            ? std::min(current_time / params.dipoles.ramp_time, 1.0)
-            : 1.0;
-
-        const double alpha = params.dipoles.intensity_max * ramp_factor;
+        // Two ramp modes:
+        //   1. ramp_slope > 0: α(t) = slope * t, capped at intensity_max
+        //   2. ramp_time > 0:  α(t) = intensity_max * min(t/ramp_time, 1)
+        //   3. both zero:      α = intensity_max (instant)
+        double alpha;
+        if (params.dipoles.ramp_slope > 0.0)
+        {
+            alpha = params.dipoles.ramp_slope * current_time;
+            if (params.dipoles.intensity_max > 0.0)
+                alpha = std::min(alpha, params.dipoles.intensity_max);
+        }
+        else
+        {
+            const double ramp_factor = (params.dipoles.ramp_time > 0.0)
+                ? std::min(current_time / params.dipoles.ramp_time, 1.0)
+                : 1.0;
+            alpha = params.dipoles.intensity_max * ramp_factor;
+        }
         const double d_x = params.dipoles.direction[0];
         const double d_y = params.dipoles.direction[1];
 
-        // Regularization: δ = 1% of minimum dipole distance
         const double min_dipole_dist = std::abs(params.dipoles.positions[0][1]);
         const double delta = 0.01 * min_dipole_dist;
         const double delta_sq = delta * delta;
@@ -84,7 +130,6 @@ inline dealii::Tensor<1, dim> compute_applied_field(
             const double r_eff_sq_sq = r_eff_sq * r_eff_sq;
             const double d_dot_r = d_x * rx + d_y * ry;
 
-            // 2D line dipole (Eq. 97-98)
             h_a[0] += alpha * (-d_x / r_eff_sq + 2.0 * d_dot_r * rx / r_eff_sq_sq);
             h_a[1] += alpha * (-d_y / r_eff_sq + 2.0 * d_dot_r * ry / r_eff_sq_sq);
         }

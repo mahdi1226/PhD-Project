@@ -19,16 +19,18 @@ project(cahn_hilliard_subsystem)
 set(SRC_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/..)
 include_directories(${SRC_ROOT})
 
-# Cahn-Hilliard static library
-add_library(cahn_hilliard_lib STATIC
-        cahn_hilliard.cc
-        cahn_hilliard_setup.cc
-        cahn_hilliard_assemble.cc
-        cahn_hilliard_solve.cc
-        cahn_hilliard_output.cc
-        ${SRC_ROOT}/utilities/parameters.cc
-)
-deal_ii_setup_target(cahn_hilliard_lib)
+# Cahn-Hilliard static library — guarded for top-level unified build
+if(NOT TARGET cahn_hilliard_lib)
+    add_library(cahn_hilliard_lib STATIC
+            cahn_hilliard.cc
+            cahn_hilliard_setup.cc
+            cahn_hilliard_assemble.cc
+            cahn_hilliard_solve.cc
+            cahn_hilliard_output.cc
+            ${SRC_ROOT}/utilities/parameters.cc
+    )
+    deal_ii_setup_target(cahn_hilliard_lib)
+endif()
 
 # Standalone MMS convergence test
 add_executable(test_cahn_hilliard_mms

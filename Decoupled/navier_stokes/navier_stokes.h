@@ -103,7 +103,62 @@ public:
         double body_force_time = 0.0);
 
     // ========================================================================
-    // Solve â€” call after assemble
+    // Coupled assembly — for production ferrofluid driver
+    //
+    // Variable viscosity ν(θ), Kelvin force μ₀ B_h^m(V, H, M),
+    // gravity ρ(θ)g, and capillary force λψ∇θ.
+    //
+    // @param dt                     Time step size
+    // @param theta_relevant         Phase field θ (ghosted, from CH)
+    // @param theta_dof_handler      CH DoFHandler
+    // @param psi_relevant           Chemical potential ψ (ghosted, from CH)
+    // @param psi_dof_handler        CH ψ DoFHandler
+    // @param phi_relevant           Magnetic potential φ (ghosted, from Poisson)
+    // @param phi_dof_handler        Poisson DoFHandler
+    // @param Mx_relevant            Magnetization Mx (ghosted, from Mag)
+    // @param My_relevant            Magnetization My (ghosted, from Mag)
+    // @param M_dof_handler          Magnetization DoFHandler (DG)
+    // @param current_time           Current simulation time
+    // @param include_convection     Add B_h(U^{n-1}; U^n, V) skew term
+    // ========================================================================
+    void assemble_coupled(
+        double dt,
+        const dealii::TrilinosWrappers::MPI::Vector& theta_relevant,
+        const dealii::DoFHandler<dim>&               theta_dof_handler,
+        const dealii::TrilinosWrappers::MPI::Vector& psi_relevant,
+        const dealii::DoFHandler<dim>&               psi_dof_handler,
+        const dealii::TrilinosWrappers::MPI::Vector& phi_relevant,
+        const dealii::DoFHandler<dim>&               phi_dof_handler,
+        const dealii::TrilinosWrappers::MPI::Vector& Mx_relevant,
+        const dealii::TrilinosWrappers::MPI::Vector& My_relevant,
+        const dealii::DoFHandler<dim>&               M_dof_handler,
+        double current_time,
+        bool include_convection = true);
+
+    // ========================================================================
+    // Coupled assembly with algebraic magnetization + SAV stabilization
+    //
+    // Zhang, He & Yang, SIAM J. Sci. Comput. 43(1) (2021)
+    //
+    // Same as assemble_coupled() but:
+    //   - Computes M = chi(theta)(grad phi + h_a) at quadrature points (no M vectors)
+    //   - Adds S2 stabilization: +S2(u^{n+1} - u^n, v) for energy stability
+    //   - Kelvin force is fully explicit: mu0(M.grad)H on RHS
+    // ========================================================================
+    void assemble_coupled_algebraic_M(
+        double dt,
+        const dealii::TrilinosWrappers::MPI::Vector& theta_relevant,
+        const dealii::DoFHandler<dim>&               theta_dof_handler,
+        const dealii::TrilinosWrappers::MPI::Vector& psi_relevant,
+        const dealii::DoFHandler<dim>&               psi_dof_handler,
+        const dealii::TrilinosWrappers::MPI::Vector& phi_relevant,
+        const dealii::DoFHandler<dim>&               phi_dof_handler,
+        double current_time,
+        double S2 = 0.0,
+        bool include_convection = true);
+
+    // ========================================================================
+    // Solve â€" call after assemble
     //
     // Direct solver (Amesos) with pressure pinning.
     // Block Schur iterative solver will be added separately.

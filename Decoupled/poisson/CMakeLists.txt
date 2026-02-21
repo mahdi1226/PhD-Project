@@ -8,16 +8,18 @@ project(poisson_subsystem)
 set(SRC_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/..)
 include_directories(${SRC_ROOT})
 
-# Poisson static library
-add_library(poisson_lib STATIC
-        poisson.cc
-        poisson_setup.cc
-        poisson_assemble.cc
-        poisson_solve.cc
-        poisson_output.cc
-        ${SRC_ROOT}/utilities/parameters.cc
-)
-deal_ii_setup_target(poisson_lib)
+# Poisson static library — guarded for top-level unified build
+if(NOT TARGET poisson_lib)
+    add_library(poisson_lib STATIC
+            poisson.cc
+            poisson_setup.cc
+            poisson_assemble.cc
+            poisson_solve.cc
+            poisson_output.cc
+            ${SRC_ROOT}/utilities/parameters.cc
+    )
+    deal_ii_setup_target(poisson_lib)
+endif()
 
 # Standalone MMS convergence test
 add_executable(test_poisson_mms

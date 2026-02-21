@@ -93,7 +93,23 @@ public:
         double current_time);
 
     // ========================================================================
-    // Solve — call after assemble_rhs
+    // Assemble nonlinear system (algebraic magnetization mode)
+    //
+    // With m = χ(θ)h, the Poisson equation becomes:
+    //   ((1 + χ(θ))∇φ, ∇X) = ((1 - χ(θ))h_a, ∇X)
+    //
+    // This assembles both matrix AND RHS in one pass (matrix depends on θ).
+    // The AMG preconditioner is rebuilt after assembly.
+    //
+    // Reference: Zhang, He & Yang, SIAM J. Sci. Comput. 43(1) (2021)
+    // ========================================================================
+    void assemble_nonlinear(
+        const dealii::TrilinosWrappers::MPI::Vector& theta_relevant,
+        const dealii::DoFHandler<dim>& theta_dof_handler,
+        double current_time);
+
+    // ========================================================================
+    // Solve — call after assemble_rhs or assemble_nonlinear
     //
     // Uses CG + cached AMG preconditioner.
     // Returns solver statistics (iterations, residual, timing).

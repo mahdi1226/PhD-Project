@@ -34,17 +34,32 @@ struct Parameters
     } domain;
 
     // ========================================================================
-    // Dipole sources for applied field h_a (Eq. 97-98, p.529)
+    // Applied magnetic field h_a
     //
-    // 2D line dipoles placed below the domain.
-    // h_a ramps from 0 to full strength over ramp_time.
+    // Two modes:
+    //   1. Uniform field: h_a = direction * intensity * ramp(t)
+    //      Used by Zhang, He & Yang (2020) for all validation tests.
+    //   2. Dipole sources: h_a from 2D line dipoles (Nochetto Eq. 97-98)
+    //
+    // The uniform field is checked first. If uniform_field.enabled = true,
+    // dipoles are ignored.
     // ========================================================================
+    struct UniformField
+    {
+        bool enabled = false;
+        std::vector<double> direction = {0.0, 1.0};  // field direction (unit)
+        double intensity_max = 0.0;                   // max field magnitude
+        double ramp_time = 0.0;                       // 0 = instant
+        double ramp_slope = 0.0;                      // α(t) = slope*t (0 = use ramp_time mode)
+    } uniform_field;
+
     struct Dipoles
     {
         std::vector<dealii::Point<2>> positions;     // dipole locations (2D only)
         std::vector<double> direction = {0.0, 1.0};  // dipole moment direction
         double intensity_max = 6000.0;               // maximum field intensity
         double ramp_time = 1.6;                      // ramp-up time (0 = instant)
+        double ramp_slope = 0.0;                     // α(t) = slope*t (0 = use ramp_time mode)
     } dipoles;
 
     // ========================================================================
@@ -133,7 +148,7 @@ struct Parameters
     // ========================================================================
     // Finite element degrees
     //
-    // Poisson:        Q1 continuous    (degree_potential = 1)
+    // Poisson:        Q2 continuous    (degree_potential = 2)
     // Magnetization:  DG-Q1 discontinuous  (degree_magnetization = 1)
     // CH (θ, ψ):     Q2 continuous    (degree_phase = 2)
     // Velocity:       Q2 continuous    (degree_velocity = 2)
@@ -144,10 +159,18 @@ struct Parameters
     //
     // DG pressure (FE_DGQ) enforces local incompressibility per element,
     // which is critical for Kelvin force stability (Section 4.1).
+    //
+    // NOTE: φ MUST be Q2 (not Q1) because the Kelvin force μ₀(M·∇)H
+    // requires Hess(φ). With Q1 (bilinear) elements, the Hessian has
+    // ZERO diagonal entries (∂²φ/∂x²=0, ∂²φ/∂y²=0), so (M·∇)H only
+    // produces cross-derivative forces — vertical M gives only horizontal
+    // force, which is physically wrong. Q2 (biquadratic) elements have
+    // non-zero ∂²φ/∂x² and ∂²φ/∂y², giving correct force directions.
+    // This matches the Round1/Parallel code (degree_potential = 2).
     // ========================================================================
     struct FE
     {
-        unsigned int degree_potential = 1;       // Poisson φ: CG Q1 (Paper: X_h)
+        unsigned int degree_potential = 2;       // Poisson φ: CG Q2 (MUST be ≥2 for Hess)
         unsigned int degree_magnetization = 1;   // Magnetization M: DG Q1 (Paper: M_h)
         unsigned int degree_velocity = 2;        // Velocity U: CG Q2 (Paper: V_h)
         unsigned int degree_phase = 2;           // CH θ, ψ: CG Q2 (Paper: Θ_h)
@@ -161,6 +184,7 @@ struct Parameters
     {
         std::string folder = "../Results";
         bool verbose = false;
+        unsigned int vtk_interval = 20;
     } output;
 
     // ========================================================================
@@ -258,6 +282,14 @@ struct Parameters
     double picard_tolerance = 0.01;
 
     // ========================================================================
+    // Validation test mode
+    //
+    //   --validation droplet   Circle IC, no dipoles, surface tension only
+    //   --validation square    Diamond IC, dipoles active, with gravity
+    // ========================================================================
+    std::string validation_test;  // "" = production, "droplet", "square"
+
+    // ========================================================================
     // Subsystem enables
     // ========================================================================
     bool enable_magnetic = true;               // enable applied field h_a
@@ -265,6 +297,33 @@ struct Parameters
     bool use_reduced_magnetic_field = false;    // Dome: H = h_a only (no ∇φ)
     bool enable_ns = true;                     // enable Navier-Stokes solve
     bool enable_gravity = true;                // enable gravity body force
+
+    // ========================================================================
+    // Zhang's SAV+ZEC energy stabilization framework
+    //
+    // Reference: Zhang, He & Yang, SIAM J. Sci. Comput. 43(1) B167-B193 (2021)
+    //
+    // SAV: Scalar Auxiliary Variable r(t) = sqrt(E1(theta) + C0)
+    //   Enables unconditionally energy-stable time stepping by replacing
+    //   the nonlinear f(theta)/eps with (r/sqrt(E1+C0)) * f(theta)/eps
+    //
+    // ZEC: Zero Energy Contribution property
+    //   -mu0(m.grad h, u) - mu0(u.grad m, h) - mu0(u x m, curl h) = 0
+    //   Allows explicit Kelvin force treatment while maintaining energy balance
+    //
+    // Algebraic magnetization: m = chi(theta) * h  (no PDE)
+    //   Eliminates magnetization subsystem entirely.
+    //   Makes Poisson nonlinear: ((1+chi(theta)) grad phi, grad X) = ((1-chi(theta)) h_a, grad X)
+    // ========================================================================
+    bool use_algebraic_magnetization = false;  // true = m=chi(theta)h, false = mag PDE
+    bool use_sav = false;                      // true = SAV energy stabilization
+
+    struct SAV
+    {
+        double C0 = 1.0;       // positivity constant: r(t) = sqrt(E1(theta) + C0)
+        double S1 = 0.0;       // CH stabilization: S1 >= 1/eps (auto-computed if 0)
+        double S2 = 0.0;       // NS stabilization: S2 >= mu0^2 C_M^2 / (4 nu_min)
+    } sav;
 
     // ========================================================================
     // Run configuration (CLI mode dispatch)

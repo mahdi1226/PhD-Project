@@ -8,24 +8,28 @@ project(mms_tests)
 set(SRC_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/..)
 include_directories(${SRC_ROOT})
 
-# Poisson subsystem
-add_library(poisson_lib STATIC
-        ${SRC_ROOT}/poisson/poisson.cc
-        ${SRC_ROOT}/poisson/poisson_setup.cc
-        ${SRC_ROOT}/poisson/poisson_assemble.cc
-        ${SRC_ROOT}/poisson/poisson_solve.cc
-        ${SRC_ROOT}/utilities/parameters.cc
-)
-deal_ii_setup_target(poisson_lib)
+# Poisson subsystem — guarded for top-level unified build
+if(NOT TARGET poisson_lib)
+    add_library(poisson_lib STATIC
+            ${SRC_ROOT}/poisson/poisson.cc
+            ${SRC_ROOT}/poisson/poisson_setup.cc
+            ${SRC_ROOT}/poisson/poisson_assemble.cc
+            ${SRC_ROOT}/poisson/poisson_solve.cc
+            ${SRC_ROOT}/utilities/parameters.cc
+    )
+    deal_ii_setup_target(poisson_lib)
+endif()
 
-# Magnetization subsystem
-add_library(magnetization_lib STATIC
-        ${SRC_ROOT}/magnetization/magnetization.cc
-        ${SRC_ROOT}/magnetization/magnetization_setup.cc
-        ${SRC_ROOT}/magnetization/magnetization_assemble.cc
-        ${SRC_ROOT}/magnetization/magnetization_solve.cc
-)
-deal_ii_setup_target(magnetization_lib)
+# Magnetization subsystem — guarded for top-level unified build
+if(NOT TARGET magnetization_lib)
+    add_library(magnetization_lib STATIC
+            ${SRC_ROOT}/magnetization/magnetization.cc
+            ${SRC_ROOT}/magnetization/magnetization_setup.cc
+            ${SRC_ROOT}/magnetization/magnetization_assemble.cc
+            ${SRC_ROOT}/magnetization/magnetization_solve.cc
+    )
+    deal_ii_setup_target(magnetization_lib)
+endif()
 
 # Coupled Poisson + Magnetization MMS test
 add_executable(test_poisson_mag_mms

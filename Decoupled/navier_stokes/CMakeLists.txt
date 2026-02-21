@@ -24,15 +24,18 @@ include_directories(${SRC_ROOT})
 # ============================================================================
 # Static library: facade + setup + assembly + solver + VTK output
 # ============================================================================
-add_library(navier_stokes_lib STATIC
-        navier_stokes.cc
-        navier_stokes_setup.cc
-        navier_stokes_assemble.cc
-        navier_stokes_solve.cc
-        navier_stokes_output.cc
-        ${SRC_ROOT}/utilities/parameters.cc
-)
-deal_ii_setup_target(navier_stokes_lib)
+# Guarded for top-level unified build
+if(NOT TARGET navier_stokes_lib)
+    add_library(navier_stokes_lib STATIC
+            navier_stokes.cc
+            navier_stokes_setup.cc
+            navier_stokes_assemble.cc
+            navier_stokes_solve.cc
+            navier_stokes_output.cc
+            ${SRC_ROOT}/utilities/parameters.cc
+    )
+    deal_ii_setup_target(navier_stokes_lib)
+endif()
 
 # ============================================================================
 # MMS convergence test (4-phase: Steady/Unsteady Stokes/NS)
