@@ -43,10 +43,10 @@ void Parameters::setup_rosensweig()
     physics.chi_0 = 0.5;          // χ₀ = 0.5
     physics.mu_0 = 1.0;           // μ = 1
 
-    // Physics — Magnetization (algebraic: β, τ irrelevant)
-    physics.tau_M = 1e-4;         // Zhang: τ = 1e-4 (not used with algebraic M)
-    physics.beta = 0.0;           // dropped for now (only in mag PDE)
-    physics.enable_beta_term = false;
+    // Physics — Magnetization (Zhang Eq 4.4: full PDE with β=1, τ=1e-4)
+    physics.tau_M = 1e-4;         // Zhang Eq 4.4: τ = 1e-4
+    physics.beta = 1.0;           // Zhang Eq 4.4: β = 1 (Landau-Lifshitz damping)
+    physics.enable_beta_term = true;
 
     // Physics — Cahn-Hilliard
     physics.mobility = 2e-4;      // Zhang Eq 4.4: M = 2e-4
@@ -91,11 +91,11 @@ void Parameters::setup_rosensweig()
     picard_iterations = 7;
     picard_tolerance = 0.01;
 
-    // Zhang's SAV+ZEC framework — enable by default for Rosensweig
-    use_algebraic_magnetization = true;
+    // Zhang's SAV scheme — use FULL magnetization PDE (not algebraic)
+    use_algebraic_magnetization = false;  // Zhang solves mag PDE (Eq 3.15-3.16)
     use_sav = true;
     sav.C0 = 1.0;
-    sav.S1 = 0.0;   // auto-computed: S1 = 1/eps
+    sav.S1 = 0.0;   // auto-computed: S1 = lambda/(4*epsilon) = 50
     sav.S2 = 0.0;   // start with 0, increase if needed
 }
 
@@ -224,6 +224,11 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             if (++i >= argc) { std::cerr << "--picard_iters requires a value\n"; std::exit(1); }
             params.picard_iterations = std::stoul(argv[i]);
         }
+        else if (std::strcmp(argv[i], "--picard_omega") == 0)
+        {
+            if (++i >= argc) { std::cerr << "--picard_omega requires a value\n"; std::exit(1); }
+            params.picard_relaxation = std::stod(argv[i]);
+        }
 
         // ---- SAV + Algebraic Magnetization ----
         else if (std::strcmp(argv[i], "--algebraic_M") == 0)
@@ -351,7 +356,9 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
                 params.physics.epsilon  = 2e-3;    // Zhang Eq 4.8
                 params.physics.chi_0    = 2.0;     // Zhang Eq 4.8
                 params.physics.mu_0     = 0.1;     // Zhang Eq 4.8: μ = 0.1
-                params.physics.tau_M    = 1e-6;    // fast relaxation → algebraic limit
+                params.physics.tau_M    = 1e-4;    // Zhang Eq 4.8: τ = 1e-4
+                params.physics.beta     = 1.0;     // Zhang Eq 4.8: β = 1
+                params.physics.enable_beta_term = true;
                 params.physics.mobility = 2e-4;    // Zhang Eq 4.8: M = 2e-4
                 params.physics.lambda   = 1.0;     // Zhang Eq 4.8
                 params.physics.nu_water = 1.0;     // Zhang Eq 4.8: ν_w = 1
@@ -365,11 +372,11 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
 
                 params.mesh.initial_refinement = 7;  // h = 1/128
 
-                // Zhang's SAV+ZEC framework — enable for droplet test
-                params.use_algebraic_magnetization = true;
+                // Zhang's SAV scheme — use FULL magnetization PDE
+                params.use_algebraic_magnetization = false;  // Zhang solves mag PDE
                 params.use_sav = true;
                 params.sav.C0 = 1.0;
-                params.sav.S1 = 0.0;   // auto-computed: S1 = 1/eps
+                params.sav.S1 = 0.0;   // auto-computed: S1 = lambda/(4*epsilon) = 125
                 params.sav.S2 = 0.0;   // start with 0
             }
             else if (params.validation_test == "droplet_nofield")
@@ -467,7 +474,8 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             std::cout << "    --density_ratio V   Density ratio r (default: 0.1)\n";
             std::cout << "    --gravity VALUE     Gravity magnitude (default: 30000)\n\n";
             std::cout << "  Coupling:\n";
-            std::cout << "    --picard_iters N    Max Picard iterations (default: 7)\n\n";
+            std::cout << "    --picard_iters N    Max Picard iterations (default: 7)\n";
+            std::cout << "    --picard_omega V    Picard under-relaxation (default: 0.3)\n\n";
             std::cout << "  Subsystems:\n";
             std::cout << "    --mms               MMS verification mode\n";
             std::cout << "    --no_magnetic       Disable applied field\n";
@@ -509,7 +517,8 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
                   << ", |g|=" << params.physics.gravity_magnitude << "\n";
         std::cout << "  dt=" << params.time.dt
                   << ", t_final=" << params.time.t_final << "\n";
-        std::cout << "  Picard: " << params.picard_iterations << " iters\n";
+        std::cout << "  Picard: " << params.picard_iterations << " iters, ω="
+                  << params.picard_relaxation << "\n";
         std::cout << "  Magnetic: " << (params.enable_magnetic ? "ON" : "OFF") << "\n";
         std::cout << "  NS: " << (params.enable_ns ? "ON" : "OFF")
                   << ", Gravity: " << (params.enable_gravity ? "ON" : "OFF") << "\n";

@@ -1,28 +1,37 @@
 // ============================================================================
 // physics/material_properties.h - Phase-Dependent Material Functions
 //
-// Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
-//            Eq. 2-3 (double-well), Eq. 17-19 (Heaviside interpolation)
+// Reference: Zhang, He & Yang, SIAM J. Sci. Comput. 43(1), 2021
+//            Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
+//
+// Convention: Code uses θ ∈ {-1, +1}. Zhang uses Φ ∈ {0, 1}.
+//             Mapping: Φ = (θ+1)/2.
+//
+// Zhang's material property interpolation is LINEAR in Φ:
+//   χ(Φ) = χ₀·Φ           → χ(θ) = χ₀·(θ+1)/2
+//   ν(Φ) = ν_f·Φ + ν_w·(1-Φ) → ν(θ) = ν_w·(1-θ)/2 + ν_f·(θ+1)/2
+//   ρ(Φ) = 1 + r/(1+exp((1-2Φ)/ε))  → ρ(θ) = 1 + r·H(θ/ε)
+//
+// Note: Density uses sigmoid (Zhang Eq 4.2), chi and nu use LINEAR.
 //
 // All functions take explicit parameter values — NO GLOBALS.
 //
-// CRITICAL FOR ENERGY STABILITY (Theorem 4.1):
+// CRITICAL FOR ENERGY STABILITY:
 //   All material coefficients MUST be evaluated at θ^{k-1} (the OLD value).
 //
 // Includes:
 //   Poisson + Magnetization:
-//     - Smoothed Heaviside H(x)
-//     - Susceptibility χ(θ) = χ₀ H(θ/ε)          (Eq. 18)
+//     - Susceptibility χ(θ) = χ₀·(θ+1)/2  (linear, Zhang convention)
 //     - Permeability   μ(θ) = 1 + χ(θ)
 //
 //   Cahn-Hilliard:
-//     - Double-well potential  F(θ)  = (1/4)(θ² - 1)²     (Eq. 2)
-//     - Double-well derivative f(θ)  = θ³ - θ              (Eq. 3)
+//     - Double-well potential  F(θ)  = (1/4)(θ² - 1)²
+//     - Double-well derivative f(θ)  = θ³ - θ
 //     - Double-well curvature  f'(θ) = 3θ² - 1
 //
 //   Navier-Stokes:
-//     - Viscosity  ν(θ) = ν_w + (ν_f - ν_w) H(θ/ε)       (Eq. 17)
-//     - Density    ρ(θ) = 1 + r H(θ/ε)                    (Eq. 19)
+//     - Viscosity  ν(θ) = ν_w·(1-θ)/2 + ν_f·(θ+1)/2  (linear, Zhang convention)
+//     - Density    ρ(θ) = 1 + r·H(θ/ε)                (sigmoid, Zhang Eq 4.2)
 // ============================================================================
 #ifndef MATERIAL_PROPERTIES_H
 #define MATERIAL_PROPERTIES_H
@@ -56,16 +65,24 @@ inline double heaviside_derivative(double x)
 }
 
 // ============================================================================
-// Magnetic Susceptibility (Eq. 18, p.501)
+// Magnetic Susceptibility (Zhang convention: LINEAR in Φ)
 //
-//   χ(θ) = χ₀ H(θ/ε)
+//   Zhang:  χ(Φ) = χ₀ · Φ          (Φ ∈ {0,1})
+//   Code:   χ(θ) = χ₀ · (θ+1)/2    (θ ∈ {-1,+1})
 //
-//   θ = +1 (ferrofluid)    → χ ≈ χ₀
-//   θ = -1 (non-magnetic)  → χ ≈ 0
+//   θ = +1 (ferrofluid)    → χ = χ₀
+//   θ = -1 (non-magnetic)  → χ = 0
+//   θ =  0 (interface)     → χ = χ₀/2
+//
+// NOTE: epsilon parameter kept in signature for API compatibility but
+//       is NOT used. Zhang's chi is linear, not sigmoid.
 // ============================================================================
-inline double susceptibility(double theta, double epsilon, double chi_0)
+inline double susceptibility(double theta, double /*epsilon*/, double chi_0)
 {
-    return chi_0 * heaviside(theta / epsilon);
+    // Linear interpolation: Φ = (θ+1)/2, clamp to [0,1] for safety
+    const double phi = 0.5 * (theta + 1.0);
+    const double phi_clamped = (phi < 0.0) ? 0.0 : (phi > 1.0 ? 1.0 : phi);
+    return chi_0 * phi_clamped;
 }
 
 // ============================================================================
@@ -84,59 +101,66 @@ inline double permeability(double theta, double epsilon, double chi_0)
 }
 
 // ============================================================================
-// Viscosity (Eq. 17, p.501)
+// Viscosity (Zhang convention: LINEAR in Φ)
 //
-//   ν(θ) = ν_w + (ν_f - ν_w) H(θ/ε)
+//   Zhang:  ν(Φ) = ν_f·Φ + ν_w·(1-Φ)       (Φ ∈ {0,1})
+//   Code:   ν(θ) = ν_w·(1-θ)/2 + ν_f·(θ+1)/2  (θ ∈ {-1,+1})
 //
 // Interpolates between non-magnetic and ferrofluid phases:
-//   θ = +1 (ferrofluid)    → ν ≈ ν_f   (higher viscosity)
-//   θ = -1 (non-magnetic)  → ν ≈ ν_w   (lower viscosity)
+//   θ = +1 (ferrofluid)    → ν = ν_f   (higher viscosity)
+//   θ = -1 (non-magnetic)  → ν = ν_w   (lower viscosity)
 //
-// Used in NS assembly (Eq. 42e): (ν(θ) T(U), T(V))
+// Used in NS assembly: (ν(θ) D(U), D(V))
 //
 // CRITICAL: Must use θ^{n-1} (LAGGED) for energy stability.
 //
-// Rosensweig (§6.2): ν_w = 1.0, ν_f = 2.0  →  ν ∈ [1, 2]
+// Rosensweig (Zhang Eq 4.4): ν_w = 1.0, ν_f = 2.0  →  ν ∈ [1, 2]
+//
+// NOTE: epsilon parameter kept in signature for API compatibility but
+//       is NOT used. Zhang's nu is linear, not sigmoid.
 // ============================================================================
 
 /**
- * @brief Viscosity ν(θ) = ν_w + (ν_f - ν_w) H(θ/ε)
+ * @brief Viscosity ν(θ) = ν_w·(1-θ)/2 + ν_f·(θ+1)/2  (linear interpolation)
  *
  * @param theta     Phase field value (use θ^{n-1} for energy stability!)
- * @param epsilon   Interface thickness ε
+ * @param epsilon   Interface thickness ε (unused — linear interpolation)
  * @param nu_water  Viscosity of non-magnetic phase ν_w
  * @param nu_ferro  Viscosity of ferrofluid phase ν_f
  * @return Interpolated viscosity
  */
-inline double viscosity(double theta, double epsilon,
+inline double viscosity(double theta, double /*epsilon*/,
                         double nu_water, double nu_ferro)
 {
-    return nu_water + (nu_ferro - nu_water) * heaviside(theta / epsilon);
+    // Linear interpolation: Φ = (θ+1)/2, clamp to [0,1] for safety
+    const double phi = 0.5 * (theta + 1.0);
+    const double phi_clamped = (phi < 0.0) ? 0.0 : (phi > 1.0 ? 1.0 : phi);
+    return nu_water * (1.0 - phi_clamped) + nu_ferro * phi_clamped;
 }
 
 // ============================================================================
-// Density Ratio (Eq. 19, p.502)
+// Density Ratio (Zhang Eq 4.2: SIGMOID, NOT linear)
 //
-//   ρ(θ) = 1 + r H(θ/ε)
+//   Zhang:  ρ(Φ) = 1 + r/(1+exp((1-2Φ)/ε))
+//   Code:   ρ(θ) = 1 + r·H(θ/ε)
 //
-// where r = (ρ_ferro - ρ_water) / ρ_water is the density ratio parameter.
+// Proof of equivalence: With Φ=(θ+1)/2, (1-2Φ)/ε = -θ/ε,
+// so 1/(1+exp((1-2Φ)/ε)) = 1/(1+exp(-θ/ε)) = H(θ/ε).  ✓
 //
 // Interpolates between phases:
 //   θ = +1 (ferrofluid)    → ρ ≈ 1 + r  (heavier)
 //   θ = -1 (non-magnetic)  → ρ ≈ 1      (reference density)
 //
-// Used in NS assembly (Eq. 42e):
-//   - Mass term:    ρ(θ)(U^n - U^{n-1})/τ
-//   - Convection:   ρ(θ) B_h(U; U, V)
-//   - Gravity:      ρ(θ) g
+// NOTE: Unlike chi and nu, Zhang's density uses a sigmoid (not linear).
+//       This is already correctly implemented.
 //
 // CRITICAL: Must use θ^{n-1} (LAGGED) for energy stability.
 //
-// Rosensweig (§6.2): r = 0.1  →  ρ ∈ [1.0, 1.1]
+// Rosensweig (Zhang Eq 4.4): r = 0.1  →  ρ ∈ [1.0, 1.1]
 // ============================================================================
 
 /**
- * @brief Density ratio ρ(θ) = 1 + r H(θ/ε)
+ * @brief Density ratio ρ(θ) = 1 + r·H(θ/ε)  (Zhang Eq 4.2)
  *
  * @param theta    Phase field value (use θ^{n-1} for energy stability!)
  * @param epsilon  Interface thickness ε

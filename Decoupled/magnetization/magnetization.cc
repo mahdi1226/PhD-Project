@@ -202,6 +202,45 @@ MagnetizationSubsystem<dim>::get_My_relevant() const
 }
 
 // ============================================================================
+// apply_under_relaxation() — blend M_solve with M^k for Picard stability
+//
+// After solve(), Mx/My_solution_ contain M_solve (owned, non-ghosted).
+// The ghosted Mx/My_relevant_ still hold M^k from the PREVIOUS update_ghosts().
+// (solve() only writes to solution_, not relevant_.)
+//
+// We blend on the owned partition: solution = ω·solution + (1-ω)·relevant
+// Since relevant_ is ghosted and solution_ is owned, we iterate over
+// locally_owned_dofs only (both agree on these entries).
+// ============================================================================
+template <int dim>
+void MagnetizationSubsystem<dim>::apply_under_relaxation(double omega)
+{
+    Assert(omega > 0.0 && omega <= 1.0,
+           dealii::ExcMessage("omega must be in (0, 1]"));
+
+    if (std::abs(omega - 1.0) < 1e-15)
+        return;  // No relaxation needed
+
+    const double one_minus_omega = 1.0 - omega;
+
+    // Iterate over locally owned entries
+    for (const auto idx : locally_owned_dofs_)
+    {
+        Mx_solution_[idx] = omega * Mx_solution_[idx]
+                          + one_minus_omega * Mx_relevant_[idx];
+        My_solution_[idx] = omega * My_solution_[idx]
+                          + one_minus_omega * My_relevant_[idx];
+    }
+
+    // Compress after direct writes
+    Mx_solution_.compress(VectorOperation::insert);
+    My_solution_.compress(VectorOperation::insert);
+
+    // Ghosts are stale (solution changed)
+    invalidate_ghosts();
+}
+
+// ============================================================================
 // Ghost management
 // ============================================================================
 template <int dim>
@@ -219,6 +258,39 @@ template <int dim>
 void MagnetizationSubsystem<dim>::invalidate_ghosts()
 {
     ghosts_valid_ = false;
+}
+
+// ============================================================================
+// save_old_solution() — snapshot M^{n-1} for Picard sub-iteration
+//
+// Copies current ghosted M → old ghosted M.
+// Must be called after update_ghosts() and before the first Picard iteration.
+// ============================================================================
+template <int dim>
+void MagnetizationSubsystem<dim>::save_old_solution()
+{
+    Assert(ghosts_valid_,
+           dealii::ExcMessage("Ghosts must be valid before save_old_solution()."));
+
+    Mx_old_relevant_ = Mx_relevant_;
+    My_old_relevant_ = My_relevant_;
+}
+
+// ============================================================================
+// Old-time accessors (for Picard: M^{n-1})
+// ============================================================================
+template <int dim>
+const TrilinosWrappers::MPI::Vector&
+MagnetizationSubsystem<dim>::get_Mx_old_relevant() const
+{
+    return Mx_old_relevant_;
+}
+
+template <int dim>
+const TrilinosWrappers::MPI::Vector&
+MagnetizationSubsystem<dim>::get_My_old_relevant() const
+{
+    return My_old_relevant_;
 }
 
 // ============================================================================

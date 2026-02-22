@@ -133,6 +133,7 @@ public:
         const dealii::TrilinosWrappers::MPI::Vector& My_relevant,
         const dealii::DoFHandler<dim>&               M_dof_handler,
         double current_time,
+        double S2 = 0.0,
         bool include_convection = true);
 
     // ========================================================================

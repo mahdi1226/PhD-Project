@@ -7,11 +7,12 @@
 // Internal:
 //   assemble_ns_core() — Time derivative, viscous, convection, pressure
 //
-// LHS: (1/τ)(U^n, V) + ν(T(U^n), T(V))/2 + B_h(U^{n-1}; U^n, V) − (P, ∇·V)
+// LHS: (1/τ)(U^n, V) + ν(D(U^n), D(V)) + B_h(U^{n-1}; U^n, V) − (P, ∇·V)
 //      (∇·U^n, Q) = 0
 // RHS: (1/τ)(U^{n-1}, V) + (f, V)
 //
-// Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) Eq. 42e-f
+// Reference: Zhang, He & Yang, SIAM J. Sci. Comput. 43(1) (2021), Eq 2.6
+//            Nochetto, Salgado & Tomas, CMAME 309 (2016) Eq. 42e-f
 // ============================================================================
 
 #include "navier_stokes.h"
@@ -26,7 +27,10 @@
 
 // ============================================================================
 // Helper: T(V) for test function V = (φ_ux, 0)
-// T(U) = ∇U + (∇U)^T  (symmetric gradient, factor 2 on diagonal)
+// T(U) = ∇U + (∇U)^T  (= 2D(U), where D = ½(∇U + ∇U^T) is the symmetric gradient)
+//
+// NOTE: The viscous bilinear form is (ν D(U), D(V)) = (ν/4)(T(U), T(V))
+// since T = 2D and (2D):(2D) = 4(D:D).  See Zhang Eq 2.6, Nochetto Eq 14e.
 // ============================================================================
 template <int dim>
 static dealii::SymmetricTensor<2, dim> compute_T_test_ux(
@@ -53,10 +57,11 @@ static dealii::SymmetricTensor<2, dim> compute_T_test_uy(
 // ============================================================================
 // assemble_ns_core() — Core Navier-Stokes assembly
 //
-// LHS: (1/τ)(U^n, V) + ν(T(U^n), T(V))/2 + B_h(U^{n-1}; U^n, V) − (P, ∇·V)
+// LHS: (1/τ)(U^n, V) + ν(D(U^n), D(V)) + B_h(U^{n-1}; U^n, V) − (P, ∇·V)
 //      (∇·U^n, Q) = 0
 // RHS: (1/τ)(U^{n-1}, V) + (f, V)
 //
+// D(U) = ½(∇U + ∇U^T).  Zhang Eq 2.6, Nochetto Eq 14e/42e.
 // Skew-symmetric convection: B_h from skew_forms.h (Eq. 37)
 // ============================================================================
 template <int dim>
@@ -210,11 +215,13 @@ static void assemble_ns_core(
                         local_uy_uy(i, j) += (1.0 / dt) * phi_uy_j * phi_uy_i * JxW;
                     }
 
-                    // Viscous: ν(T(U), T(V))/2
-                    local_ux_ux(i, j) += (nu / 2.0) * (T_U_x * T_V_x) * JxW;
-                    local_uy_uy(i, j) += (nu / 2.0) * (T_U_y * T_V_y) * JxW;
-                    local_ux_uy(i, j) += (nu / 2.0) * (T_U_y * T_V_x) * JxW;
-                    local_uy_ux(i, j) += (nu / 2.0) * (T_U_x * T_V_y) * JxW;
+                    // Viscous: (ν D(U), D(V)) = (ν/4)(T(U), T(V))
+                    // since T = 2D, so T:T = 4(D:D)
+                    // Zhang Eq 2.6, Nochetto Eq 14e (T = D = ½(∇u+∇u^T))
+                    local_ux_ux(i, j) += (nu / 4.0) * (T_U_x * T_V_x) * JxW;
+                    local_uy_uy(i, j) += (nu / 4.0) * (T_U_y * T_V_y) * JxW;
+                    local_ux_uy(i, j) += (nu / 4.0) * (T_U_y * T_V_x) * JxW;
+                    local_uy_ux(i, j) += (nu / 4.0) * (T_U_x * T_V_y) * JxW;
 
 
                     if (include_convection)
@@ -307,14 +314,21 @@ void NSSubsystem<dim>::assemble_stokes(
 // PUBLIC: assemble_coupled()
 //
 // Variable viscosity ν(θ), Kelvin force μ₀ B_h^m(V, H, M), gravity ρ(θ)g,
-// and capillary force λψ∇θ.
+// capillary force θ∇ψ, and S₂ stabilization.
 //
-// LHS: (1/τ)(U^n, V) + ν(θ)(T(U^n), T(V))/2 + B_h(U^{n-1}; U^n, V)
+// Full DG skew form for Kelvin force (Nochetto Eq. 38, Zhang Eq. 3.22):
+//   Cell: μ₀[(M·∇)H · V + ½(∇·M)(H·V)]
+//   Face: −μ₀(V·n⁻)[[H]]·{M}
+//
+// LHS: (1/τ + S₂)(U^n, V) + ν(θ)(D(U^n), D(V)) + B_h(U^{n-1}; U^n, V)
 //       − (P, ∇·V) = 0
 //      (∇·U^n, Q) = 0
-// RHS: (1/τ)(U^{n-1}, V) + μ₀ B_h^m(V, H, M) + (ρ(θ)g, V) + λ(ψ∇θ, V)
+// RHS: (1/τ + S₂)(U^{n-1}, V) + μ₀ B_h^m(V, H, M) + (ρ(θ)g, V) + (θ∇ψ, V)
+//
+// S₂ stabilization: Zhang Theorem 4.1 requires S₂ ≥ μ₀²C_M²/(4ν_min)
 //
 // Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) Eq. 42e-f
+//            Zhang, He & Yang, SIAM J. Sci. Comput. 43(1) (2021) Theorem 4.1
 // ============================================================================
 #include "physics/material_properties.h"
 #include "physics/kelvin_force.h"
@@ -333,6 +347,7 @@ void NSSubsystem<dim>::assemble_coupled(
     const dealii::TrilinosWrappers::MPI::Vector& My_relevant,
     const dealii::DoFHandler<dim>&               M_dof_handler,
     double current_time,
+    double S2,
     bool include_convection)
 {
     using namespace dealii;
@@ -416,6 +431,10 @@ void NSSubsystem<dim>::assemble_coupled(
                        * params_.physics.gravity_direction[d];
     }
 
+    // Effective mass coefficient: 1/dt + S2
+    // S2 stabilization per Zhang Theorem 4.1: S2 >= mu_0^2*C_M^2/(4*nu_min)
+    const double mass_coeff = 1.0 / dt + S2;
+
     // Iterate over all cells (synchronized across all DoFHandlers)
     auto ux_cell    = ux_dof_handler_.begin_active();
     auto uy_cell    = uy_dof_handler_.begin_active();
@@ -496,10 +515,11 @@ void NSSubsystem<dim>::assemble_coupled(
             M[0] = Mx_values[q];
             M[1] = My_values[q];
 
-            // Kelvin force: μ₀(M·∇)H
+            // Kelvin force: full DG skew cell kernel (Eq. 38, first line)
+            //   (M·∇)H · V + ½(∇·M)(H·V)
             //
             // H = ∇φ + h_a, so ∇H = Hess(φ) + ∇h_a
-            // For spatially varying h_a (dipoles), ∇h_a ≠ 0.
+            // div(M) = ∂Mx/∂x + ∂My/∂y (elementwise, DG)
             const Tensor<2, dim>& hess_phi = phi_hessians[q];
             Tensor<2, dim> grad_H = hess_phi;
             {
@@ -507,7 +527,18 @@ void NSSubsystem<dim>::assemble_coupled(
                     x_q, params_, current_time);
                 grad_H += grad_h_a;
             }
-            Tensor<1, dim> kelvin = KelvinForce::compute_M_grad_H<dim>(M, grad_H);
+            const Tensor<1, dim> M_grad_H = KelvinForce::compute_M_grad_H<dim>(M, grad_H);
+            const double div_M = KelvinForce::compute_div_M<dim>(
+                Mx_gradients[q], My_gradients[q]);
+
+            // H for the ½(∇·M)(H·V) term
+            Tensor<1, dim> H_total;
+            {
+                Tensor<1, dim> h_a_q = compute_applied_field<dim>(
+                    x_q, params_, current_time);
+                for (unsigned int d = 0; d < dim; ++d)
+                    H_total[d] = phi_gradients[q][d] + h_a_q[d];
+            }
 
             // Gravity body force: ρ(θ)g
             Tensor<1, dim> F_gravity;
@@ -518,20 +549,26 @@ void NSSubsystem<dim>::assemble_coupled(
                 F_gravity = rho_q * gravity;
             }
 
-            // Capillary force: θ ∇ψ  (Zhang Eq 2.6: Φ∇W, Nochetto Eq 42e/65d)
+            // Capillary force: θ ∇ψ
             //
-            // ψ is the CH chemical potential from the SAV solve.
-            // SAV ψ = λ(-ε∆θ + (1/ε)f(θ)) already contains λ, so no
-            // extra λ factor is needed.  Direction: phase field × grad(W).
+            // Energy identity derivation:
+            //   Our ψ = λ(ε∆θ - (1/ε)f(θ)) absorbs both λ and 1/ε.
+            //   dE_CH/dt = -(ψ, θ_t), and θ_t = -u·∇θ + γ∆ψ, gives
+            //   dE_CH/dt = -(θ∇ψ, u) + γ||∇ψ||².
+            //   NS capillary = +θ∇ψ cancels the CH coupling term.
+            //
+            // Nochetto Eq 65d: (λ/ε)Θ∇Ψ with Ψ without λ or 1/ε.
+            // Zhang Eq 2.6:    Φ∇W with W = λ(-ε∆Φ + f(Φ)).
+            // Both equivalent. Our ψ has all factors baked in → just θ∇ψ.
             Tensor<1, dim> F_capillary;
             {
                 const Tensor<1, dim>& grad_psi_q = psi_gradients[q];
                 F_capillary = theta_q * grad_psi_q;
             }
 
-            // Total RHS force
-            Tensor<1, dim> F_source;
-            F_source = params_.physics.mu_0 * kelvin + F_capillary + F_gravity;
+            // Non-magnetic body forces (capillary + gravity)
+            Tensor<1, dim> F_non_magnetic;
+            F_non_magnetic = F_capillary + F_gravity;
 
             for (unsigned int i = 0; i < dofs_per_cell_vel; ++i)
             {
@@ -543,13 +580,23 @@ void NSSubsystem<dim>::assemble_coupled(
                 auto T_V_x = compute_T_test_ux<dim>(grad_phi_ux_i);
                 auto T_V_y = compute_T_test_uy<dim>(grad_phi_uy_i);
 
-                // RHS: body force + Kelvin force + time derivative
-                local_rhs_ux(i) += F_source[0] * phi_ux_i * JxW;
-                local_rhs_uy(i) += F_source[1] * phi_uy_i * JxW;
+                // RHS: non-magnetic body forces
+                local_rhs_ux(i) += F_non_magnetic[0] * phi_ux_i * JxW;
+                local_rhs_uy(i) += F_non_magnetic[1] * phi_uy_i * JxW;
 
-                // Time derivative: (1/τ)(U^{n-1}, V)
-                local_rhs_ux(i) += (ux_old_values[q] / dt) * phi_ux_i * JxW;
-                local_rhs_uy(i) += (uy_old_values[q] / dt) * phi_uy_i * JxW;
+                // RHS: Kelvin force — full DG skew cell kernel (Eq. 38)
+                //   μ₀ [(M·∇)H · V + ½(∇·M)(H·V)]
+                double kelvin_ux, kelvin_uy;
+                KelvinForce::cell_kernel<dim>(
+                    M_grad_H, div_M, H_total,
+                    phi_ux_i, phi_uy_i,
+                    kelvin_ux, kelvin_uy);
+                local_rhs_ux(i) += params_.physics.mu_0 * kelvin_ux * JxW;
+                local_rhs_uy(i) += params_.physics.mu_0 * kelvin_uy * JxW;
+
+                // RHS: time derivative + S2 stabilization: (1/dt + S2) * U^{n-1}
+                local_rhs_ux(i) += mass_coeff * ux_old_values[q] * phi_ux_i * JxW;
+                local_rhs_uy(i) += mass_coeff * uy_old_values[q] * phi_uy_i * JxW;
 
                 // Kelvin force face contribution: −μ₀(V·n)[[H]]·{M}
                 // assembled in dedicated face loop after cell loop
@@ -564,15 +611,16 @@ void NSSubsystem<dim>::assemble_coupled(
                     auto T_U_x = compute_T_test_ux<dim>(grad_phi_ux_j);
                     auto T_U_y = compute_T_test_uy<dim>(grad_phi_uy_j);
 
-                    // Mass: (1/τ)(U^n, V)
-                    local_ux_ux(i, j) += (1.0 / dt) * phi_ux_j * phi_ux_i * JxW;
-                    local_uy_uy(i, j) += (1.0 / dt) * phi_uy_j * phi_uy_i * JxW;
+                    // Mass + S2: (1/dt + S2)(U^n, V)
+                    local_ux_ux(i, j) += mass_coeff * phi_ux_j * phi_ux_i * JxW;
+                    local_uy_uy(i, j) += mass_coeff * phi_uy_j * phi_uy_i * JxW;
 
-                    // Viscous: ν(θ)(T(U^n), T(V))/2
-                    local_ux_ux(i, j) += (nu_q / 2.0) * (T_U_x * T_V_x) * JxW;
-                    local_uy_uy(i, j) += (nu_q / 2.0) * (T_U_y * T_V_y) * JxW;
-                    local_ux_uy(i, j) += (nu_q / 2.0) * (T_U_y * T_V_x) * JxW;
-                    local_uy_ux(i, j) += (nu_q / 2.0) * (T_U_x * T_V_y) * JxW;
+                    // Viscous: (ν(θ) D(U), D(V)) = (ν/4)(T(U), T(V))
+                    // Zhang Eq 2.6: D = ½(∇u+∇u^T), T = 2D
+                    local_ux_ux(i, j) += (nu_q / 4.0) * (T_U_x * T_V_x) * JxW;
+                    local_uy_uy(i, j) += (nu_q / 4.0) * (T_U_y * T_V_y) * JxW;
+                    local_ux_uy(i, j) += (nu_q / 4.0) * (T_U_y * T_V_x) * JxW;
+                    local_uy_ux(i, j) += (nu_q / 4.0) * (T_U_x * T_V_y) * JxW;
 
                     // Convection: B_h(U^{n-1}; U^n, V) skew-symmetric
                     if (include_convection)
@@ -642,11 +690,10 @@ void NSSubsystem<dim>::assemble_coupled(
     //   B_h^m(H, H, M) = 0   (Lemma 3.1, Nochetto et al. 2016)
     // Without it, spurious forces break the directional balance.
     // ========================================================================
-    // Face loop for DG skew form B_h^m: temporarily disabled.
-    // Using simple Kelvin force μ₀(M·∇)H instead of the full DG skew form.
-    // The skew form requires cell + face + energy identity to give correct forces;
-    // the simple form is what Zhang, He & Yang (SIAM J. Sci. Comput. 2021) use.
-    if (false && params_.enable_magnetic)
+    // Kelvin force FACE loop: −μ₀(V·n⁻)[[H]]·{M}  (Eq. 38, second line)
+    // Required for energy identity B_h^m(H, H, M) = 0 (Lemma 3.1).
+    // Zhang, He & Yang (2021) Eq. 3.22: full skew form with face terms.
+    if (params_.enable_magnetic)
     {
         QGauss<dim - 1> face_quadrature(fe_vel.degree + 2);
         const unsigned int n_face_q = face_quadrature.size();
@@ -810,13 +857,13 @@ template void NSSubsystem<2>::assemble_coupled(
     const dealii::TrilinosWrappers::MPI::Vector&, const dealii::DoFHandler<2>&,
     const dealii::TrilinosWrappers::MPI::Vector&, const dealii::DoFHandler<2>&,
     const dealii::TrilinosWrappers::MPI::Vector&, const dealii::TrilinosWrappers::MPI::Vector&,
-    const dealii::DoFHandler<2>&, double, bool);
+    const dealii::DoFHandler<2>&, double, double, bool);
 template void NSSubsystem<3>::assemble_coupled(
     double, const dealii::TrilinosWrappers::MPI::Vector&, const dealii::DoFHandler<3>&,
     const dealii::TrilinosWrappers::MPI::Vector&, const dealii::DoFHandler<3>&,
     const dealii::TrilinosWrappers::MPI::Vector&, const dealii::DoFHandler<3>&,
     const dealii::TrilinosWrappers::MPI::Vector&, const dealii::TrilinosWrappers::MPI::Vector&,
-    const dealii::DoFHandler<3>&, double, bool);
+    const dealii::DoFHandler<3>&, double, double, bool);
 
 
 // ============================================================================
@@ -827,9 +874,9 @@ template void NSSubsystem<3>::assemble_coupled(
 //   - S2 stabilization: +S2(u^{n+1} - u^n, v)
 //   - Kelvin force explicit: mu0*(M.grad)H on RHS
 //
-// LHS: (1/tau + S2)(U^n, V) + nu(theta)(T(U^n), T(V))/2
+// LHS: (1/tau + S2)(U^n, V) + nu(theta)(D(U^n), D(V))
 //       + B_h(U^{n-1}; U^n, V) - (P, div V) = 0
-// RHS: (1/tau + S2)(U^{n-1}, V) + mu0*(M.grad)H * V + lambda*psi*grad_theta * V
+// RHS: (1/tau + S2)(U^{n-1}, V) + mu0*(M.grad)H * V + theta*grad_psi * V
 //       + rho(theta)*g * V
 // ============================================================================
 template <int dim>
@@ -1029,8 +1076,11 @@ void NSSubsystem<dim>::assemble_coupled_algebraic_M(
                 F_gravity = rho_q * gravity;
             }
 
-            // Capillary force: θ ∇ψ  (Zhang Eq 2.6: Φ∇W)
-            // SAV ψ = λ(-ε∆θ + (1/ε)f(θ)) already contains λ.
+            // Capillary force: θ ∇ψ
+            //
+            // Our ψ = λ(ε∆θ - (1/ε)f(θ)) absorbs λ and 1/ε factors.
+            // Energy identity: dE_CH/dt = -(θ∇ψ, u) + γ||∇ψ||²,
+            // so NS capillary = +θ∇ψ for energy cancellation.
             Tensor<1, dim> F_capillary;
             {
                 const Tensor<1, dim>& grad_psi_q = psi_gradients[q];
@@ -1074,11 +1124,12 @@ void NSSubsystem<dim>::assemble_coupled_algebraic_M(
                     local_ux_ux(i, j) += mass_coeff * phi_ux_j * phi_ux_i * JxW;
                     local_uy_uy(i, j) += mass_coeff * phi_uy_j * phi_uy_i * JxW;
 
-                    // Viscous: nu(theta)(T(U^n), T(V))/2
-                    local_ux_ux(i, j) += (nu_q / 2.0) * (T_U_x * T_V_x) * JxW;
-                    local_uy_uy(i, j) += (nu_q / 2.0) * (T_U_y * T_V_y) * JxW;
-                    local_ux_uy(i, j) += (nu_q / 2.0) * (T_U_y * T_V_x) * JxW;
-                    local_uy_ux(i, j) += (nu_q / 2.0) * (T_U_x * T_V_y) * JxW;
+                    // Viscous: (ν(θ) D(U), D(V)) = (ν/4)(T(U), T(V))
+                    // Zhang Eq 2.6: D = ½(∇u+∇u^T), T = 2D
+                    local_ux_ux(i, j) += (nu_q / 4.0) * (T_U_x * T_V_x) * JxW;
+                    local_uy_uy(i, j) += (nu_q / 4.0) * (T_U_y * T_V_y) * JxW;
+                    local_ux_uy(i, j) += (nu_q / 4.0) * (T_U_y * T_V_x) * JxW;
+                    local_uy_ux(i, j) += (nu_q / 4.0) * (T_U_x * T_V_y) * JxW;
 
                     // Convection: B_h(U^{n-1}; U^n, V) skew-symmetric
                     if (include_convection)

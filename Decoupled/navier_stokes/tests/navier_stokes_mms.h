@@ -185,7 +185,8 @@ namespace NSMMS
 
     // ========================================================================
     // Phase A source: Steady Stokes
-    //   f_A = −ν∇²U + ∇p       evaluated at t_eval
+    //   f_A = −div(ν D(U)) + ∇p = −(ν/2)∇²U + ∇p    (for div-free U)
+    //   because D(U) = ½(∇U + ∇U^T), so div(ν D(U)) = (ν/2)∇²U
     // Assembler: assemble_stokes(dt, nu, false, false, &src, t_eval)
     // ========================================================================
     template <int dim>
@@ -197,15 +198,15 @@ namespace NSMMS
         const auto gp  = grad_p<dim>(pt, t_eval, Ly);
 
         dealii::Tensor<1, dim> f;
-        f[0] = -nu * lap[0] + gp[0];
-        f[1] = -nu * lap[1] + gp[1];
+        f[0] = -(nu / 2.0) * lap[0] + gp[0];
+        f[1] = -(nu / 2.0) * lap[1] + gp[1];
         return f;
     }
 
 
     // ========================================================================
     // Phase B source: Unsteady Stokes
-    //   f_B = (U^n − U^{n−1})/dt − ν∇²U^n + ∇p^n
+    //   f_B = (U^n − U^{n−1})/dt − (ν/2)∇²U^n + ∇p^n
     // Assembler: assemble_stokes(dt, nu, true, false, &src, t_new)
     // ========================================================================
     template <int dim>
@@ -221,15 +222,15 @@ namespace NSMMS
         const auto gp  = grad_p<dim>(pt, t_new, Ly);
 
         dealii::Tensor<1, dim> f;
-        f[0] = dux_dt - nu * lap[0] + gp[0];
-        f[1] = duy_dt - nu * lap[1] + gp[1];
+        f[0] = dux_dt - (nu / 2.0) * lap[0] + gp[0];
+        f[1] = duy_dt - (nu / 2.0) * lap[1] + gp[1];
         return f;
     }
 
 
     // ========================================================================
     // Phase C source: Steady NS
-    //   f_C = (U·∇)U − ν∇²U + ∇p       evaluated at t_eval
+    //   f_C = (U·∇)U − (ν/2)∇²U + ∇p       evaluated at t_eval
     // Assembler: set_old_velocity(exact), assemble_stokes(dt, nu, false, true, &src, t)
     // ========================================================================
     template <int dim>
@@ -242,15 +243,15 @@ namespace NSMMS
         const auto gp   = grad_p<dim>(pt, t_eval, Ly);
 
         dealii::Tensor<1, dim> f;
-        f[0] = conv[0] - nu * lap[0] + gp[0];
-        f[1] = conv[1] - nu * lap[1] + gp[1];
+        f[0] = conv[0] - (nu / 2.0) * lap[0] + gp[0];
+        f[1] = conv[1] - (nu / 2.0) * lap[1] + gp[1];
         return f;
     }
 
 
     // ========================================================================
     // Phase D source: Unsteady NS (semi-implicit convection)
-    //   f_D = (U^n − U^{n−1})/dt + (U^{n−1}·∇)U^n − ν∇²U^n + ∇p^n
+    //   f_D = (U^n − U^{n−1})/dt + (U^{n−1}·∇)U^n − (ν/2)∇²U^n + ∇p^n
     // Assembler: assemble_stokes(dt, nu, true, true, &src, t_new)
     //
     // NOTE: Original proven-working implementation with inline math.
@@ -288,8 +289,8 @@ namespace NSMMS
         const double dpy = -t_new * (M_PI / Ly) * cp * spy;
 
         dealii::Tensor<1, dim> f;
-        f[0] = dux_dt + (ux_o * gux_n[0] + uy_o * gux_n[1]) - nu * lap_ux + dpx;
-        f[1] = duy_dt + (ux_o * guy_n[0] + uy_o * guy_n[1]) - nu * lap_uy + dpy;
+        f[0] = dux_dt + (ux_o * gux_n[0] + uy_o * gux_n[1]) - (nu / 2.0) * lap_ux + dpx;
+        f[1] = duy_dt + (ux_o * guy_n[0] + uy_o * guy_n[1]) - (nu / 2.0) * lap_uy + dpy;
         return f;
     }
 } // namespace NSMMS

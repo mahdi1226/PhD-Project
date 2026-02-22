@@ -243,6 +243,35 @@ public:
     const dealii::TrilinosWrappers::MPI::Vector& get_Mx_relevant() const;
     const dealii::TrilinosWrappers::MPI::Vector& get_My_relevant() const;
 
+    /** Old-time ghosted vectors M^{n-1} (for Picard sub-iteration) */
+    const dealii::TrilinosWrappers::MPI::Vector& get_Mx_old_relevant() const;
+    const dealii::TrilinosWrappers::MPI::Vector& get_My_old_relevant() const;
+
+    /**
+     * @brief Save current M as M^{n-1} snapshot for Picard sub-iteration.
+     *
+     * Call at the start of each timestep (before any Picard iterations).
+     * Copies current Mx/My_relevant_ → Mx/My_old_relevant_.
+     * Ghosts must be up to date before calling (call update_ghosts() first).
+     */
+    void save_old_solution();
+
+    /**
+     * @brief Apply under-relaxation to the solution vectors.
+     *
+     * Blends the newly-solved M with the previous iterate M^k:
+     *   M^{k+1} = ω * M_solve + (1-ω) * M^k
+     * where M^k is stored in Mx/My_relevant_ (ghosted, from before solve())
+     * and M_solve is the current Mx/My_solution_ (from solve()).
+     *
+     * Must be called AFTER solve() and BEFORE update_ghosts().
+     * The M^k values are read from the ghosted vectors (still valid from
+     * the previous update_ghosts() call; solve() only overwrites owned vectors).
+     *
+     * @param omega  Under-relaxation factor (0 < ω ≤ 1)
+     */
+    void apply_under_relaxation(double omega);
+
     /**
      * @brief Copy owned → ghosted (lazy: skips if already valid).
      *
@@ -395,6 +424,10 @@ private:
     dealii::TrilinosWrappers::MPI::Vector     My_solution_;       // locally owned
     dealii::TrilinosWrappers::MPI::Vector     Mx_relevant_;       // ghosted
     dealii::TrilinosWrappers::MPI::Vector     My_relevant_;       // ghosted
+
+    // Old-time snapshots (for Picard sub-iteration: M^{n-1} saved at timestep start)
+    dealii::TrilinosWrappers::MPI::Vector     Mx_old_relevant_;   // ghosted
+    dealii::TrilinosWrappers::MPI::Vector     My_old_relevant_;   // ghosted
 
     // ========================================================================
     // Preconditioner (ILU, initialized once per assemble(), reused for Mx+My)

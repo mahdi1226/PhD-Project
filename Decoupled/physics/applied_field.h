@@ -110,9 +110,8 @@ inline dealii::Tensor<1, dim> compute_applied_field(
         const double d_x = params.dipoles.direction[0];
         const double d_y = params.dipoles.direction[1];
 
-        const double min_dipole_dist = std::abs(params.dipoles.positions[0][1]);
-        const double delta = 0.01 * min_dipole_dist;
-        const double delta_sq = delta * delta;
+        // Zhang uses NO regularization: φ_s(x) = d·(x_s - x)/|x_s - x|²
+        // Dipoles are far below domain (y=-15), so no singularity protection needed.
 
         h_a[0] = 0.0;
         h_a[1] = 0.0;
@@ -122,7 +121,7 @@ inline dealii::Tensor<1, dim> compute_applied_field(
             const double rx = dipole_pos[0] - p[0];
             const double ry = dipole_pos[1] - p[1];
             const double r_sq = rx * rx + ry * ry;
-            const double r_eff_sq = r_sq + delta_sq;
+            const double r_eff_sq = r_sq;  // no regularization (Zhang convention)
 
             if (r_eff_sq < 1e-12)
                 continue;
@@ -199,9 +198,7 @@ inline dealii::Tensor<2, dim> compute_applied_field_gradient(
         const double d_x = params.dipoles.direction[0];
         const double d_y = params.dipoles.direction[1];
 
-        const double min_dipole_dist = std::abs(params.dipoles.positions[0][1]);
-        const double delta = 0.01 * min_dipole_dist;
-        const double delta_sq = delta * delta;
+        // Zhang uses NO regularization — dipoles are far from domain.
 
         // d vector as array for indexed access
         const double d_vec[2] = {d_x, d_y};
@@ -212,7 +209,7 @@ inline dealii::Tensor<2, dim> compute_applied_field_gradient(
             const double ry = dipole_pos[1] - p[1];
             const double r_vec[2] = {rx, ry};
             const double r_sq = rx * rx + ry * ry;
-            const double R2 = r_sq + delta_sq;
+            const double R2 = r_sq;  // no regularization (Zhang convention)
 
             if (R2 < 1e-12)
                 continue;

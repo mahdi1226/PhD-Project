@@ -280,6 +280,7 @@ struct Parameters
     // ========================================================================
     unsigned int picard_iterations = 7;
     double picard_tolerance = 0.01;
+    double picard_relaxation = 0.3;  // under-relaxation ω for Picard: M^{k+1} = ω·M_solve + (1-ω)·M^k
 
     // ========================================================================
     // Validation test mode

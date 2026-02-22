@@ -88,8 +88,12 @@ void MagnetizationSubsystem<dim>::allocate_vectors()
     Mx_relevant_.reinit(locally_owned_dofs_, locally_relevant_dofs_, mpi_comm_);
     My_relevant_.reinit(locally_owned_dofs_, locally_relevant_dofs_, mpi_comm_);
 
+    // Old-time ghosted vectors (for Picard sub-iteration: M^{n-1})
+    Mx_old_relevant_.reinit(locally_owned_dofs_, locally_relevant_dofs_, mpi_comm_);
+    My_old_relevant_.reinit(locally_owned_dofs_, locally_relevant_dofs_, mpi_comm_);
+
     pcout_ << "[Magnetization Setup] Vectors allocated (Mx+My: "
-           << "2×solution, 2×rhs, 2×ghosted)" << std::endl;
+           << "2×solution, 2×rhs, 2×ghosted, 2×old_ghosted)" << std::endl;
 }
 
 // ============================================================================
