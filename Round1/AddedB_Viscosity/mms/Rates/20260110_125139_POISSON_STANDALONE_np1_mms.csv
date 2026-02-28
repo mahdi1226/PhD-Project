@@ -1,0 +1,12 @@
+# MMS Convergence Study: POISSON_STANDALONE
+# Date: 2026-01-10 12:51:39
+# MPI ranks: 1
+# Total wall time: 0.00 s
+# FE degree: 2
+# Expected rates: L2=3.00, H1=2.00
+#
+refinement,h,n_dofs,wall_time,time_per_dof,phi_L2,phi_L2_rate,phi_H1,phi_H1_rate
+3,1.767767e-02,15617,0.0360,2.30e-06,6.39e-07,0.00,3.31e-04,0.00
+4,8.838835e-03,61953,0.0889,1.44e-06,7.99e-08,3.00,8.28e-05,2.00
+5,4.419417e-03,246785,0.3206,1.30e-06,9.98e-09,3.00,2.07e-05,2.00
+6,2.209709e-03,985089,1.3579,1.38e-06,1.25e-09,3.00,5.18e-06,2.00

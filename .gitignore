@@ -12,6 +12,13 @@
 **/*_results/
 **/mms_results/
 **/ch_results/
+**/Results/
+
+# Archives and large files
+*.zip
+
+# Reference material (papers, etc.)
+**/Reference/
 
 # Claude worktrees
 **/.claude/
