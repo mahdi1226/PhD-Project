@@ -96,6 +96,12 @@ struct Parameters
 
         // -- Cahn-Hilliard (Eq. 42a-b, Section 6.2) --
         //
+        // WARNING: Zhang et al. use Φ∈{0,1} convention. This code uses θ∈{-1,+1}.
+        // The double-well potentials differ: F(θ)=¼(θ²-1)² vs G(Φ)=Φ²(1-Φ)².
+        // With θ=2Φ-1: F(θ)=4G(Φ) and |∇θ|²=4|∇Φ|², so E_θ = 4·E_Φ for same λ.
+        // To match Zhang's physical surface tension: λ_θ = λ_Φ/4, γ_θ = 4·γ_Φ.
+        // S1 stabilization: S1 = λ_θ/ε = λ_Φ/(4ε), matching Zhang p.B182.
+        //
         // mobility γ:  controls diffusion rate of the interface
         //   Eq. 42a RHS: γ(∇ψ, ∇χ)  (called "Pe = 1/γ" in some references)
         //
@@ -182,7 +188,7 @@ struct Parameters
     // ========================================================================
     struct Output
     {
-        std::string folder = "../Results";
+        std::string folder = "/Users/mahdi/Projects/git/PhD-Project/Decoupled/Results";
         bool verbose = false;
         unsigned int vtk_interval = 20;
     } output;
@@ -298,6 +304,9 @@ struct Parameters
     bool use_reduced_magnetic_field = false;    // Dome: H = h_a only (no ∇φ)
     bool enable_ns = true;                     // enable Navier-Stokes solve
     bool enable_gravity = true;                // enable gravity body force
+    bool disable_bstab = false;                // diagnostic: skip b_stab in NS
+    bool disable_kelvin_term2 = false;         // diagnostic: skip μ₀/2(M×H,∇×V)
+    bool use_exact_kelvin = false;             // diagnostic: use exact M*,H* in assembly
 
     // ========================================================================
     // Zhang's SAV+ZEC energy stabilization framework

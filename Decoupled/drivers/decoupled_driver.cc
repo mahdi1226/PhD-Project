@@ -2,15 +2,15 @@
 // drivers/decoupled_driver.cc — Strategy A: Fully Decoupled Ferrofluid Solver
 //
 // Gauss-Seidel splitting: each subsystem solved ONCE per timestep.
-// No Picard iteration — all cross-subsystem coupling is lagged.
+// No Picard iteration — all cross-subsystem coupling is lagged O(δt).
 //
-// Algorithm (per timestep n):
-//   1. Cahn-Hilliard:   θ^n, ψ^n  using U^{n-1}
-//   2. Poisson:         φ^n        using M^{n-1}
-//      Compute H^n = ∇φ^n
-//   3. Magnetization:   M^n        using H^n, U^{n-1}, θ^{n-1}
-//   4. Navier-Stokes:   U^n, p^n   using H^n, M^n, θ^{n-1}
-//      (Kelvin force from current H, M; viscosity from lagged θ)
+// Algorithm (per timestep n) — Zhang, He & Yang, Algorithm 3.1:
+//   1. Cahn-Hilliard:   Φ^n, W^n  using u^{n-1}          (Eq 3.9-3.10)
+//   2. Navier-Stokes:   ũ^n, p^n  using m^{n-1}, h̃^{n-1}  (Eq 3.11-3.13)
+//      (Kelvin force from PREVIOUS step m, h; viscosity from CURRENT Φ)
+//   3. Poisson:         φ^n        using M^{n-1}           (Eq 3.15-3.16)
+//   4. Magnetization:   m̃^n       using h̃^n=∇φ^n, ũ^n    (Eq 3.14)
+//   5. Final mag:       m^n = m̃^n + δt·S₂(ũ^n - u^{n-1}) (Eq 3.17)
 //
 // Characteristics:
 //   - 4 solves per step (cheapest strategy)
@@ -474,10 +474,10 @@ private:
 // ============================================================================
 // Diamond (rotated square) droplet IC (validation: --validation square)
 //
-// θ = tanh((R - d) / (√2 ε))
-// where d = (|dx + dy| + |dx - dy|) / 2  is the L1 (diamond) distance.
-// Ferrofluid (θ=+1) inside diamond, air (θ=-1) outside.
-// Under magnetic field, the diamond should deform toward an elongated shape.
+// Zhang Section 4.2, Eq before Fig 4.3:
+//   Φ₀ = 0.5 - 0.5 tanh((d - R) / (1.2ε))
+// where d = |dx| + |dy| is the L1 (diamond) distance.
+// In {-1,+1} convention: θ = 2Φ - 1 = tanh((R - d) / (1.2ε))
 // ============================================================================
 class DiamondDropletIC : public dealii::Function<dim>
 {
@@ -496,7 +496,7 @@ public:
         const double dy = p[1] - center_[1];
         // L1 / diamond distance: d = |dx| + |dy|
         const double d = std::abs(dx) + std::abs(dy);
-        return std::tanh((R_ - d) / (std::sqrt(2.0) * eps_));
+        return std::tanh((R_ - d) / (1.2 * eps_));
     }
 
 private:
@@ -1101,9 +1101,9 @@ int main(int argc, char* argv[])
 
         if (params.validation_test == "square")
         {
-            // Diamond (L1 ball) at center, half-diagonal = 0.25
-            // (Zhang et al. Section 4.2: vertices at (0.5±0.25, 0.5) and (0.5, 0.5±0.25))
-            const double R = 0.25;
+            // Diamond (L1 ball) at center of [0,2π]², R = 1.75
+            // (Zhang Section 4.2: center at (π,π), diamond radius 1.75)
+            const double R = 1.75;
             pcout << "  IC: Diamond droplet (R=" << R
                   << ", center=(" << cx << "," << cy << "))\n";
             DiamondDropletIC theta_ic(Point<dim>(cx, cy), R, eps);
@@ -1279,8 +1279,11 @@ int main(int argc, char* argv[])
 
     if (params.use_sav)
     {
-        // Auto-compute S1 if not set: S = lambda/(4*epsilon)
-        // Zhang p.B182: "we choose L = 1/(2*epsilon), thus S = lambda/(4*epsilon)"
+        // Auto-compute S if not set.
+        // Zhang p.B182 uses S = lambda_Phi/(4*epsilon) in Phi-space.
+        // In theta-space: f(theta) = (theta^3 - theta)/4, scaled by lambda_theta/epsilon.
+        // min f'(theta) = -1/4 at theta=0.
+        // Convexity: (lambda/eps)*f'(theta) + S >= 0  =>  S >= lambda/(4*epsilon).
         if (sav_S1 <= 0.0)
             sav_S1 = params.physics.lambda / (4.0 * params.physics.epsilon);
 
@@ -1368,18 +1371,101 @@ int main(int argc, char* argv[])
         }
 
         // ============================================================
-        // Step 2: Poisson (φ^n) using θ^n (algebraic M) or M^{n-1} (PDE M)
-        //   Skipped if magnetic field is disabled (pure CH test)
+        // Step 2: Navier-Stokes (ũ^n, p^n) — Zhang Eq 3.11
+        //
+        //   Uses m^{n-1} and h̃^{n-1} from PREVIOUS time step.
+        //   Poisson/Mag have NOT been updated yet, so:
+        //     poisson.get_solution_relevant() = φ^{n-1} = h̃^{n-1}
+        //     mag.get_Mx/My_relevant()        = M^{n-1}
+        //
+        //   Zhang Algorithm 3.1: NS comes BEFORE Poisson/Mag update.
+        //
+        // Adaptive S₂: S₂ ≥ μ₀² C_M² / (4 ν_min) per Zhang Theorem 4.1
+        // Uses φ^{n-1} for H_max estimate (previous step field).
+        // ============================================================
+        if (adaptive_S2 && params.enable_magnetic)
+        {
+            // Use φ^{n-1} and h_a(t^{n-1}) for H_max estimate
+            auto poi_diag_quick = poisson.compute_diagnostics(
+                theta_old, ch.get_theta_dof_handler(),
+                current_time - dt);
+            const double H_max_now = poi_diag_quick.H_max;
+            const double mu0  = params.physics.mu_0;
+            const double chi0 = params.physics.chi_0;
+            const double nu_min = std::min(params.physics.nu_water,
+                                           params.physics.nu_ferro);
+            const double C_M = chi0 * H_max_now;
+            sav_S2 = 1.5 * mu0 * mu0 * C_M * C_M / (4.0 * nu_min);
+        }
+
+        if (params.enable_ns)
+        {
+            if (!params.enable_magnetic)
+            {
+                // NS without magnetic field: constant viscosity Stokes/NS
+                const double nu = params.physics.nu_water;
+                ns.assemble_stokes(dt, nu,
+                    /*include_time_derivative=*/true,
+                    /*include_convection=*/true);
+            }
+            else if (params.use_algebraic_magnetization)
+            {
+                // Zhang Eq 3.11: ν(Φ^n) uses θ^n for viscosity/density
+                //   Kelvin force uses m^{n-1} = χ(Φ^{n-1})·h̃^{n-1}:
+                //     - theta_old for χ (susceptibility)
+                //     - poisson.get_solution_relevant() = φ^{n-1} (not yet updated)
+                //     - h_a evaluated at t^{n-1} (previous step)
+                //   Capillary: Φ^{n-1}∇W^n
+                ns.assemble_coupled_algebraic_M(
+                    dt,
+                    ch.get_theta_relevant(),         // θ^n for ν, ρ
+                    theta_old,                       // θ^{n-1} for χ (M) + capillary
+                    ch.get_theta_dof_handler(),
+                    ch.get_psi_relevant(),           ch.get_psi_dof_handler(),
+                    poisson.get_solution_relevant(), poisson.get_dof_handler(),  // φ^{n-1}
+                    current_time - dt,               // t^{n-1} for h_a (h̃^{n-1})
+                    sav_S2,
+                    /*include_convection=*/true);
+            }
+            else
+            {
+                // Zhang Eq 3.11: ν(Φ^n) uses θ^n, Kelvin uses m^{n-1}, h̃^{n-1}
+                //   mag.get_Mx/My_relevant() = M^{n-1} (not yet updated)
+                //   poisson.get_solution_relevant() = φ^{n-1} (not yet updated)
+                //   h_a at t^{n-1} for h̃^{n-1}
+                ns.assemble_coupled(
+                    dt,
+                    ch.get_theta_relevant(),         // θ^n for ν, ρ
+                    theta_old,                       // θ^{n-1} for capillary
+                    ch.get_theta_dof_handler(),
+                    ch.get_psi_relevant(),           ch.get_psi_dof_handler(),
+                    poisson.get_solution_relevant(), poisson.get_dof_handler(),  // φ^{n-1}
+                    mag.get_Mx_relevant(),           // M^{n-1}
+                    mag.get_My_relevant(),           // M^{n-1}
+                    mag.get_dof_handler(),
+                    current_time - dt,               // t^{n-1} for h_a (h̃^{n-1})
+                    sav_S2,
+                    /*include_convection=*/true);
+            }
+            ns.solve();
+            ns.advance_time();
+            ns.update_ghosts();
+        }
+
+        // ============================================================
+        // Step 3: Poisson + Magnetization — Zhang Eq 3.14-3.17
+        //
+        //   Uses ũ^n (just computed) for magnetization transport.
+        //   After ns.advance_time(), ns.get_ux_old_relevant() = ũ^n.
+        //
+        //   Algebraic M: solve nonlinear Poisson with θ^n
+        //   PDE M: Picard sub-iteration for Poisson ↔ Mag coupling
         // ============================================================
         if (params.enable_magnetic)
         {
             if (params.use_algebraic_magnetization)
             {
-                // Nonlinear Poisson: ((1+chi(theta)) grad phi, grad X) = ((1-chi(theta)) h_a, grad X)
-                // Picard iteration for convergence
-                // Nonlinear Poisson: ((1+chi(theta)) grad phi, grad X) = ((1-chi(theta)) h_a, grad X)
-                // For fixed theta, this is a linear system in phi — one solve is exact.
-                // (Picard iteration would be needed if phi appeared in theta, which it doesn't here)
+                // Nonlinear Poisson: ((1+χ(θ^n))∇φ, ∇X) = ((1-χ(θ^n))h_a, ∇X)
                 poisson.assemble_nonlinear(
                     ch.get_theta_relevant(), ch.get_theta_dof_handler(),
                     current_time);
@@ -1388,30 +1474,22 @@ int main(int argc, char* argv[])
             }
             else
             {
-                // PDE-M path: Under-relaxed Picard sub-iteration for
-                // Poisson ↔ Magnetization coupling.
+                // PDE-M path: Zhang Algorithm 3.1, Step 5 (Eq 3.14-3.16)
                 //
-                // Without sub-iteration, the explicit coupling M^{n-1}→φ^n→H^n→M^n
-                // is unstable when χ₀ is large and τ_M << dt.
-                // For χ₀=2, τ_M=1e-4, dt=1e-3: amplification = 1.73 > 1.
+                // The coupled system (m̃^n, φ^n, h̃^n) is resolved via
+                // under-relaxed Picard sub-iteration: Poisson ↔ Magnetization
+                // until convergence (or max_picard iterations).
                 //
-                // Under-relaxed Picard with ω < 1/(1+χ₀) makes the map contractive.
-                // The time derivative always uses M^{n-1} (saved at timestep start),
-                // not M^k — this is the correct semi-implicit scheme.
+                //   Iter 0: Poisson with M^{n-1} → Mag solve → M^{(0)}
+                //   Iter k: Poisson with M^{(k-1)} → Mag solve → M^{(k)}
+                //   Each iter: M = ω·M_solve + (1-ω)·M_prev
                 //
-                // Algorithm per timestep:
-                //   save M^{n-1}
-                //   for k = 0, 1, ..., max_picard-1:
-                //     1. Poisson:  (∇φ^k, ∇X) = (h_a - M^k, ∇X)
-                //     2. Mag solve: (1/dt + 1/τ_M) M_raw + B_h^m(U, M_raw, Z)
-                //                   = (1/τ_M) χ H^k · Z + (1/dt) M^{n-1} · Z + β[...]
-                //     3. Under-relax: M^{k+1} = ω·M_raw + (1-ω)·M^k
-                //     4. Convergence: ||M^{k+1} - M^k|| / ||M^{k+1}|| < tol
+                // Uses ũ^n for magnetization transport (Zhang Eq 3.14).
 
                 const auto& vel_ux = params.enable_ns
-                    ? ns.get_ux_old_relevant() : zero_ux_relevant;
+                    ? ns.get_ux_old_relevant() : zero_ux_relevant;  // ũ^n
                 const auto& vel_uy = params.enable_ns
-                    ? ns.get_uy_old_relevant() : zero_uy_relevant;
+                    ? ns.get_uy_old_relevant() : zero_uy_relevant;  // ũ^n
                 const auto& vel_dof = params.enable_ns
                     ? ns.get_ux_dof_handler() : ch.get_theta_dof_handler();
 
@@ -1430,14 +1508,12 @@ int main(int argc, char* argv[])
                 poisson.solve();
                 poisson.update_ghosts();
 
-                // Full assembly: matrix depends on U^{n-1} (set once per timestep).
-                // RHS uses M^{n-1} for time derivative and β-term.
                 mag.assemble(
                     mag.get_Mx_old_relevant(),   // M^{n-1}: time derivative + β
                     mag.get_My_old_relevant(),
                     poisson.get_solution_relevant(), poisson.get_dof_handler(),
                     ch.get_theta_relevant(),         ch.get_theta_dof_handler(),
-                    vel_ux, vel_uy, vel_dof,
+                    vel_ux, vel_uy, vel_dof,         // ũ^n
                     dt, current_time);
                 mag.solve();
                 mag.apply_under_relaxation(picard_omega);
@@ -1447,13 +1523,11 @@ int main(int argc, char* argv[])
                 unsigned int picard_iters = 1;
                 for (unsigned int k = 1; k < max_picard; ++k)
                 {
-                    // M^k norms for convergence check (owned vectors)
                     const double Mx_k_norm = mag.get_Mx_solution().l2_norm();
                     const double My_k_norm = mag.get_My_solution().l2_norm();
                     const double M_k_norm = std::sqrt(Mx_k_norm * Mx_k_norm
                                                     + My_k_norm * My_k_norm);
 
-                    // Re-solve Poisson with M^k
                     poisson.assemble_rhs(mag.get_Mx_relevant(),
                                          mag.get_My_relevant(),
                                          mag.get_dof_handler(),
@@ -1461,12 +1535,10 @@ int main(int argc, char* argv[])
                     poisson.solve();
                     poisson.update_ghosts();
 
-                    // RHS only (matrix frozen): time derivative uses M^{n-1},
-                    // H^k = ∇φ^k + h_a from updated Poisson.
                     mag.assemble_rhs_only(
                         poisson.get_solution_relevant(), poisson.get_dof_handler(),
                         ch.get_theta_relevant(),         ch.get_theta_dof_handler(),
-                        mag.get_Mx_old_relevant(),       // M^{n-1}: time derivative + β
+                        mag.get_Mx_old_relevant(),
                         mag.get_My_old_relevant(),
                         dt, current_time);
                     mag.solve();
@@ -1475,7 +1547,6 @@ int main(int argc, char* argv[])
 
                     picard_iters = k + 1;
 
-                    // Convergence: relative change in ||M||
                     const double Mx_new_norm = mag.get_Mx_solution().l2_norm();
                     const double My_new_norm = mag.get_My_solution().l2_norm();
                     const double M_new_norm = std::sqrt(Mx_new_norm * Mx_new_norm
@@ -1496,90 +1567,6 @@ int main(int argc, char* argv[])
                     pcout << "    Picard: " << picard_iters << " iters"
                           << " (ω=" << picard_omega << ")\n";
             }
-        }
-
-        // ============================================================
-        // Step 3: Magnetization (M^n)
-        //   Algebraic M: SKIP (M already computed inside Picard loop above)
-        //   PDE M: already solved inside Picard loop above
-        // ============================================================
-        // (Nothing to do here — magnetization was solved in the Picard
-        //  sub-iteration above when enable_magnetic && !algebraic_M)
-
-        // ============================================================
-        // Step 4: Navier-Stokes (U^n, p^n)
-        //   Algebraic M + SAV: uses assemble_coupled_algebraic_M with S₂
-        //   Standard: original assemble_coupled
-        //   Skipped if NS is disabled
-        //
-        // Adaptive S₂: When S₂ is not user-specified (= 0), we compute it
-        // each timestep from the current field strength via Zhang's bound:
-        //   S₂ ≥ μ₀² C_M² / (4 ν_min)
-        // where C_M = χ₀ |H_max| bounds the Kelvin force coupling.
-        // A safety factor of 1.5 is applied for robustness.
-        // ============================================================
-        if (adaptive_S2 && params.enable_magnetic)
-        {
-            // Quick Poisson diagnostics to get current |H|_max
-            auto poi_diag_quick = poisson.compute_diagnostics(
-                ch.get_theta_relevant(), ch.get_theta_dof_handler(),
-                current_time);
-            const double H_max_now = poi_diag_quick.H_max;
-            const double mu0  = params.physics.mu_0;
-            const double chi0 = params.physics.chi_0;
-            const double nu_min = std::min(params.physics.nu_water,
-                                           params.physics.nu_ferro);
-            // C_M = chi_0 * H_max (bound on |M·∇H| coupling)
-            const double C_M = chi0 * H_max_now;
-            // Zhang's bound: S2 >= mu0^2 * C_M^2 / (4 * nu_min)
-            // Safety factor 1.5 for robustness of the decoupled splitting
-            sav_S2 = 1.5 * mu0 * mu0 * C_M * C_M / (4.0 * nu_min);
-        }
-
-        if (params.enable_ns)
-        {
-            if (!params.enable_magnetic)
-            {
-                // NS without magnetic field: constant viscosity Stokes/NS
-                // Capillary force (λψ∇θ) still present via body_force if needed,
-                // but assemble_stokes uses constant ν — fine when ν_f == ν_w.
-                const double nu = params.physics.nu_water;
-                ns.assemble_stokes(dt, nu,
-                    /*include_time_derivative=*/true,
-                    /*include_convection=*/true);
-            }
-            else if (params.use_algebraic_magnetization)
-            {
-                // NS uses θ^{n-1} (lagged) for ν, ρ, χ, capillary θ
-                // per Nochetto Eq 65d. ψ^n is current (from CH solve).
-                ns.assemble_coupled_algebraic_M(
-                    dt,
-                    theta_old,                       ch.get_theta_dof_handler(),
-                    ch.get_psi_relevant(),           ch.get_psi_dof_handler(),
-                    poisson.get_solution_relevant(), poisson.get_dof_handler(),
-                    current_time,
-                    sav_S2,
-                    /*include_convection=*/true);
-            }
-            else
-            {
-                // NS uses θ^{n-1} (lagged) — same as algebraic M path
-                // S2 stabilization per Zhang Theorem 4.1 for energy stability
-                ns.assemble_coupled(
-                    dt,
-                    theta_old,                       ch.get_theta_dof_handler(),
-                    ch.get_psi_relevant(),           ch.get_psi_dof_handler(),
-                    poisson.get_solution_relevant(), poisson.get_dof_handler(),
-                    mag.get_Mx_relevant(),
-                    mag.get_My_relevant(),
-                    mag.get_dof_handler(),
-                    current_time,
-                    sav_S2,
-                    /*include_convection=*/true);
-            }
-            ns.solve();
-            ns.advance_time();
-            ns.update_ghosts();
         }
 
         // ============================================================

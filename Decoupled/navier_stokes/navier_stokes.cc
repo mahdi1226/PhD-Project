@@ -207,6 +207,15 @@ void NSSubsystem<dim>::invalidate_ghosts()
 }
 
 // ============================================================================
+// set_mms_source()
+// ============================================================================
+template <int dim>
+void NSSubsystem<dim>::set_mms_source(MmsSourceFunction source)
+{
+    mms_source_ = std::move(source);
+}
+
+// ============================================================================
 // compute_diagnostics()
 //
 // Computes velocity, pressure, incompressibility, and solver diagnostics

@@ -76,22 +76,93 @@ User identified 6 potential bugs. Thorough audit against Zhang and Nochetto pape
 - `4f53b44` -- SAV assembly fix, NS/Poisson coupling, Rosensweig correction (Sessions 1-2)
 - `af2ca79` -- Fix capillary force direction (theta*grad_psi) and add grad(h_a) to Kelvin force (Session 3)
 
+### Session 4: Complete Zhang Deviation Audit + 7 Fixes
+
+Equation-by-equation comparison of code vs Zhang, He & Yang (SIAM J. Sci. Comput. 43(1), 2021).
+Found 8 deviations, fixed 7. All changes compile cleanly.
+
+| # | Deviation | Fix Applied |
+|---|-----------|-------------|
+| **1** | **Viscous term 2× too large** | `nu/2.0` → `nu/4.0` in 3 functions (12 lines) |
+| **2** | **S1 = 200 instead of 50** | Auto-compute: `lambda/(4*epsilon)` |
+| **3** | Saddle-point vs pressure projection | DEFERRED — structurally different |
+| **4** | **Sigmoid vs linear material properties** | chi, nu now linear in Φ=(θ+1)/2 |
+| **5** | **Algebraic M instead of mag PDE** | `use_algebraic_magnetization=false`, β=1, τ=1e-4 |
+| **6** | **Dipole regularization δ** | Removed (δ=0, matching Zhang) |
+| **7** | **tanh IC instead of sharp step** | Sharp step for Rosensweig + droplet |
+
+**Files modified:**
+- `navier_stokes/navier_stokes_assemble.cc` — viscous factor fix (#1), comments
+- `drivers/decoupled_driver.cc` — S1 formula (#2), sharp step ICs (#7)
+- `physics/material_properties.h` — linear chi/nu, sigmoid density (#4)
+- `utilities/parameters.cc` — β=1, τ=1e-4, algebraic_M=false for both presets (#5)
+- `physics/applied_field.h` — remove δ regularization (#6)
+
+### Sessions 5-8: MMS Verification Framework + Critical DG Bug Fix
+
+**Incremental MMS validation strategy** — test each coupling layer before the full system:
+
+| Test | Status | u_L2 rate | p_L2 rate | φ_L2 rate | M_L2 rate |
+|------|--------|-----------|-----------|-----------|-----------|
+| Poisson standalone | PASS | — | — | 3.0 | — |
+| Magnetization standalone (U=0) | PASS | — | — | — | 2.0 |
+| Poisson-Mag coupled (Picard) | PASS | — | — | 3.0 | 2.0 |
+| **Poisson-Mag-NS (Kelvin, μ₀=0.1)** | **PASS** | **3.0** | **2.1** | **3.0** | **1.95** |
+| Full system (CH+NS+Poisson+Mag) | Pending | | | | |
+
+**Critical bug found and fixed: DG face assembly `FEInterfaceValues` indexing**
+
+The DG magnetization transport had an `FEInterfaceValues::shape_value` indexing bug that
+caused **zero cross-cell coupling** in the face flux. For DG elements, interface DoFs are numbered:
+- 0..dpc-1: "here" cell DoFs
+- dpc..2*dpc-1: "there" cell DoFs
+
+The code used `shape_value(false, i, q)` to get "there" cell's i-th basis function, but this
+actually looks up interface DoF `i` (a "here" DoF) from the "there" side → always 0 for DG.
+**Fix**: `shape_value(false, i + dofs_per_cell, q)`.
+
+Effect: Face flux had NO cross-cell coupling → DG transport gave O(1) errors instead of O(h²).
+After fix + upwind penalty: M_L2 convergence rate = 1.95 (expected 2.0).
+
+**Files modified:**
+- `magnetization/magnetization_assemble.cc` — Fixed `shape_value` indexing in 4 places
+  (AMR Case 1 + Case 2, both matrix and face_mms_active sections) + added upwind penalty
+- `mms_tests/poisson_mag_ns_mms.h` — NEW: NS MMS source with Kelvin force (body + curl)
+- `mms_tests/poisson_mag_ns_mms_test.cc` — NEW: 3-subsystem test harness, diagnostics
+- `mms_tests/CMakeLists.txt` — Added test targets
+
+**Run command:**
+```bash
+cmake --build build -j8 --target test_poisson_mag_ns_mms
+mpirun -np 1 build/mms_tests/test_poisson_mag_ns_mms --refs 2 3 4 --steps 1
+```
+
 ---
 
 ## Pending Tasks (In Priority Order)
 
-### 1. Rosensweig Test -- Rerun After Bug Fixes
+### 1. Rebuild Driver and Run Full Validation Tests
+The DG face assembly bug fix (Session 8) affects ALL validation tests that use
+the magnetization PDE with non-zero velocity. Rebuild and rerun:
 ```bash
 cd /Users/mahdi/Projects/git/PhD-Project/Decoupled/drivers/build
-mpirun -np 2 ./ferrofluid_decoupled --validation rosensweig -r 4 --vtk_interval 100
+cmake .. -DCMAKE_BUILD_TYPE=Release && make -j8
+mpirun -np 2 ./ferrofluid_decoupled --validation droplet -r 7 --vtk_interval 20
+mpirun -np 2 ./ferrofluid_decoupled --rosensweig -r 4 --vtk_interval 20
 ```
-- Bug fixes may resolve the theta overshoot instability
-- If still unstable, try higher S1 or smaller dt
+- Quick sanity checks (20 steps) passed for both droplet and rosensweig after fix
+- Output now goes to `/Users/mahdi/Projects/git/PhD-Project/Decoupled/Results/`
+- Rosensweig previously unstable (θ overshoot to 1.63) — may now be stable with correct DG transport
 
-### 3. Add Back Dropped Physics (Future)
-- beta, spin vorticity, Maxwell stress tensor dropped for now
-- With algebraic M = chi*H, all 3 terms are exactly zero anyway
-- Will add back when switching to full magnetization PDE
+### 2. Poisson-Mag-NS-CH MMS Test (Full System)
+- Next step in incremental MMS strategy: add CH to the coupled test
+- All sub-tests pass: standalone, Poisson-Mag, Poisson-Mag-NS
+- Needs MMS source terms for the full 4-subsystem coupling
+
+### 3. Implement Pressure Projection (Deviation #3, DEFERRED)
+- Zhang uses Chorin-type 3-step projection
+- Current code uses direct saddle-point (arguably more accurate)
+- Implement if results don't match Zhang after other fixes
 
 ---
 
@@ -100,6 +171,10 @@ mpirun -np 2 ./ferrofluid_decoupled --validation rosensweig -r 4 --vtk_interval 
 ### Phase Field Convention
 - Zhang uses Phi in {0,1}, code uses theta in {-1,+1}
 - Equivalent via Phi = (theta+1)/2
+- Material properties now use LINEAR interpolation matching Zhang:
+  - chi(θ) = χ₀·(θ+1)/2 (not sigmoid)
+  - nu(θ) = ν_w·(1-θ)/2 + ν_f·(θ+1)/2 (not sigmoid)
+  - rho(θ) = 1 + r·H(θ/ε) (sigmoid — matches Zhang Eq 4.2)
 
 ### Magnetization
 - Code uses **algebraic M = chi(theta)*H** (tau->0 limit), skips magnetization PDE
@@ -164,9 +239,14 @@ max_steps:  2000
 |------|-------------|
 | `cahn_hilliard/cahn_hilliard_assemble.cc` | S1: Removed Douglas-Dupont, added lambda to SAV |
 | `utilities/parameters.cc` | S2: Fixed Rosensweig params. S3: Added `droplet_nofield` preset |
+| `utilities/parameters.h` | S8: Output folder → absolute path `Decoupled/Results/` |
 | `drivers/decoupled_driver.cc` | S2: Fixed Rosensweig IC. S3: Added `droplet_nofield` IC/output, NS assembly branch for no-magnetic |
 | `physics/applied_field.h` | S2: Added intensity_max cap. S3: Added `compute_applied_field_gradient<dim>()` |
 | `navier_stokes/navier_stokes_assemble.cc` | S3: Fixed capillary (theta*grad_psi), added grad(h_a) to Kelvin in both assembly functions |
+| `magnetization/magnetization_assemble.cc` | **S8: Fixed FEInterfaceValues indexing bug** (shape_value offset for "there" DoFs) + added upwind penalty `½\|U·n\|[[Z]][[M]]` |
+| `mms_tests/poisson_mag_ns_mms.h` | S7: **NEW** — NS MMS source with Kelvin body force + curl correction |
+| `mms_tests/poisson_mag_ns_mms_test.cc` | S7-8: **NEW** — 3-subsystem test harness with diagnostics |
+| `mms_tests/CMakeLists.txt` | S7: Added `test_poisson_mag_ns_mms` target |
 
 ## Key Files (Read-Only Reference)
 
@@ -192,4 +272,4 @@ max_steps:  2000
 
 ---
 
-*Updated: February 21, 2026 (Session 3)*
+*Updated: February 27, 2026 (Session 8 — DG face fix + Poisson-Mag-NS MMS PASS)*

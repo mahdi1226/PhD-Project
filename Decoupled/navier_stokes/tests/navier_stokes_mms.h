@@ -293,6 +293,73 @@ namespace NSMMS
         f[1] = duy_dt + (ux_o * guy_n[0] + uy_o * guy_n[1]) - (nu / 2.0) * lap_uy + dpy;
         return f;
     }
+    // ========================================================================
+    // Continuous time derivatives (for temporal convergence testing)
+    // ========================================================================
+    template <int dim>
+    inline double dux_dt(const dealii::Point<dim>& p, double /*t*/, double Ly)
+    {
+        // ux = t * (π/Ly) * sin²(πx) * sin(2πy/Ly)
+        // ∂ux/∂t = (π/Ly) * sin²(πx) * sin(2πy/Ly)
+        const double s = std::sin(M_PI * p[0]);
+        return (M_PI / Ly) * s * s * std::sin(2.0 * M_PI * p[1] / Ly);
+    }
+
+    template <int dim>
+    inline double duy_dt(const dealii::Point<dim>& p, double /*t*/, double Ly)
+    {
+        // uy = -t * π * sin(2πx) * sin²(πy/Ly)
+        // ∂uy/∂t = -π * sin(2πx) * sin²(πy/Ly)
+        const double s = std::sin(M_PI * p[1] / Ly);
+        return -M_PI * std::sin(2.0 * M_PI * p[0]) * s * s;
+    }
+
+
+    // ========================================================================
+    // Phase B source (continuous): Unsteady Stokes with ∂U*/∂t
+    //   f_B_cont = ∂U*/∂t − (ν/2)∇²U* + ∇p*
+    // ========================================================================
+    template <int dim>
+    inline dealii::Tensor<1, dim> source_phase_B_continuous(
+        const dealii::Point<dim>& pt, double t_new,
+        double nu, double Ly)
+    {
+        const auto lap = laplacian_U<dim>(pt, t_new, Ly);
+        const auto gp  = grad_p<dim>(pt, t_new, Ly);
+
+        dealii::Tensor<1, dim> f;
+        f[0] = dux_dt<dim>(pt, t_new, Ly) - (nu / 2.0) * lap[0] + gp[0];
+        f[1] = duy_dt<dim>(pt, t_new, Ly) - (nu / 2.0) * lap[1] + gp[1];
+        return f;
+    }
+
+
+    // ========================================================================
+    // Phase D source (continuous): Unsteady NS with ∂U*/∂t
+    //   f_D_cont = ∂U*/∂t + (U^{n-1}·∇)U^n − (ν/2)∇²U^n + ∇p^n
+    // ========================================================================
+    template <int dim>
+    inline dealii::Tensor<1, dim> source_phase_D_continuous(
+        const dealii::Point<dim>& pt, double t_new, double t_old,
+        double nu, double Ly)
+    {
+        const auto gux_n = ux_grad<dim>(pt, t_new, Ly);
+        const auto guy_n = uy_grad<dim>(pt, t_new, Ly);
+        const double ux_o = ux_val<dim>(pt, t_old, Ly);
+        const double uy_o = uy_val<dim>(pt, t_old, Ly);
+
+        const auto lap = laplacian_U<dim>(pt, t_new, Ly);
+        const auto gp  = grad_p<dim>(pt, t_new, Ly);
+
+        dealii::Tensor<1, dim> f;
+        f[0] = dux_dt<dim>(pt, t_new, Ly)
+             + (ux_o * gux_n[0] + uy_o * gux_n[1])
+             - (nu / 2.0) * lap[0] + gp[0];
+        f[1] = duy_dt<dim>(pt, t_new, Ly)
+             + (ux_o * guy_n[0] + uy_o * guy_n[1])
+             - (nu / 2.0) * lap[1] + gp[1];
+        return f;
+    }
 } // namespace NSMMS
 
 

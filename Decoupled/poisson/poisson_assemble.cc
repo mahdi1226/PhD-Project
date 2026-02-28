@@ -250,17 +250,14 @@ void PoissonSubsystem<dim>::assemble_rhs(
 // ============================================================================
 // assemble_nonlinear — algebraic magnetization mode
 //
-// With m = χ(θ)(∇φ + h_a), substituting into (∇φ, ∇X) = (h_a - M, ∇X):
+// With m = χ(θ)·∇φ (algebraic: m = χ·h̃ where h̃ = ∇φ),
+// substituting into (∇φ, ∇X) = (h_a - M, ∇X):
 //
-//   ((1 + χ(θ))∇φ, ∇X) = ((1 - χ(θ))h_a, ∇X)
+//   (∇φ, ∇X) = (h_a - χ(θ)∇φ, ∇X)
+//   ((1 + χ(θ))∇φ, ∇X) = (h_a, ∇X)
 //
 // Assembles BOTH matrix and RHS (matrix depends on θ, changes each timestep).
 // Rebuilds AMG preconditioner after assembly.
-//
-// NOTE: The sign convention follows from:
-//   (∇φ, ∇X) = (h_a - χ(θ)(∇φ + h_a), ∇X)
-//   (∇φ, ∇X) + (χ(θ)∇φ, ∇X) = (h_a, ∇X) - (χ(θ)h_a, ∇X)
-//   ((1 + χ(θ))∇φ, ∇X) = ((1 - χ(θ))h_a, ∇X)
 //
 // For h_a = 0 (no applied field), this reduces to ((1+χ)∇φ, ∇X) = 0 → φ = 0
 // For χ = 0 (non-magnetic), this reduces to (∇φ, ∇X) = (h_a, ∇X) (original)
@@ -338,15 +335,14 @@ void PoissonSubsystem<dim>::assemble_nonlinear(
             if (has_applied)
                 h_a = compute_applied_field<dim>(x_q, params_, current_time);
 
-            // RHS coefficient: (1 - χ(θ)) * h_a
-            // Note: When χ > 1, this can be negative — correct behavior
-            dealii::Tensor<1, dim> rhs_source = (1.0 - chi_q) * h_a;
+            // RHS: (h_a, ∇X) — from ((1+χ)∇φ, ∇X) = (h_a, ∇X)
+            const dealii::Tensor<1, dim>& rhs_source = h_a;
 
             for (unsigned int i = 0; i < dofs_per_cell; ++i)
             {
                 const auto& grad_X_i = fe_values.shape_grad(i, q);
 
-                // RHS: ((1 - χ(θ)) h_a, ∇X_i)
+                // RHS: (h_a, ∇X_i)
                 local_rhs(i) += (rhs_source * grad_X_i) * JxW;
 
                 for (unsigned int j = 0; j < dofs_per_cell; ++j)

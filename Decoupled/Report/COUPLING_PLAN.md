@@ -444,5 +444,232 @@ This eliminates the magnetization PDE solve entirely.
 
 ---
 
+## Code-vs-Zhang Deviation Audit (Session 4)
+
+**Goal: Match Zhang, He & Yang (SIAM J. Sci. Comput. 43(1), 2021) EXACTLY.**
+
+All subsystem PDEs originate from Nochetto et al. (CMAME 2016), but the coupling
+strategy, time-stepping scheme, stabilization, and validation parameters all come
+from Zhang. The following deviations were found by equation-by-equation comparison.
+
+### Deviation 1: VISCOUS TERM — FACTOR OF 2 ERROR (CRITICAL)
+
+**Zhang Eq 2.6:** `-div(ν(Φ) D(u))` where `D(u) = ½(∇u + ∇u^T)`
+Weak form: `(ν D(u), D(v))`
+
+**Nochetto Eq 14e/42e:** `(ν_Θ T(U), T(V))` where `T(u) = ½(∇u + ∇u^T)` (defined below Eq 14f)
+So Nochetto's T = D = ½(∇u + ∇u^T), and `(ν T, T) = (ν D, D)`. Same as Zhang.
+
+**Code (`navier_stokes_assemble.cc` line 29):**
+Comment says `T(U) = ∇U + (∇U)^T` (WITHOUT ½).
+`compute_T_test_ux()` builds T = ∇U + ∇U^T = 2D.
+Line 214: `(nu/2.0) * (T_U * T_V)` = `(ν/2)(2D:2D)` = `2ν(D:D)`.
+
+**Result: Effective viscosity is 2× the paper's value.**
+
+**Fix:** Change `(nu / 2.0) * (T_U * T_V)` to `(nu / 4.0) * (T_U * T_V)`.
+This gives `(ν/4)(2D:2D) = ν(D:D)` — matching both Zhang and Nochetto.
+Applied in 3 functions: `assemble_stokes()`, `assemble_coupled()`, `assemble_coupled_algebraic_M()`.
+
+**Files:** `navier_stokes/navier_stokes_assemble.cc` (lines 214-217, ~540-543, ~1087-1090)
+
+---
+
+### Deviation 2: S1 STABILIZATION CONSTANT (HIGH)
+
+**Zhang p.B182:** "In all numerical tests, we choose L = 1/(2ε),
+thus the stabilizing constant is S = λ/(4ε)."
+
+For Rosensweig (λ=1, ε=5e-3): S1 = 1/(4×0.005) = **50**
+
+**Code (`decoupled_driver.cc` line 1295):** `sav_S1 = 1.0 / epsilon` = **200**
+
+4× over-stabilization. The S1(θ^{n+1} − θ^n) term adds artificial diffusion
+to the phase field, damping interface dynamics.
+
+**Fix:** Change auto-computation to `sav_S1 = lambda / (4.0 * epsilon)`.
+
+**Files:** `drivers/decoupled_driver.cc` (line ~1295)
+
+---
+
+### Deviation 3: NS SOLVER — DIRECT SADDLE-POINT vs PRESSURE PROJECTION (MEDIUM)
+
+**Zhang Steps 2-4 (Eq 3.11-3.13):**
+- Step 2: Velocity predictor (NO pressure in LHS — old p^n on RHS only)
+- Step 3: Pressure Poisson: `(∇p^{n+1}, ∇q) = (∇p^n, ∇q) − (1/dt)(div ũ, q)`
+- Step 4: Velocity correction: `u^{n+1} = ũ − dt·∇(p^{n+1} − p^n)`
+
+This is a Chorin-type pressure-correction scheme — velocity and pressure are
+DECOUPLED into separate scalar/vector solves.
+
+**Code:** Solves monolithic saddle-point `[A B^T; B 0][u; p] = [f; 0]` directly.
+
+**Impact:** Direct solve has NO velocity-pressure splitting error (arguably better).
+But it's structurally different from Zhang, meaning our solver is solving a slightly
+different linear system each step. For exact replication, implement projection.
+
+**Fix:** Implement Zhang's 3-step projection scheme:
+1. Solve velocity-only system for ũ (use old pressure on RHS)
+2. Solve pressure Poisson for p^{n+1}
+3. Correct velocity: u^{n+1} = ũ − dt·∇(p^{n+1} − p^n)
+
+**Files:** New projection solver needed in `navier_stokes/`, driver changes in
+`drivers/decoupled_driver.cc`
+
+---
+
+### Deviation 4: PHASE FIELD CONVENTION — {-1,+1} vs {0,1} (HIGH)
+
+**Zhang:** Φ ∈ {0, 1}. Ferrofluid = 1, non-magnetic = 0.
+- Double-well: F(Φ) = Φ²(1−Φ)²/4, f(Φ) = Φ(1−Φ)(1−2Φ) (modified)
+- Susceptibility: χ(Φ) = χ₀ · Φ (LINEAR interpolation)
+- Viscosity: ν(Φ) = ν_f·Φ + ν_w·(1−Φ) (LINEAR interpolation)
+- Density: ρ(Φ) = 1 + r/(1+exp((1−2Φ)/ε)) (Eq 4.2)
+- IC: Φ = 1 if ferrofluid region, Φ = 0 otherwise (sharp step)
+
+**Code:** θ ∈ {−1, +1}. Ferrofluid = +1, non-magnetic = −1.
+- Double-well: F(θ) = (θ²−1)²/4, f(θ) = θ³−θ (standard Ginzburg-Landau)
+- Susceptibility: χ(θ) = χ₀ · H(θ/ε) (SIGMOID interpolation)
+- Viscosity: ν(θ) = ν_w + (ν_f−ν_w)·H(θ/ε) (SIGMOID interpolation)
+- Density: ρ(θ) = 1 + r·H(θ/ε) (SIGMOID interpolation)
+
+The transformation Φ = (θ+1)/2 maps the equilibria correctly, but:
+1. Zhang's χ(Φ) = χ₀·Φ is LINEAR. Code's χ(θ) = χ₀·H(θ/ε) is a SIGMOID.
+   In the diffuse interface region, these give DIFFERENT susceptibility profiles.
+2. Zhang's density formula (Eq 4.2) is NOT a simple sigmoid — it uses a specific
+   logistic form 1/(1+exp((1−2Φ)/ε)). This doesn't exactly match H(θ/ε).
+3. The double-well polynomials differ but are equivalent under the mapping.
+
+**Fix:** Either:
+- (a) Switch code to {0,1} convention (most invasive but cleanest), OR
+- (b) Keep {−1,+1} but use equivalent formulas:
+  - χ(θ) = χ₀·(θ+1)/2  (linear, not sigmoid)
+  - ν(θ) = ν_w·(1−θ)/2 + ν_f·(θ+1)/2  (linear, not sigmoid)
+  - ρ(θ) = 1 + r/(1+exp(−θ/ε))  (matches Zhang's Eq 4.2 under Φ=(θ+1)/2)
+
+Option (b) preserves all existing infrastructure while matching Zhang's physics.
+
+**Files:** `physics/material_properties.h` (chi, nu, rho functions)
+
+---
+
+### Deviation 5: MAGNETIZATION — ALGEBRAIC vs FULL PDE (HIGH)
+
+**Zhang Eq 4.4 (Rosensweig):** β = 1, τ = 1e-4. Solves the FULL magnetization PDE:
+```
+(1/τ)(∂m/∂t) + (u·∇)m = (1/τ)(χ(Φ)h) − β·m×(m×h)
+```
+This is Zhang's Step 5 (Eq 3.15-3.16), solved as DG transport + relaxation.
+
+**Code:** `use_algebraic_magnetization = true`, `beta = 0`.
+M = χ(θ)·H computed algebraically. No magnetization PDE at all.
+
+**Impact:** With τ=1e-4 and dt=1e-3, τ/dt = 0.1 — small but not negligible.
+The PDE gives magnetization that LAGS behind equilibrium during rapid field
+changes (the ramp). Also β=1 Landau-Lifshitz damping rotates m toward h.
+
+**Fix:** Enable magnetization PDE:
+- Set `use_algebraic_magnetization = false`
+- Set `beta = 1.0, tau_M = 1e-4`
+- The magnetization subsystem already exists and is MMS-verified
+- Need to wire it into the driver's Gauss-Seidel loop properly
+
+**Files:** `utilities/parameters.cc` (Rosensweig preset), `drivers/decoupled_driver.cc`
+
+---
+
+### Deviation 6: DIPOLE FIELD — REGULARIZATION PARAMETER δ (LOW-MEDIUM)
+
+**Zhang's dipole formula:** `φ_s(x) = d·(x_s − x) / |x_s − x|²` (NO regularization)
+
+**Code (`applied_field.h` line 114):**
+```cpp
+const double delta = 0.01 * min_dipole_dist;  // δ = 0.01 * |y_dipole|
+```
+Uses regularized `R² = |r|² + δ²` instead of `|r|²`.
+
+With dipoles at y = −15: δ = 0.01 × 15 = 0.15.
+This smooths the field slightly near (but never at) the dipoles.
+
+**Impact:** At the domain (distance ~15 from dipoles), δ²/r² ≈ 0.15²/15² ≈ 1e-4.
+Negligible effect on h_a values in the domain. But for exact replication, remove δ.
+
+**Fix:** Set `delta = 0.0` or remove regularization entirely.
+The dipoles are far enough from the domain that no singularity protection is needed.
+
+**Files:** `physics/applied_field.h` (lines 114-115, and corresponding lines in gradient)
+
+---
+
+### Deviation 7: ROSENSWEIG IC — tanh vs SHARP STEP (LOW)
+
+**Zhang Eq 4.3:** `Φ₀ = 1 if y ≤ 0.2, Φ₀ = 0 otherwise` (sharp discontinuity)
+
+**Code (`decoupled_driver.cc`):** Uses `θ = tanh((0.2 − y)/(√2 ε))` (smooth tanh profile)
+
+**Impact:** The tanh profile approximates the sharp interface and converges to it
+as ε → 0. For ε = 5e-3, the interface thickness is ~O(ε) = 0.005, so the profile
+is very close to a step. Minor effect on early dynamics.
+
+**Fix (optional):** Use sharp step: θ = +1 if y ≤ 0.2, θ = −1 otherwise.
+Or keep tanh (physically more meaningful as initial diffuse profile).
+
+---
+
+### Deviation 8: S2 ADAPTIVE FORMULA (LOW-MEDIUM)
+
+**Zhang p.B182 (below Eq 3.38):** The NS stabilization bound is part of the energy
+estimate. The exact formula for the required S2 involves operator norms.
+
+**Code:** `S2 = 1.5 * μ₀² * (χ₀ * |H_max|)² / (4 * ν_min)` with safety factor 1.5.
+
+**Impact:** This is an heuristic bound. May be too large (over-stabilizing velocity)
+or too small (missing stability). Zhang's paper doesn't give an explicit S2 formula
+for the fully decoupled case — it's embedded in the energy estimate.
+
+**Fix:** Keep for now, tune if needed after other fixes. The 1.5× safety factor
+provides margin.
+
+---
+
+### Priority Order for Fixes
+
+| Priority | Deviation | Effort | Impact |
+|----------|-----------|--------|--------|
+| **1** | #1 Viscous factor of 2 | 10 min | CRITICAL — all flow dynamics wrong |
+| **2** | #2 S1 = 200 → 50 | 5 min | HIGH — interface over-damped |
+| **3** | #4 Phase field convention | 1 hr | HIGH — all material properties differ |
+| **4** | #5 Algebraic M → PDE M | 30 min | HIGH — magnetization dynamics differ |
+| **5** | #3 Saddle-point → projection | 4-6 hr | MEDIUM — different pressure algorithm |
+| **6** | #6 Dipole regularization δ | 5 min | LOW — negligible at domain distance |
+| **7** | #7 IC tanh vs step | 5 min | LOW — converges to same profile |
+| **8** | #8 S2 formula | defer | LOW — tune empirically |
+
+**Recommended approach:**
+1. Fix deviations #1, #2, #6, #7 (30 min) — quick wins
+2. Fix deviation #4 (1 hr) — material properties
+3. Fix deviation #5 (30 min) — enable magnetization PDE
+4. Rerun droplet + Rosensweig tests
+5. If results still differ from Zhang, implement deviation #3 (projection scheme)
+
+---
+
+---
+
+## Critical Fix: DG Face Assembly (Session 8, February 27, 2026)
+
+**Deviation #5 (Magnetization PDE)** is now fully functional and MMS-verified.
+A critical bug in `magnetization_assemble.cc` caused zero cross-cell coupling
+in the DG face flux. See `SESSION_SUMMARY.md` Section 6b for details.
+
+With the fix + upwind penalty, the magnetization transport achieves O(h²)
+convergence in the full Poisson-Mag-NS coupled test (μ₀=0.1, real NS velocity).
+
+This means **all validation tests (droplet, rosensweig) now have correct DG
+magnetization transport** and should be rerun.
+
+---
+
 *Plan created: February 2025*
-*Updated: February 21, 2026*
+*Updated: February 27, 2026 (Session 8 — DG face fix, Poisson-Mag-NS MMS verified)*

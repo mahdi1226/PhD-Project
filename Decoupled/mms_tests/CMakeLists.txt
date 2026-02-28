@@ -37,3 +37,25 @@ add_executable(test_poisson_mag_mms
 )
 target_link_libraries(test_poisson_mag_mms poisson_lib magnetization_lib)
 deal_ii_setup_target(test_poisson_mag_mms)
+
+# Intermediate: Poisson + Magnetization + NS (Kelvin force coupling)
+# Requires navier_stokes_lib (available from top-level build)
+if(TARGET navier_stokes_lib)
+    add_executable(test_poisson_mag_ns_mms
+            poisson_mag_ns_mms_test.cc
+    )
+    target_link_libraries(test_poisson_mag_ns_mms
+            navier_stokes_lib poisson_lib magnetization_lib)
+    deal_ii_setup_target(test_poisson_mag_ns_mms)
+endif()
+
+# Full coupled system MMS test (CH → NS → Poisson/Mag)
+# Requires all 4 subsystem libraries (available from top-level build)
+if(TARGET cahn_hilliard_lib AND TARGET navier_stokes_lib)
+    add_executable(test_coupled_system_mms
+            coupled_system_mms_test.cc
+    )
+    target_link_libraries(test_coupled_system_mms
+            cahn_hilliard_lib navier_stokes_lib poisson_lib magnetization_lib)
+    deal_ii_setup_target(test_coupled_system_mms)
+endif()

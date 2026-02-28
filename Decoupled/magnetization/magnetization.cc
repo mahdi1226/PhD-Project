@@ -163,6 +163,12 @@ void MagnetizationSubsystem<dim>::set_mms_source(MmsSourceFunction func)
     mms_source_ = std::move(func);
 }
 
+template <int dim>
+void MagnetizationSubsystem<dim>::set_mms_M_exact(MmsExactMFunction func)
+{
+    mms_M_exact_ = std::move(func);
+}
+
 // ============================================================================
 // Accessors
 // ============================================================================
@@ -369,18 +375,17 @@ void MagnetizationSubsystem<dim>::initialize_equilibrium(
             const Point<dim>& x_q = fe_values_M.quadrature_point(q);
             const double theta_q = theta_values[q];
 
-            // Total field H = h_a + ∇φ
-            Tensor<1, dim> h_a = compute_applied_field<dim>(
-                x_q, params_, current_time);
+            // Total field H = ∇φ (Poisson with natural Neumann BCs encodes h_a)
+            // CRITICAL: Do NOT add h_a here — ∇φ IS the total field.
             Tensor<1, dim> H;
             if (params_.use_reduced_magnetic_field)
             {
-                H = h_a;
+                H = compute_applied_field<dim>(x_q, params_, current_time);
             }
             else
             {
                 for (unsigned int d = 0; d < dim; ++d)
-                    H[d] = h_a[d] + grad_phi_values[q][d];
+                    H[d] = grad_phi_values[q][d];
             }
 
             // χ(θ) and target M = χ(θ)H
@@ -582,15 +587,14 @@ MagnetizationSubsystem<dim>::compute_diagnostics(
             const double My_q = My_values[q];
             const double M_mag = std::sqrt(Mx_q * Mx_q + My_q * My_q);
 
-            // H = ∇φ + h_a
-            Tensor<1, dim> h_a = compute_applied_field<dim>(
-                x_q, params_, current_time);
+            // H = ∇φ (total field — Poisson encodes h_a via natural BCs)
+            // CRITICAL: Do NOT add h_a here — ∇φ IS the total field.
             Tensor<1, dim> H;
             if (params_.use_reduced_magnetic_field)
-                H = h_a;
+                H = compute_applied_field<dim>(x_q, params_, current_time);
             else
                 for (unsigned int d = 0; d < dim; ++d)
-                    H[d] = h_a[d] + grad_phi_values[q][d];
+                    H[d] = grad_phi_values[q][d];
 
             const double H_mag = H.norm();
 
@@ -740,15 +744,13 @@ MagnetizationSubsystem<dim>::compute_diagnostics_standalone(
             const double My_q = My_values[q];
             const double M_mag = std::sqrt(Mx_q * Mx_q + My_q * My_q);
 
-            // H = ∇φ + h_a
-            Tensor<1, dim> h_a = compute_applied_field<dim>(
-                x_q, params_, current_time);
+            // H = ∇φ (total field — Poisson encodes h_a via natural BCs)
             Tensor<1, dim> H;
             if (params_.use_reduced_magnetic_field)
-                H = h_a;
+                H = compute_applied_field<dim>(x_q, params_, current_time);
             else
                 for (unsigned int d = 0; d < dim; ++d)
-                    H[d] = h_a[d] + grad_phi_values[q][d];
+                    H[d] = grad_phi_values[q][d];
 
             // Field stats
             local_M_mag_sum += M_mag * JxW;

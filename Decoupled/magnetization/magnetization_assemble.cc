@@ -12,7 +12,7 @@
 //         + (F_mms, Z)               (MMS source, testing only)
 //
 // FACE INTEGRALS (Eq. 57, second line):
-//   LHS:  -Σ_F ∫_F (U·n⁻)[[Z]]·{M^k} dS  (upwind flux)
+//   LHS:  -Σ_F ∫_F (U·n⁻)[[Z]]·{M^k} dS       (central/skew flux)
 //
 // β-TERM (Zhang-He-Yang 2021, 2D identity):
 //   β M×(M×H) = β[M(M·H) - H|M|²]
@@ -126,16 +126,25 @@ void MagnetizationSubsystem<dim>::assemble_system_internal(
     std::vector<types::global_dof_index> dofs_here(dofs_per_cell);
     std::vector<types::global_dof_index> dofs_there(dofs_per_cell);
 
+    const bool face_mms_active = static_cast<bool>(mms_M_exact_);
+
     if (matrix_and_rhs)
     {
         fe_interface_M_ptr = std::make_unique<FEInterfaceValues<dim>>(
             fe_M, quadrature_face,
-            update_values | update_JxW_values | update_normal_vectors);
+            update_values | update_JxW_values | update_normal_vectors
+            | (face_mms_active ? update_quadrature_points : UpdateFlags(0)));
 
         const FiniteElement<dim>& fe_U = u_dof_handler.get_fe();
         fe_face_U_ptr = std::make_unique<FEFaceValues<dim>>(
             fe_U, quadrature_face, update_values);
     }
+
+    // Face RHS correction vectors (for MMS face flux consistency)
+    Vector<double> face_rhs_x_here(dofs_per_cell);
+    Vector<double> face_rhs_y_here(dofs_per_cell);
+    Vector<double> face_rhs_x_there(dofs_per_cell);
+    Vector<double> face_rhs_y_there(dofs_per_cell);
 
     // ========================================================================
     // Local contributions
@@ -221,18 +230,21 @@ const bool mms_active = static_cast<bool>(mms_source_);
             const double JxW = fe_values_M.JxW(q);
             const Point<dim>& x_q = fe_values_M.quadrature_point(q);
 
-            // H = h_a + ∇φ (total field)
-            Tensor<1, dim> h_a = compute_applied_field<dim>(
-                x_q, params_, current_time);
+            // h̃ = ∇φ — Zhang Eq 3.14: uses h̃^n = ∇φ^n
+            // CRITICAL: Do NOT add h_a here! The Poisson equation
+            //   (∇φ, ∇χ) = (h_a - m, ∇χ)
+            // means φ already encodes the applied field effect.
+            // Adding h_a would double-count the applied field.
             Tensor<1, dim> H;
             if (params_.use_reduced_magnetic_field)
             {
-                H = h_a;
+                // Reduced mode: H = h_a only (no Poisson, for testing)
+                H = compute_applied_field<dim>(x_q, params_, current_time);
             }
             else
             {
                 for (unsigned int d = 0; d < dim; ++d)
-                    H[d] = h_a[d] + grad_phi_vals[q][d];
+                    H[d] = grad_phi_vals[q][d];
             }
 
             // χ(θ)
@@ -415,34 +427,58 @@ const bool mms_active = static_cast<bool>(mms_source_);
 
                     for (unsigned int i = 0; i < dofs_per_cell; ++i)
                     {
+                        // FEInterfaceValues interface DoF numbering for DG:
+                        //   0..dpc-1       → "here" cell DoFs
+                        //   dpc..2*dpc-1   → "there" cell DoFs
+                        // shape_value(true,  i,     q) = here cell's i-th basis, here side
+                        // shape_value(false, i+dpc, q) = there cell's i-th basis, there side
                         const double Z_i_here =
                             fe_interface_M_ptr->shape_value(true, i, q);
                         const double Z_i_there =
-                            fe_interface_M_ptr->shape_value(false, i, q);
+                            fe_interface_M_ptr->shape_value(
+                                false, i + dofs_per_cell, q);
 
                         for (unsigned int j = 0; j < dofs_per_cell; ++j)
                         {
                             const double M_j_here =
                                 fe_interface_M_ptr->shape_value(true, j, q);
                             const double M_j_there =
-                                fe_interface_M_ptr->shape_value(false, j, q);
+                                fe_interface_M_ptr->shape_value(
+                                    false, j + dofs_per_cell, q);
 
-                            face_hh(i, j) +=
+                            // Central/skew flux: -(U·n)[[Z]]{M}
+                            const double central_hh =
                                 -skew_magnetic_face_value_scalar_interface(
                                     U_dot_n, Z_i_here, 0.0,
                                     M_j_here, 0.0) * JxW;
-                            face_ht(i, j) +=
+                            const double central_ht =
                                 -skew_magnetic_face_value_scalar_interface(
                                     U_dot_n, Z_i_here, 0.0,
                                     0.0, M_j_there) * JxW;
-                            face_th(i, j) +=
+                            const double central_th =
                                 -skew_magnetic_face_value_scalar_interface(
                                     U_dot_n, 0.0, Z_i_there,
                                     M_j_here, 0.0) * JxW;
-                            face_tt(i, j) +=
+                            const double central_tt =
                                 -skew_magnetic_face_value_scalar_interface(
                                     U_dot_n, 0.0, Z_i_there,
                                     0.0, M_j_there) * JxW;
+
+                            // Upwind penalty: +½|U·n|[[Z]][[M]]
+                            const double abs_Udn = std::abs(U_dot_n);
+                            const double upw_hh = 0.5 * abs_Udn
+                                * Z_i_here * M_j_here * JxW;
+                            const double upw_ht = 0.5 * abs_Udn
+                                * Z_i_here * (-M_j_there) * JxW;
+                            const double upw_th = 0.5 * abs_Udn
+                                * (-Z_i_there) * M_j_here * JxW;
+                            const double upw_tt = 0.5 * abs_Udn
+                                * (-Z_i_there) * (-M_j_there) * JxW;
+
+                            face_hh(i, j) += central_hh + upw_hh;
+                            face_ht(i, j) += central_ht + upw_ht;
+                            face_th(i, j) += central_th + upw_th;
+                            face_tt(i, j) += central_tt + upw_tt;
                         }
                     }
                 }
@@ -460,6 +496,56 @@ const bool mms_active = static_cast<bool>(mms_source_);
                         system_matrix_.add(dofs_there[i], dofs_there[j],
                                            face_tt(i, j));
                     }
+
+                // Face MMS RHS correction (AMR Case 1)
+                // Cancels the face flux residual from B_h^m acting on M*
+                if (face_mms_active)
+                {
+                    face_rhs_x_here  = 0; face_rhs_y_here  = 0;
+                    face_rhs_x_there = 0; face_rhs_y_there = 0;
+
+                    for (unsigned int q = 0; q < n_q_face; ++q)
+                    {
+                        const double JxW = fe_interface_M_ptr->JxW(q);
+                        const Tensor<1, dim>& normal =
+                            fe_interface_M_ptr->normal(q);
+                        const Point<dim>& x_q =
+                            fe_interface_M_ptr->quadrature_point(q);
+
+                        double U_dot_n = Ux_face[q] * normal[0];
+                        if constexpr (dim > 1)
+                            U_dot_n += Uy_face[q] * normal[1];
+
+                        // M* is continuous → same value on both sides
+                        const Tensor<1, dim> M_exact =
+                            mms_M_exact_(x_q, current_time);
+
+                        for (unsigned int i = 0; i < dofs_per_cell; ++i)
+                        {
+                            const double Z_i_here =
+                                fe_interface_M_ptr->shape_value(true, i, q);
+                            const double Z_i_there =
+                                fe_interface_M_ptr->shape_value(
+                                    false, i + dofs_per_cell, q);
+
+                            // Matrix face term = +∫(U·n)[[Z]]{M} dS
+                            // [[Z_i]] = Z_i_here for here DoF, -Z_i_there for there DoF
+                            // {M*} = M* (continuous)
+                            face_rhs_x_here(i)  +=  U_dot_n * Z_i_here  * M_exact[0] * JxW;
+                            face_rhs_y_here(i)  +=  U_dot_n * Z_i_here  * M_exact[1] * JxW;
+                            face_rhs_x_there(i) += -U_dot_n * Z_i_there * M_exact[0] * JxW;
+                            face_rhs_y_there(i) += -U_dot_n * Z_i_there * M_exact[1] * JxW;
+                        }
+                    }
+
+                    for (unsigned int i = 0; i < dofs_per_cell; ++i)
+                    {
+                        Mx_rhs_[dofs_here[i]]  += face_rhs_x_here(i);
+                        My_rhs_[dofs_here[i]]   += face_rhs_y_here(i);
+                        Mx_rhs_[dofs_there[i]] += face_rhs_x_there(i);
+                        My_rhs_[dofs_there[i]]  += face_rhs_y_there(i);
+                    }
+                }
             }
             // ================================================================
             // AMR Case 2: Neighbor at same level
@@ -499,31 +585,50 @@ const bool mms_active = static_cast<bool>(mms_source_);
                         const double Z_i_here =
                             fe_interface_M_ptr->shape_value(true, i, q);
                         const double Z_i_there =
-                            fe_interface_M_ptr->shape_value(false, i, q);
+                            fe_interface_M_ptr->shape_value(
+                                false, i + dofs_per_cell, q);
 
                         for (unsigned int j = 0; j < dofs_per_cell; ++j)
                         {
                             const double M_j_here =
                                 fe_interface_M_ptr->shape_value(true, j, q);
                             const double M_j_there =
-                                fe_interface_M_ptr->shape_value(false, j, q);
+                                fe_interface_M_ptr->shape_value(
+                                    false, j + dofs_per_cell, q);
 
-                            face_hh(i, j) +=
+                            // Central/skew flux: -(U·n)[[Z]]{M}
+                            const double central_hh =
                                 -skew_magnetic_face_value_scalar_interface(
                                     U_dot_n, Z_i_here, 0.0,
                                     M_j_here, 0.0) * JxW;
-                            face_ht(i, j) +=
+                            const double central_ht =
                                 -skew_magnetic_face_value_scalar_interface(
                                     U_dot_n, Z_i_here, 0.0,
                                     0.0, M_j_there) * JxW;
-                            face_th(i, j) +=
+                            const double central_th =
                                 -skew_magnetic_face_value_scalar_interface(
                                     U_dot_n, 0.0, Z_i_there,
                                     M_j_here, 0.0) * JxW;
-                            face_tt(i, j) +=
+                            const double central_tt =
                                 -skew_magnetic_face_value_scalar_interface(
                                     U_dot_n, 0.0, Z_i_there,
                                     0.0, M_j_there) * JxW;
+
+                            // Upwind penalty: +½|U·n|[[Z]][[M]]
+                            const double abs_Udn = std::abs(U_dot_n);
+                            const double upw_hh = 0.5 * abs_Udn
+                                * Z_i_here * M_j_here * JxW;
+                            const double upw_ht = 0.5 * abs_Udn
+                                * Z_i_here * (-M_j_there) * JxW;
+                            const double upw_th = 0.5 * abs_Udn
+                                * (-Z_i_there) * M_j_here * JxW;
+                            const double upw_tt = 0.5 * abs_Udn
+                                * (-Z_i_there) * (-M_j_there) * JxW;
+
+                            face_hh(i, j) += central_hh + upw_hh;
+                            face_ht(i, j) += central_ht + upw_ht;
+                            face_th(i, j) += central_th + upw_th;
+                            face_tt(i, j) += central_tt + upw_tt;
                         }
                     }
                 }
@@ -540,6 +645,54 @@ const bool mms_active = static_cast<bool>(mms_source_);
                         system_matrix_.add(dofs_there[i], dofs_there[j],
                                            face_tt(i, j));
                     }
+
+                // Face MMS RHS correction (AMR Case 2)
+                if (face_mms_active)
+                {
+                    face_rhs_x_here  = 0; face_rhs_y_here  = 0;
+                    face_rhs_x_there = 0; face_rhs_y_there = 0;
+
+                    for (unsigned int q = 0; q < n_q_face; ++q)
+                    {
+                        const double JxW = fe_interface_M_ptr->JxW(q);
+                        const Tensor<1, dim>& normal =
+                            fe_interface_M_ptr->normal(q);
+                        const Point<dim>& x_q =
+                            fe_interface_M_ptr->quadrature_point(q);
+
+                        double U_dot_n = Ux_face[q] * normal[0];
+                        if constexpr (dim > 1)
+                            U_dot_n += Uy_face[q] * normal[1];
+
+                        const Tensor<1, dim> M_exact =
+                            mms_M_exact_(x_q, current_time);
+
+                        for (unsigned int i = 0; i < dofs_per_cell; ++i)
+                        {
+                            const double Z_i_here =
+                                fe_interface_M_ptr->shape_value(true, i, q);
+                            const double Z_i_there =
+                                fe_interface_M_ptr->shape_value(
+                                    false, i + dofs_per_cell, q);
+
+                            // Matrix face term = +∫(U·n)[[Z]]{M} dS
+                            // [[Z_i]] = Z_i_here for here DoF, -Z_i_there for there DoF
+                            // {M*} = M* (continuous)
+                            face_rhs_x_here(i)  +=  U_dot_n * Z_i_here  * M_exact[0] * JxW;
+                            face_rhs_y_here(i)  +=  U_dot_n * Z_i_here  * M_exact[1] * JxW;
+                            face_rhs_x_there(i) += -U_dot_n * Z_i_there * M_exact[0] * JxW;
+                            face_rhs_y_there(i) += -U_dot_n * Z_i_there * M_exact[1] * JxW;
+                        }
+                    }
+
+                    for (unsigned int i = 0; i < dofs_per_cell; ++i)
+                    {
+                        Mx_rhs_[dofs_here[i]]  += face_rhs_x_here(i);
+                        My_rhs_[dofs_here[i]]   += face_rhs_y_here(i);
+                        Mx_rhs_[dofs_there[i]] += face_rhs_x_there(i);
+                        My_rhs_[dofs_there[i]]  += face_rhs_y_there(i);
+                    }
+                }
             }
             // AMR Case 3: Neighbor is finer — skip, handled by fine cells
         }

@@ -25,9 +25,16 @@
 //     - Permeability   μ(θ) = 1 + χ(θ)
 //
 //   Cahn-Hilliard:
-//     - Double-well potential  F(θ)  = (1/4)(θ² - 1)²
-//     - Double-well derivative f(θ)  = θ³ - θ
-//     - Double-well curvature  f'(θ) = 3θ² - 1
+//     - Double-well potential  F(θ)  = (1/16)(θ² - 1)²
+//     - Double-well derivative f(θ)  = (θ³ - θ)/4
+//     - Double-well curvature  f'(θ) = (3θ² - 1)/4
+//
+//   DERIVATION: Zhang uses Φ∈{0,1} with F(Φ) = ¼Φ²(1-Φ)².
+//   Substituting Φ = (θ+1)/2:
+//     F_Φ = ¼·((θ+1)/2)²·((1-θ)/2)² = (θ²-1)²/64
+//   Energy: E = λ_Φ ∫[ε/2|∇Φ|² + (1/ε)F_Φ] = λ_Φ ∫[ε/8|∇θ|² + (θ²-1)²/(64ε)]
+//   In θ-convention: E = λ_θ ∫[ε/2|∇θ|² + (1/ε)F_θ]
+//   Matching:  λ_θ = λ_Φ/4,  F_θ = (θ²-1)²/16
 //
 //   Navier-Stokes:
 //     - Viscosity  ν(θ) = ν_w·(1-θ)/2 + ν_f·(θ+1)/2  (linear, Zhang convention)
@@ -83,6 +90,20 @@ inline double susceptibility(double theta, double /*epsilon*/, double chi_0)
     const double phi = 0.5 * (theta + 1.0);
     const double phi_clamped = (phi < 0.0) ? 0.0 : (phi > 1.0 ? 1.0 : phi);
     return chi_0 * phi_clamped;
+}
+
+// ============================================================================
+// Susceptibility derivative dχ/dθ
+//
+//   χ(θ) = χ₀ * Φ,  Φ = (θ+1)/2
+//   dχ/dθ = χ₀/2   (when Φ ∈ [0,1], else 0 due to clamping)
+// ============================================================================
+inline double susceptibility_derivative(double theta, double /*epsilon*/, double chi_0)
+{
+    const double phi = 0.5 * (theta + 1.0);
+    if (phi < 0.0 || phi > 1.0)
+        return 0.0;  // clamped region
+    return 0.5 * chi_0;
 }
 
 // ============================================================================
@@ -173,76 +194,84 @@ inline double density_ratio(double theta, double epsilon, double r)
 }
 
 // ============================================================================
-// Double-Well Potential (Eq. 2-3, p.499)
+// Double-Well Potential — θ∈{-1,+1} convention
 //
-//   F(θ) = (1/4)(θ² - 1)²
-//   f(θ) = F'(θ) = θ³ - θ
-//   f'(θ) = F''(θ) = 3θ² - 1
+// Zhang uses Φ∈{0,1}: F_Φ(Φ) = ¼Φ²(1-Φ)², f_Φ = ½Φ(1-Φ)(1-2Φ).
+// Converting via Φ = (θ+1)/2 and matching λ_θ·E_θ = λ_Φ·E_Φ with λ_θ = λ_Φ/4:
 //
-// NOTE: These are the ε-FREE forms. The assembler applies the 1/ε scaling
-// from the paper:  (1/ε)f(θ) in Eq. 42b.
+//   F(θ) = (1/16)(θ² - 1)²
+//   f(θ) = F'(θ) = (θ³ - θ)/4
+//   f'(θ) = F''(θ) = (3θ² - 1)/4
+//
+// NOTE: These are the ε-FREE forms. The assembler applies the λ/ε scaling:
+//   δE₁/δθ = (λ/ε)·f(θ)
 //
 // Truncated to quadratic/linear outside [-1, 1] for overshoot safety.
 // Inside the physical range |θ| ≤ 1, the functions are exact.
 // ============================================================================
 
 /**
- * @brief Double-well potential F(θ) = (1/4)(θ² - 1)²
+ * @brief Double-well potential F(θ) = (1/16)(θ² - 1)²
  *
+ * Derived from Zhang's F(Φ) = ¼Φ²(1-Φ)² via Φ=(θ+1)/2 and λ_θ=λ_Φ/4.
  * Used in CH diagnostics: E_CH = λ ∫ [ε/2 |∇θ|² + (1/ε)F(θ)] dΩ
  *
- * Truncated to quadratic outside [-1, 1].
+ * Truncated to quadratic outside [-1, 1]: F ≈ (1/4)(θ∓1)²
+ * (matching F(±1)=0, F'(±1)=0, F''(±1)=1/2)
  */
 inline double double_well_potential(double theta)
 {
     if (theta <= -1.0)
     {
         const double t = theta + 1.0;
-        return t * t;
+        return 0.25 * t * t;
     }
     else if (theta >= 1.0)
     {
         const double t = theta - 1.0;
-        return t * t;
+        return 0.25 * t * t;
     }
     else
     {
         const double t = theta * theta - 1.0;
-        return 0.25 * t * t;
+        return 0.0625 * t * t;  // (θ²-1)²/16
     }
 }
 
 /**
- * @brief Double-well derivative f(θ) = F'(θ) = θ³ - θ
+ * @brief Double-well derivative f(θ) = F'(θ) = (θ³ - θ)/4
  *
- * Used in CH assembly (Eq. 42b): the nonlinear term in the ψ equation.
- * Applied with 1/ε scaling by the assembler.
+ * Derived from Zhang's f(Φ) = ½Φ(1-Φ)(1-2Φ) via Φ=(θ+1)/2.
+ * Used in CH assembly: the nonlinear term in the ψ equation.
+ * Applied with λ/ε scaling by the assembler.
  *
- * Truncated to linear outside [-1, 1].
+ * Truncated to linear outside [-1, 1]: f ≈ (1/2)(θ∓1)
+ * (matching f(±1)=0, f'(±1)=1/2)
  */
 inline double double_well_derivative(double theta)
 {
     if (theta <= -1.0)
-        return 2.0 * (theta + 1.0);
+        return 0.5 * (theta + 1.0);
     else if (theta >= 1.0)
-        return 2.0 * (theta - 1.0);
+        return 0.5 * (theta - 1.0);
     else
-        return theta * theta * theta - theta;
+        return 0.25 * (theta * theta * theta - theta);
 }
 
 /**
- * @brief Double-well second derivative f'(θ) = F''(θ) = 3θ² - 1
+ * @brief Double-well second derivative f'(θ) = F''(θ) = (3θ² - 1)/4
  *
  * Used for stability analysis and Newton linearization (if needed).
+ * min f'(θ) = -1/4 at θ=0  →  S1 ≥ λ/(4ε) for SAV convexity.
  *
- * Truncated to constant (= 2) outside [-1, 1].
+ * Truncated to constant (= 1/2) outside [-1, 1].
  */
 inline double double_well_second_derivative(double theta)
 {
     if (theta <= -1.0 || theta >= 1.0)
-        return 2.0;
+        return 0.5;
     else
-        return 3.0 * theta * theta - 1.0;
+        return 0.25 * (3.0 * theta * theta - 1.0);
 }
 
 #endif // MATERIAL_PROPERTIES_H

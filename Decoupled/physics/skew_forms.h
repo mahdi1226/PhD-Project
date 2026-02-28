@@ -76,6 +76,28 @@ skew_magnetic_face_value_scalar_interface(double U_dot_n,
                                            W_here, W_there);
 }
 
+// ----------------------------------------------------------------------------
+// Upwind penalty: +½|U·n| [[V]]·[[W]]                    (stabilization)
+//
+// Adds numerical diffusion to the DG face flux, converting the central
+// (energy-neutral) flux into an upwind flux.  For a continuous exact
+// solution M*, [[M*]]=0 so this term vanishes — it does not affect the
+// MMS source or formal accuracy, but is essential for convergence of the
+// implicit DG transport scheme.
+//
+// Central flux alone: -(U·n) [[V]] {W}
+// Upwind  flux:       -(U·n) [[V]] {W}  +  ½|U·n| [[V]] [[W]]
+// ----------------------------------------------------------------------------
+inline double
+upwind_penalty_scalar(double abs_U_dot_n,
+                      double V_here, double V_there,
+                      double W_here, double W_there)
+{
+    const double jump_V = V_here - V_there;
+    const double jump_W = W_here - W_there;
+    return 0.5 * abs_U_dot_n * jump_V * jump_W;
+}
+
 // ============================================================================
 //                    VECTOR VERSIONS (V, W ∈ ℝ^d)
 //

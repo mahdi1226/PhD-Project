@@ -65,6 +65,9 @@ struct MagMMSResult
     double Mx_Linf  = 0.0;
     double My_Linf  = 0.0;
     double M_Linf   = 0.0;
+    double Mx_H1    = 0.0;
+    double My_H1    = 0.0;
+    double M_H1     = 0.0;
     double time_s   = 0.0;
 };
 
@@ -232,6 +235,9 @@ static MagMMSResult run_single(
     result.Mx_Linf = errors.Mx_Linf;
     result.My_Linf = errors.My_Linf;
     result.M_Linf  = errors.M_Linf;
+    result.Mx_H1   = errors.Mx_H1;
+    result.My_H1   = errors.My_H1;
+    result.M_H1    = errors.M_H1;
 
     auto t_end_wall = std::chrono::high_resolution_clock::now();
     result.time_s = std::chrono::duration<double>(t_end_wall - t_start_wall).count();
@@ -274,6 +280,7 @@ int main(int argc, char** argv)
     Parameters params;
 
     const double expected_L2_rate = params.fe.degree_magnetization + 1;  // DG1 → 2.0
+    const double expected_H1_rate = static_cast<double>(params.fe.degree_magnetization);  // DG1 → 1.0
 
     if (this_rank == 0)
     {
@@ -283,6 +290,7 @@ int main(int argc, char** argv)
                   << "\n  MPI ranks:       " << n_ranks
                   << "\n  FE degree:       DG" << params.fe.degree_magnetization
                   << "\n  Expected L2:     " << expected_L2_rate
+                  << "\n  Expected H1:     " << expected_H1_rate
                   << "\n  Using FACADE:    MagnetizationSubsystem"
                   << "\n  Time steps:      1"
                   << "\n  t ∈ [0.1, 0.2]"
@@ -326,15 +334,18 @@ int main(int argc, char** argv)
                   << std::setw(8)  << "L2rate"
                   << std::setw(12) << "M_Linf"
                   << std::setw(8)  << "Lfrate"
+                  << std::setw(12) << "M_H1"
+                  << std::setw(8)  << "H1rate"
                   << std::setw(12) << "Mx_L2"
                   << std::setw(12) << "My_L2"
                   << std::setw(10) << "DoFs"
                   << std::setw(10) << "time(s)"
-                  << "\n" << std::string(102, '-') << "\n";
+                  << "\n" << std::string(122, '-') << "\n";
 
         double last_L2_rate = 0.0;
         double last_Linf_rate = 0.0;
-        std::vector<double> L2_rates, Linf_rates;
+        double last_H1_rate = 0.0;
+        std::vector<double> L2_rates, Linf_rates, H1_rates;
 
         for (size_t i = 0; i < results.size(); ++i)
         {
@@ -342,6 +353,7 @@ int main(int argc, char** argv)
 
             double L2_rate = 0.0;
             double Linf_rate = 0.0;
+            double H1_rate = 0.0;
             if (i > 0)
             {
                 const auto& prev = results[i - 1];
@@ -350,11 +362,15 @@ int main(int argc, char** argv)
                     L2_rate = std::log(prev.M_L2 / r.M_L2) / log_h;
                 if (prev.M_Linf > 1e-15 && r.M_Linf > 1e-15)
                     Linf_rate = std::log(prev.M_Linf / r.M_Linf) / log_h;
+                if (prev.M_H1 > 1e-15 && r.M_H1 > 1e-15)
+                    H1_rate = std::log(prev.M_H1 / r.M_H1) / log_h;
                 last_L2_rate = L2_rate;
                 last_Linf_rate = Linf_rate;
+                last_H1_rate = H1_rate;
             }
             L2_rates.push_back(L2_rate);
             Linf_rates.push_back(Linf_rate);
+            H1_rates.push_back(H1_rate);
 
             std::cout << std::left << std::setw(6) << r.refinement
                       << std::scientific << std::setprecision(2)
@@ -367,6 +383,10 @@ int main(int argc, char** argv)
                       << std::fixed << std::setprecision(2)
                       << std::setw(8) << Linf_rate
                       << std::scientific << std::setprecision(2)
+                      << std::setw(12) << r.M_H1
+                      << std::fixed << std::setprecision(2)
+                      << std::setw(8) << H1_rate
+                      << std::scientific << std::setprecision(2)
                       << std::setw(12) << r.Mx_L2
                       << std::setw(12) << r.My_L2
                       << std::fixed << std::setprecision(0)
@@ -376,12 +396,14 @@ int main(int argc, char** argv)
                       << "\n";
         }
 
-        std::cout << std::string(102, '-') << "\n";
+        std::cout << std::string(122, '-') << "\n";
 
         const double tolerance = 0.3;
-        const bool pass = (last_L2_rate >= expected_L2_rate - tolerance);
+        const bool pass_L2 = (last_L2_rate >= expected_L2_rate - tolerance);
+        const bool pass_H1 = (last_H1_rate >= expected_H1_rate - tolerance);
+        const bool pass = pass_L2 && pass_H1;
 
-        if (pass)
+        if (pass_L2)
             std::cout << "[PASS] L2 rate " << std::fixed << std::setprecision(2)
                       << last_L2_rate << " >= "
                       << expected_L2_rate - tolerance << " (expected "
@@ -390,6 +412,16 @@ int main(int argc, char** argv)
             std::cout << "[FAIL] L2 rate " << std::fixed << std::setprecision(2)
                       << last_L2_rate << " < "
                       << expected_L2_rate - tolerance << "\n";
+
+        if (pass_H1)
+            std::cout << "[PASS] H1 rate " << std::fixed << std::setprecision(2)
+                      << last_H1_rate << " >= "
+                      << expected_H1_rate - tolerance << " (expected "
+                      << expected_H1_rate << " +/- " << tolerance << ")\n";
+        else
+            std::cout << "[FAIL] H1 rate " << std::fixed << std::setprecision(2)
+                      << last_H1_rate << " < "
+                      << expected_H1_rate - tolerance << "\n";
 
         std::cout << "========================================\n";
 
@@ -407,6 +439,7 @@ int main(int argc, char** argv)
             csv << "refinement,h,n_dofs,"
                 << "M_L2,Mx_L2,My_L2,L2_rate,"
                 << "M_Linf,Mx_Linf,My_Linf,Linf_rate,"
+                << "M_H1,Mx_H1,My_H1,H1_rate,"
                 << "time_s\n";
 
             for (size_t i = 0; i < results.size(); ++i)
@@ -427,6 +460,12 @@ int main(int argc, char** argv)
                     << r.My_Linf << ","
                     << std::fixed << std::setprecision(4)
                     << Linf_rates[i] << ","
+                    << std::scientific << std::setprecision(6)
+                    << r.M_H1 << ","
+                    << r.Mx_H1 << ","
+                    << r.My_H1 << ","
+                    << std::fixed << std::setprecision(4)
+                    << H1_rates[i] << ","
                     << std::setprecision(2)
                     << r.time_s << "\n";
             }

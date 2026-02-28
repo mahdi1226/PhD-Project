@@ -195,6 +195,9 @@ struct MagMMSError
     double Mx_Linf = 0.0;
     double My_Linf = 0.0;
     double M_Linf  = 0.0;  // max(|M_h - M*|) over all quadrature points
+    double Mx_H1  = 0.0;   // H1 seminorm |∇(Mx_h - Mx*)|
+    double My_H1  = 0.0;
+    double M_H1   = 0.0;   // combined √(Mx_H1² + My_H1²)
 };
 
 // ============================================================================
@@ -216,11 +219,13 @@ MagMMSError compute_mag_mms_errors_parallel(
     const unsigned int n_q_points = quadrature.size();
 
     dealii::FEValues<dim> fe_values(fe, quadrature,
-        dealii::update_values | dealii::update_quadrature_points |
-        dealii::update_JxW_values);
+        dealii::update_values | dealii::update_gradients |
+        dealii::update_quadrature_points | dealii::update_JxW_values);
 
     std::vector<double> Mx_values(n_q_points);
     std::vector<double> My_values(n_q_points);
+    std::vector<dealii::Tensor<1, dim>> Mx_grads(n_q_points);
+    std::vector<dealii::Tensor<1, dim>> My_grads(n_q_points);
 
     MagExactMx<dim> exact_Mx(time, L_y);
     MagExactMy<dim> exact_My(time, L_y);
@@ -229,6 +234,8 @@ MagMMSError compute_mag_mms_errors_parallel(
     double local_My_L2_sq = 0.0;
     double local_Mx_Linf  = 0.0;
     double local_My_Linf  = 0.0;
+    double local_Mx_H1_sq = 0.0;
+    double local_My_H1_sq = 0.0;
 
     for (const auto& cell : M_dof_handler.active_cell_iterators())
     {
@@ -238,6 +245,8 @@ MagMMSError compute_mag_mms_errors_parallel(
         fe_values.reinit(cell);
         fe_values.get_function_values(Mx_solution, Mx_values);
         fe_values.get_function_values(My_solution, My_values);
+        fe_values.get_function_gradients(Mx_solution, Mx_grads);
+        fe_values.get_function_gradients(My_solution, My_grads);
 
         for (unsigned int q = 0; q < n_q_points; ++q)
         {
@@ -252,11 +261,18 @@ MagMMSError compute_mag_mms_errors_parallel(
 
             local_Mx_Linf = std::max(local_Mx_Linf, std::abs(Mx_err));
             local_My_Linf = std::max(local_My_Linf, std::abs(My_err));
+
+            // H1 seminorm: |∇(M_h - M*)|²
+            const auto grad_Mx_err = Mx_grads[q] - exact_Mx.gradient(x_q);
+            const auto grad_My_err = My_grads[q] - exact_My.gradient(x_q);
+            local_Mx_H1_sq += grad_Mx_err * grad_Mx_err * JxW;
+            local_My_H1_sq += grad_My_err * grad_My_err * JxW;
         }
     }
 
     double global_Mx_L2_sq = 0.0, global_My_L2_sq = 0.0;
     double global_Mx_Linf = 0.0, global_My_Linf = 0.0;
+    double global_Mx_H1_sq = 0.0, global_My_H1_sq = 0.0;
     MPI_Allreduce(&local_Mx_L2_sq, &global_Mx_L2_sq, 1,
                   MPI_DOUBLE, MPI_SUM, mpi_communicator);
     MPI_Allreduce(&local_My_L2_sq, &global_My_L2_sq, 1,
@@ -265,6 +281,10 @@ MagMMSError compute_mag_mms_errors_parallel(
                   MPI_DOUBLE, MPI_MAX, mpi_communicator);
     MPI_Allreduce(&local_My_Linf, &global_My_Linf, 1,
                   MPI_DOUBLE, MPI_MAX, mpi_communicator);
+    MPI_Allreduce(&local_Mx_H1_sq, &global_Mx_H1_sq, 1,
+                  MPI_DOUBLE, MPI_SUM, mpi_communicator);
+    MPI_Allreduce(&local_My_H1_sq, &global_My_H1_sq, 1,
+                  MPI_DOUBLE, MPI_SUM, mpi_communicator);
 
     error.Mx_L2 = std::sqrt(global_Mx_L2_sq);
     error.My_L2 = std::sqrt(global_My_L2_sq);
@@ -273,6 +293,10 @@ MagMMSError compute_mag_mms_errors_parallel(
     error.Mx_Linf = global_Mx_Linf;
     error.My_Linf = global_My_Linf;
     error.M_Linf  = std::max(global_Mx_Linf, global_My_Linf);
+
+    error.Mx_H1 = std::sqrt(global_Mx_H1_sq);
+    error.My_H1 = std::sqrt(global_My_H1_sq);
+    error.M_H1  = std::sqrt(global_Mx_H1_sq + global_My_H1_sq);
 
     return error;
 }

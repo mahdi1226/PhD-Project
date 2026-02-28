@@ -152,12 +152,26 @@ mpirun -np 4 ./test_magnetization_mms
 mpirun -np 4 ./test_navier_stokes_mms --phase D --ref 2 3 4 5 6
 ```
 
-### 4.5 Coupled MMS Test (Poisson + Magnetization)
+### 4.5 Coupled MMS Tests
 
+**Poisson + Magnetization (Picard iteration):**
 ```bash
-mpirun -np 4 ./test_poisson_mag_mms
+mpirun -np 4 build/mms_tests/test_poisson_mag_mms
 ```
 Tests the Picard iteration loop with under-relaxation, verifying coupled convergence.
+
+**Poisson + Magnetization + NS (Kelvin force coupling):**
+```bash
+mpirun -np 1 build/mms_tests/test_poisson_mag_ns_mms --refs 2 3 4 --steps 1
+```
+Tests all 3 subsystems together: NS provides velocity for DG magnetization transport,
+Poisson provides H for relaxation, and Kelvin force μ₀(M·∇)H couples back into NS.
+Supports `--mag-only` (skip NS, use projected U) and `--project-u` (use exact U interpolant)
+for incremental debugging.
+
+**Files:**
+- `mms_tests/poisson_mag_ns_mms.h` — NS MMS source with Kelvin body force + curl correction
+- `mms_tests/poisson_mag_ns_mms_test.cc` — 3-subsystem test harness with extensive diagnostics
 
 ---
 
@@ -165,7 +179,7 @@ Tests the Picard iteration loop with under-relaxation, verifying coupled converg
 
 ### 5.1 MMS Spatial Convergence (all PASS)
 
-Default refinements: {2, 3, 4, 5, 6}
+**Standalone tests** (default refinements: {2, 3, 4, 5, 6}):
 
 | Subsystem      | Field   | Norm | Expected | Achieved | Status |
 |----------------|---------|------|----------|----------|--------|
@@ -177,6 +191,13 @@ Default refinements: {2, 3, 4, 5, 6}
 | Navier-Stokes  | ux      | H1   | O(h^2)   | 2.00     | PASS   |
 | Navier-Stokes  | uy      | H1   | O(h^2)   | 2.00     | PASS   |
 | Navier-Stokes  | p       | L2   | O(h^2)   | 2.19-2.47| PASS   |
+
+**Coupled tests** (refinements: {2, 3, 4}):
+
+| Test                        | phi L2 | M L2 | ux L2 | p L2 | Status |
+|-----------------------------|--------|------|-------|------|--------|
+| Poisson-Mag (Picard)        | 2.00   | 2.00 | --    | --   | PASS   |
+| Poisson-Mag-NS (μ₀=0.1)    | 3.00   | 1.95 | 3.00  | 2.1  | PASS   |
 
 ### 5.2 VTK Output Modes
 
@@ -268,6 +289,8 @@ navier_stokes/
 mms_tests/
   poisson_mag_mms.h          -- Coupled MMS source for phi+M
   poisson_mag_mms_test.cc    -- Picard iteration convergence test
+  poisson_mag_ns_mms.h       -- NS MMS source with Kelvin force (body + curl)
+  poisson_mag_ns_mms_test.cc -- 3-subsystem Kelvin force convergence test
   CMakeLists.txt
 ```
 
@@ -289,6 +312,57 @@ cd magnetization/cmake-build-debug && cmake .. && ninja
 # Coupled MMS test (ninja)
 cd mms_tests/cmake-build-debug && cmake .. && ninja
 ```
+
+---
+
+## 6b. Critical Bug Fix: DG Face Assembly (February 2026)
+
+### The Bug
+
+The DG magnetization transport face assembly used `FEInterfaceValues::shape_value`
+with incorrect interface DoF indexing, causing **zero cross-cell coupling** on all
+interior faces.
+
+In deal.II's `FEInterfaceValues` for DG elements, interface DoFs are numbered:
+- `0 .. dpc-1` → "here" cell DoFs
+- `dpc .. 2*dpc-1` → "there" cell DoFs
+
+The code used `shape_value(false, i, q)` to get the "there" cell's i-th basis function.
+But interface DoF `i` belongs to the "here" cell — evaluating it from the "there" side
+returns 0 for DG. The correct call is `shape_value(false, i + dofs_per_cell, q)`.
+
+### Impact
+
+With `Z_i_there = 0` and `M_j_there = 0` at all quadrature points:
+- `face_ht`, `face_th`, `face_tt` matrices were identically zero
+- Only `face_hh` (here-here block) was non-zero
+- The DG method had NO inter-element coupling in the face flux
+- Transport errors were O(1) instead of O(h²)
+
+This bug affected ALL validation tests (droplet, rosensweig) where the magnetization
+PDE is solved with non-zero velocity. The standalone magnetization MMS test (U=0)
+was unaffected because the face flux is zero when U=0.
+
+### Fix
+
+1. **Indexing fix**: `shape_value(false, i + dofs_per_cell, q)` in 4 locations
+   (AMR Case 1 + Case 2, both matrix assembly and face_mms_active RHS)
+2. **Upwind penalty added**: `+½|U·n|[[Z]][[M]]` for optimal O(h²) convergence
+   (central flux alone gives only O(h))
+
+### Verification
+
+| Configuration | M_L2 (ref=4) | Rate |
+|---------------|-------------|------|
+| Before fix (broken face flux) | 0.121 | O(1) — no convergence |
+| After fix, central flux only | 1.58e-4 | 1.0 — sub-optimal |
+| After fix + upwind penalty | 7.20e-6 | **1.96** — optimal |
+
+Full Poisson-Mag-NS test with μ₀=0.1: **[PASS]** — all rates within tolerance.
+
+### File
+
+`magnetization/magnetization_assemble.cc` — face loop, both AMR cases
 
 ---
 
@@ -397,5 +471,5 @@ Time step:     dt = 1e-3, max_steps = 1500
 ---
 
 *Generated: February 2025*
-*Updated: February 21, 2026 (Session 3)*
+*Updated: February 27, 2026 (Sessions 5-8: MMS framework + DG face fix)*
 *Total source code: ~10,000 lines across 4 subsystems + shared libraries*

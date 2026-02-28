@@ -115,6 +115,10 @@ public:
             const dealii::Tensor<1, dim>& U,
             double div_U)>;
 
+    // Face MMS correction: exact M*(point, time) → Tensor<1,dim>
+    using MmsExactMFunction = std::function<
+        dealii::Tensor<1, dim>(const dealii::Point<dim>& point, double time)>;
+
     // ========================================================================
     // Constructor — takes references, no ownership
     // ========================================================================
@@ -228,6 +232,20 @@ public:
      */
     void set_mms_source(MmsSourceFunction func);
 
+    /**
+     * @brief Set exact M* callback for DG face MMS correction.
+     *
+     * The DG bilinear form B_h^m has face flux terms -∫_F (U·n)[[Z]]{M} dS.
+     * When MMS-testing with transport (U≠0), these face terms acting on the
+     * discrete projection of M* create an O(1) residual that doesn't decrease
+     * with h. This callback provides M*(x,t) so the assembler can add the
+     * corresponding face RHS correction to cancel this residual.
+     *
+     * Only needed when testing DG magnetization transport with non-zero velocity.
+     * Production code never sets this.
+     */
+    void set_mms_M_exact(MmsExactMFunction func);
+
     // ========================================================================
     // Accessors — for other subsystems to read results
     // ========================================================================
@@ -282,6 +300,16 @@ public:
 
     /** Mark ghosts stale (called internally after solve()). */
     void invalidate_ghosts();
+
+    // ========================================================================
+    // Diagnostic accessors (for MMS residual computation)
+    // ========================================================================
+    const dealii::TrilinosWrappers::SparseMatrix& get_system_matrix() const
+    { return system_matrix_; }
+    const dealii::TrilinosWrappers::MPI::Vector& get_Mx_rhs() const
+    { return Mx_rhs_; }
+    const dealii::TrilinosWrappers::MPI::Vector& get_My_rhs() const
+    { return My_rhs_; }
 
     // ========================================================================
     // Diagnostics
@@ -446,6 +474,7 @@ private:
     // MMS
     // ========================================================================
     MmsSourceFunction  mms_source_;
+    MmsExactMFunction  mms_M_exact_;
 
     // ========================================================================
     // Output

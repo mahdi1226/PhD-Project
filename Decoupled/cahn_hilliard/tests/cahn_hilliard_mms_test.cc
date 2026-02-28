@@ -9,6 +9,10 @@
 //   4. Time-stepping loop
 //   5. Error computation
 //
+// Modes:
+//   (default)   Spatial convergence:  fix dt, sweep h via refinement
+//   --temporal  Temporal convergence: fix h (ref=5), sweep dt
+//
 // Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) Eq. 42a-42b
 // ============================================================================
 
@@ -42,7 +46,7 @@
 #include <vector>
 
 // ============================================================================
-// Result structures
+// Result structures (spatial convergence)
 // ============================================================================
 struct CHMMSResult
 {
@@ -185,6 +189,127 @@ struct CHMMSConvergenceResult
 
 
 // ============================================================================
+// Temporal convergence result structures
+//
+// For BDF1 (backward Euler), expect O(dt) convergence rate ≈ 1.0.
+// We fix spatial refinement (ref=5) so that spatial error ≪ temporal error,
+// then sweep dt by varying n_time_steps over [0.1, 0.2].
+// ============================================================================
+struct CHMMSTemporalResult
+{
+    unsigned int n_time_steps = 0;
+    double dt         = 0.0;
+    double theta_L2   = 0.0;
+    double theta_H1   = 0.0;
+    double theta_Linf = 0.0;
+    double psi_L2     = 0.0;
+    double psi_Linf   = 0.0;
+    double total_time = 0.0;
+};
+
+struct CHMMSTemporalConvergenceResult
+{
+    std::vector<CHMMSTemporalResult> results;
+    std::vector<double> theta_L2_rates;
+    std::vector<double> theta_H1_rates;
+    std::vector<double> psi_L2_rates;
+    unsigned int fixed_refinement = 5;
+
+    void compute_rates()
+    {
+        theta_L2_rates.clear();
+        theta_H1_rates.clear();
+        psi_L2_rates.clear();
+        for (size_t i = 1; i < results.size(); ++i)
+        {
+            const double log_dt = std::log(results[i-1].dt / results[i].dt);
+            auto rate = [&](double e_coarse, double e_fine) {
+                return (e_coarse > 1e-15 && e_fine > 1e-15)
+                    ? std::log(e_coarse / e_fine) / log_dt : 0.0;
+            };
+            theta_L2_rates.push_back(rate(results[i-1].theta_L2, results[i].theta_L2));
+            theta_H1_rates.push_back(rate(results[i-1].theta_H1, results[i].theta_H1));
+            psi_L2_rates.push_back(rate(results[i-1].psi_L2, results[i].psi_L2));
+        }
+    }
+
+    void print() const
+    {
+        std::cout << "\n--- CH Temporal Convergence (BDF1, ref=" << fixed_refinement << ") ---\n";
+        std::cout << std::left
+                  << std::setw(8) << "Steps"
+                  << std::setw(12) << "dt"
+                  << std::setw(12) << "θ_L2"
+                  << std::setw(8)  << "rate"
+                  << std::setw(12) << "θ_H1"
+                  << std::setw(8)  << "rate"
+                  << std::setw(12) << "ψ_L2"
+                  << std::setw(8)  << "rate"
+                  << std::setw(10) << "wall(s)"
+                  << "\n";
+        std::cout << std::string(90, '-') << "\n";
+
+        for (size_t i = 0; i < results.size(); ++i)
+        {
+            const auto& r = results[i];
+            std::cout << std::left << std::setw(8) << r.n_time_steps
+                      << std::scientific << std::setprecision(2)
+                      << std::setw(12) << r.dt
+                      << std::setw(12) << r.theta_L2
+                      << std::fixed << std::setprecision(2)
+                      << std::setw(8) << (i > 0 ? theta_L2_rates[i-1] : 0.0)
+                      << std::scientific << std::setprecision(2)
+                      << std::setw(12) << r.theta_H1
+                      << std::fixed << std::setprecision(2)
+                      << std::setw(8) << (i > 0 ? theta_H1_rates[i-1] : 0.0)
+                      << std::scientific << std::setprecision(2)
+                      << std::setw(12) << r.psi_L2
+                      << std::fixed << std::setprecision(2)
+                      << std::setw(8) << (i > 0 ? psi_L2_rates[i-1] : 0.0)
+                      << std::fixed << std::setprecision(1)
+                      << std::setw(10) << r.total_time
+                      << "\n";
+        }
+    }
+
+    void write_csv(const std::string& filepath) const
+    {
+        std::ofstream f(filepath);
+        f << "n_time_steps,dt,theta_L2,theta_L2_rate,theta_H1,theta_H1_rate,"
+          << "psi_L2,psi_L2_rate,walltime\n";
+        for (size_t i = 0; i < results.size(); ++i)
+        {
+            const auto& r = results[i];
+            f << r.n_time_steps << ","
+              << std::scientific << std::setprecision(6) << r.dt << ","
+              << r.theta_L2 << ","
+              << std::fixed << std::setprecision(3)
+              << (i > 0 ? theta_L2_rates[i-1] : 0.0) << ","
+              << std::scientific << std::setprecision(6) << r.theta_H1 << ","
+              << std::fixed << std::setprecision(3)
+              << (i > 0 ? theta_H1_rates[i-1] : 0.0) << ","
+              << std::scientific << std::setprecision(6) << r.psi_L2 << ","
+              << std::fixed << std::setprecision(3)
+              << (i > 0 ? psi_L2_rates[i-1] : 0.0) << ","
+              << std::fixed << std::setprecision(4) << r.total_time << "\n";
+        }
+        std::cout << "  CSV written: " << filepath << "\n";
+    }
+
+    // BDF1 → expected O(dt^1) for θ_L2.
+    // Check best rate across all pairs (finest dt may be limited by spatial error floor).
+    bool passes(double tol = 0.3) const
+    {
+        if (theta_L2_rates.empty()) return false;
+        double best_theta_L2 = -1e10;
+        for (const auto& r : theta_L2_rates)
+            best_theta_L2 = std::max(best_theta_L2, r);
+        return (best_theta_L2 >= 1.0 - tol);
+    }
+};
+
+
+// ============================================================================
 // Helper: build domain lengths array from Parameters
 // ============================================================================
 template <int dim>
@@ -204,7 +329,8 @@ CHMMSResult run_ch_mms_single(
     unsigned int refinement,
     const Parameters& params,
     unsigned int n_time_steps,
-    MPI_Comm mpi_comm)
+    MPI_Comm mpi_comm,
+    bool use_continuous_dt = false)
 {
     CHMMSResult result;
     result.refinement = refinement;
@@ -282,14 +408,29 @@ CHMMSResult run_ch_mms_single(
 
     // ========================================================================
     // Inject MMS source terms
+    //
+    // Discrete (default):   S_θ = (θ*^n - θ*^{n-1})/dt + γ Δψ*
+    //   → eliminates temporal error, isolates spatial convergence
+    //
+    // Continuous (temporal): S_θ = ∂θ*/∂t + γ Δψ*
+    //   → exposes BDF1 truncation error O(dt) for temporal convergence
     // ========================================================================
-    CHSourceTheta<dim> src_theta(params.physics.mobility, dt, L);
-    CHSourcePsi<dim>   src_psi(params.physics.epsilon, dt, L);
+    CHSourceTheta<dim> src_theta_discrete(params.physics.mobility, dt, L);
+    CHSourceThetaContinuous<dim> src_theta_continuous(params.physics.mobility, L);
+    CHSourcePsi<dim> src_psi(params.physics.epsilon, dt, L);
 
     ch.set_mms_source(
         [&](const dealii::Point<dim>& p, double t) -> double {
-            src_theta.set_time(t);
-            return src_theta.value(p);
+            if (use_continuous_dt)
+            {
+                src_theta_continuous.set_time(t);
+                return src_theta_continuous.value(p);
+            }
+            else
+            {
+                src_theta_discrete.set_time(t);
+                return src_theta_discrete.value(p);
+            }
         },
         [&](const dealii::Point<dim>& p, double t) -> double {
             src_psi.set_time(t);
@@ -369,7 +510,19 @@ CHMMSResult run_ch_mms_single(
 
 
 // ============================================================================
-// Main: convergence study
+// CLI helper: check if a flag is present
+// ============================================================================
+static bool has_flag(int argc, char* argv[], const std::string& flag)
+{
+    for (int i = 1; i < argc; ++i)
+        if (std::string(argv[i]) == flag)
+            return true;
+    return false;
+}
+
+
+// ============================================================================
+// Main: spatial convergence (default) or temporal convergence (--temporal)
 // ============================================================================
 int main(int argc, char* argv[])
 {
@@ -379,80 +532,182 @@ int main(int argc, char* argv[])
     const unsigned int rank = dealii::Utilities::MPI::this_mpi_process(mpi_comm);
     const unsigned int n_ranks = dealii::Utilities::MPI::n_mpi_processes(mpi_comm);
 
-    // Parse parameters (uses Rosensweig defaults)
-    Parameters params = Parameters::parse_command_line(argc, argv);
-
-    // Refinement levels and time steps
-    std::vector<unsigned int> refinements = {2, 3, 4, 5, 6};
-    const unsigned int n_time_steps = 10;
+    // MMS tests use defaults (Rosensweig parameters).
+    // Don't use parse_command_line to avoid rejecting test-specific flags.
+    Parameters params;
 
     constexpr int dim = 2;
 
-    CHMMSConvergenceResult conv;
-    conv.fe_degree = params.fe.degree_phase;
-    conv.n_time_steps = n_time_steps;
+    const bool temporal_mode = has_flag(argc, argv, "--temporal");
 
-    if (rank == 0)
+    if (temporal_mode)
     {
-        std::cout << "\n[CH MMS] Cahn-Hilliard MMS Convergence Study\n";
-        std::cout << "  MPI ranks: " << n_ranks << "\n";
-        std::cout << "  FE degree: CG Q" << params.fe.degree_phase << "\n";
-        std::cout << "  ε = " << params.physics.epsilon
-                  << ", γ = " << params.physics.mobility << "\n";
-        std::cout << "  Time steps: " << n_time_steps
-                  << ", t ∈ [0.1, 0.2]\n";
-        std::cout << "  Using CahnHilliardSubsystem facade\n\n";
-    }
+        // ==================================================================
+        // TEMPORAL CONVERGENCE MODE
+        //
+        // Fix spatial mesh at ref=5, sweep dt by varying n_time_steps.
+        // BDF1 → expect O(dt^1) convergence.
+        //
+        // n_steps = {2, 4, 8, 16, 32}
+        //   → dt  = {0.05, 0.025, 0.0125, 0.00625, 0.003125}
+        // ==================================================================
+        const unsigned int fixed_ref = 5;
+        const double t_init  = 0.1;
+        const double t_final = 0.2;
+        const double T = t_final - t_init;  // = 0.1
 
-    for (unsigned int ref : refinements)
-    {
-        if (rank == 0)
-            std::cout << "  Refinement " << ref << "... " << std::flush;
+        std::vector<unsigned int> step_counts = {2, 4, 8, 16, 32};
 
-        CHMMSResult r = run_ch_mms_single<dim>(ref, params, n_time_steps, mpi_comm);
-        conv.results.push_back(r);
+        CHMMSTemporalConvergenceResult tconv;
+        tconv.fixed_refinement = fixed_ref;
 
         if (rank == 0)
         {
-            std::cout << "θ_L2=" << std::scientific << std::setprecision(2) << r.theta_L2
-                      << ", θ_H1=" << r.theta_H1
-                      << ", θ_Linf=" << r.theta_Linf
-                      << ", ψ_L2=" << r.psi_L2
-                      << ", ψ_Linf=" << r.psi_Linf
-                      << ", time=" << std::fixed << std::setprecision(1)
-                      << r.total_time << "s\n";
+            std::cout << "\n[CH MMS] Cahn-Hilliard Temporal Convergence Study\n";
+            std::cout << "  MPI ranks: " << n_ranks << "\n";
+            std::cout << "  FE degree: CG Q" << params.fe.degree_phase << "\n";
+            std::cout << "  ε = " << params.physics.epsilon
+                      << ", γ = " << params.physics.mobility << "\n";
+            std::cout << "  Fixed refinement: " << fixed_ref << "\n";
+            std::cout << "  Time window: [" << t_init << ", " << t_final << "]\n";
+            std::cout << "  Step counts: ";
+            for (auto s : step_counts) std::cout << s << " ";
+            std::cout << "\n  Expected: O(dt^1) for BDF1\n\n";
         }
+
+        for (unsigned int n_steps : step_counts)
+        {
+            const double dt = T / n_steps;
+
+            if (rank == 0)
+                std::cout << "  n_steps=" << n_steps
+                          << " (dt=" << std::scientific << std::setprecision(4) << dt
+                          << ")... " << std::flush;
+
+            CHMMSResult r = run_ch_mms_single<dim>(fixed_ref, params, n_steps, mpi_comm,
+                                                      /*use_continuous_dt=*/true);
+
+            CHMMSTemporalResult tr;
+            tr.n_time_steps = n_steps;
+            tr.dt           = dt;
+            tr.theta_L2     = r.theta_L2;
+            tr.theta_H1     = r.theta_H1;
+            tr.theta_Linf   = r.theta_Linf;
+            tr.psi_L2       = r.psi_L2;
+            tr.psi_Linf     = r.psi_Linf;
+            tr.total_time   = r.total_time;
+            tconv.results.push_back(tr);
+
+            if (rank == 0)
+            {
+                std::cout << "θ_L2=" << std::scientific << std::setprecision(2) << r.theta_L2
+                          << ", θ_H1=" << r.theta_H1
+                          << ", ψ_L2=" << r.psi_L2
+                          << ", time=" << std::fixed << std::setprecision(1)
+                          << r.total_time << "s\n";
+            }
+        }
+
+        tconv.compute_rates();
+
+        if (rank == 0)
+        {
+            tconv.print();
+
+            const std::string out_dir = "../cahn_hilliard_results/mms";
+            std::system(("mkdir -p " + out_dir).c_str());
+            const std::string csv_name = timestamped_filename(
+                "ch_mms_temporal_convergence", ".csv");
+            tconv.write_csv(out_dir + "/" + csv_name);
+
+            double total_wall = 0.0;
+            for (const auto& r : tconv.results) total_wall += r.total_time;
+
+            std::cout << "\nExpected: θ_L2 ~ O(dt^1) [BDF1]"
+                      << "  |  Total wall time: " << std::fixed << std::setprecision(1)
+                      << total_wall << "s\n";
+
+            if (tconv.passes())
+                std::cout << "[PASS] Temporal convergence rates within tolerance!\n";
+            else
+                std::cout << "[FAIL] Temporal convergence rates below expected!\n";
+        }
+
+        return tconv.passes() ? 0 : 1;
     }
-
-    conv.compute_rates();
-
-    if (rank == 0)
+    else
     {
-        conv.print();
+        // ==================================================================
+        // SPATIAL CONVERGENCE MODE (default)
+        // Fix dt, sweep h via refinement levels.
+        // ==================================================================
+        std::vector<unsigned int> refinements = {2, 3, 4, 5, 6};
+        const unsigned int n_time_steps = 10;
 
-        // Write CSV to cahn_hilliard_results/mms/ (relative to build → ../cahn_hilliard_results/mms)
-        const std::string out_dir = "../cahn_hilliard_results/mms";
-        std::system(("mkdir -p " + out_dir).c_str());
+        CHMMSConvergenceResult conv;
+        conv.fe_degree = params.fe.degree_phase;
+        conv.n_time_steps = n_time_steps;
 
-        const std::string csv_name = timestamped_filename(
-            "ch_mms_convergence", ".csv");
-        const std::string csv_path = out_dir + "/" + csv_name;
-        conv.write_csv(csv_path);
+        if (rank == 0)
+        {
+            std::cout << "\n[CH MMS] Cahn-Hilliard MMS Convergence Study\n";
+            std::cout << "  MPI ranks: " << n_ranks << "\n";
+            std::cout << "  FE degree: CG Q" << params.fe.degree_phase << "\n";
+            std::cout << "  ε = " << params.physics.epsilon
+                      << ", γ = " << params.physics.mobility << "\n";
+            std::cout << "  Time steps: " << n_time_steps
+                      << ", t ∈ [0.1, 0.2]\n";
+            std::cout << "  Using CahnHilliardSubsystem facade\n\n";
+        }
 
-        // Summary
-        double total_wall = 0.0;
-        for (const auto& r : conv.results) total_wall += r.total_time;
+        for (unsigned int ref : refinements)
+        {
+            if (rank == 0)
+                std::cout << "  Refinement " << ref << "... " << std::flush;
 
-        std::cout << "\nExpected: θ_L2 ~ O(h^" << (params.fe.degree_phase + 1)
-                  << "), θ_H1 ~ O(h^" << params.fe.degree_phase << ")"
-                  << "  |  Total wall time: " << std::fixed << std::setprecision(1)
-                  << total_wall << "s\n";
+            CHMMSResult r = run_ch_mms_single<dim>(ref, params, n_time_steps, mpi_comm);
+            conv.results.push_back(r);
 
-        if (conv.passes())
-            std::cout << "[PASS] Convergence rates within tolerance!\n";
-        else
-            std::cout << "[FAIL] Convergence rates below expected!\n";
+            if (rank == 0)
+            {
+                std::cout << "θ_L2=" << std::scientific << std::setprecision(2) << r.theta_L2
+                          << ", θ_H1=" << r.theta_H1
+                          << ", θ_Linf=" << r.theta_Linf
+                          << ", ψ_L2=" << r.psi_L2
+                          << ", ψ_Linf=" << r.psi_Linf
+                          << ", time=" << std::fixed << std::setprecision(1)
+                          << r.total_time << "s\n";
+            }
+        }
+
+        conv.compute_rates();
+
+        if (rank == 0)
+        {
+            conv.print();
+
+            const std::string out_dir = "../cahn_hilliard_results/mms";
+            std::system(("mkdir -p " + out_dir).c_str());
+
+            const std::string csv_name = timestamped_filename(
+                "ch_mms_convergence", ".csv");
+            const std::string csv_path = out_dir + "/" + csv_name;
+            conv.write_csv(csv_path);
+
+            double total_wall = 0.0;
+            for (const auto& r : conv.results) total_wall += r.total_time;
+
+            std::cout << "\nExpected: θ_L2 ~ O(h^" << (params.fe.degree_phase + 1)
+                      << "), θ_H1 ~ O(h^" << params.fe.degree_phase << ")"
+                      << "  |  Total wall time: " << std::fixed << std::setprecision(1)
+                      << total_wall << "s\n";
+
+            if (conv.passes())
+                std::cout << "[PASS] Convergence rates within tolerance!\n";
+            else
+                std::cout << "[FAIL] Convergence rates below expected!\n";
+        }
+
+        return conv.passes() ? 0 : 1;
     }
-
-    return conv.passes() ? 0 : 1;
 }

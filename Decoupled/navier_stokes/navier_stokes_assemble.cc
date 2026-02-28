@@ -313,22 +313,20 @@ void NSSubsystem<dim>::assemble_stokes(
 // ============================================================================
 // PUBLIC: assemble_coupled()
 //
-// Variable viscosity ν(θ), Kelvin force μ₀ B_h^m(V, H, M), gravity ρ(θ)g,
-// capillary force θ∇ψ, and S₂ stabilization.
+// Zhang, He & Yang, SIAM J. Sci. Comput. 43(1) (2021), Eq 3.11:
 //
-// Full DG skew form for Kelvin force (Nochetto Eq. 38, Zhang Eq. 3.22):
-//   Cell: μ₀[(M·∇)H · V + ½(∇·M)(H·V)]
-//   Face: −μ₀(V·n⁻)[[H]]·{M}
+// Variable viscosity ν(Φ^n), Kelvin force (three terms), gravity ρ(Φ^n)g,
+// capillary Φ^{n-1}∇W^n, b_stab stabilization, S₂ stabilization.
 //
-// LHS: (1/τ + S₂)(U^n, V) + ν(θ)(D(U^n), D(V)) + B_h(U^{n-1}; U^n, V)
-//       − (P, ∇·V) = 0
-//      (∇·U^n, Q) = 0
-// RHS: (1/τ + S₂)(U^{n-1}, V) + μ₀ B_h^m(V, H, M) + (ρ(θ)g, V) + (θ∇ψ, V)
+// M and φ are passed from the previous time step (m^{n-1}, h̃^{n-1}).
 //
-// S₂ stabilization: Zhang Theorem 4.1 requires S₂ ≥ μ₀²C_M²/(4ν_min)
+// LHS: (1/δt + S₂)(ũ^n, v) + ν(Φ^n)(D(ũ^n), D(v)) + b(u^{n-1}; ũ^n, v)
+//       + b_stab(m^{n-1}, ũ^n, v) − (p, ∇·v)
+// RHS: (1/δt + S₂)(u^{n-1}, v) + μ₀((m^{n-1}·∇)h̃^{n-1}, v)
+//       + μ₀/2(m^{n-1}×h̃^{n-1}, ∇×v) + μ₀(m^{n-1}×∇×h̃^{n-1}, v)
+//       + Φ^{n-1}∇W^n·v + ρ(Φ^n)g·v
 //
-// Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) Eq. 42e-f
-//            Zhang, He & Yang, SIAM J. Sci. Comput. 43(1) (2021) Theorem 4.1
+// S₂: Zhang Theorem 4.1 requires S₂ ≥ μ₀²C_M²/(4ν_min)
 // ============================================================================
 #include "physics/material_properties.h"
 #include "physics/kelvin_force.h"
@@ -338,6 +336,7 @@ template <int dim>
 void NSSubsystem<dim>::assemble_coupled(
     double dt,
     const dealii::TrilinosWrappers::MPI::Vector& theta_relevant,
+    const dealii::TrilinosWrappers::MPI::Vector& theta_old_relevant,
     const dealii::DoFHandler<dim>&               theta_dof_handler,
     const dealii::TrilinosWrappers::MPI::Vector& psi_relevant,
     const dealii::DoFHandler<dim>&               psi_dof_handler,
@@ -410,7 +409,10 @@ void NSSubsystem<dim>::assemble_coupled(
     std::vector<Tensor<1, dim>> uy_old_gradients(n_q_points);
 
     // Cross-subsystem values at quadrature points
-    std::vector<double>         theta_values(n_q_points);
+    // Zhang Eq 3.11: nu(Phi^n), rho(Phi^n) use CURRENT theta
+    //                capillary theta factor uses OLD Phi^{n-1}
+    std::vector<double>         theta_values(n_q_points);      // theta^n (current)
+    std::vector<double>         theta_old_values(n_q_points);  // theta^{n-1} (old, for capillary)
     std::vector<Tensor<1,dim>>  theta_gradients(n_q_points);
     std::vector<double>         psi_values(n_q_points);
     std::vector<Tensor<1,dim>>  psi_gradients(n_q_points);
@@ -431,9 +433,10 @@ void NSSubsystem<dim>::assemble_coupled(
                        * params_.physics.gravity_direction[d];
     }
 
-    // Effective mass coefficient: 1/dt + S2
     // S2 stabilization per Zhang Theorem 4.1: S2 >= mu_0^2*C_M^2/(4*nu_min)
-    const double mass_coeff = 1.0 / dt + S2;
+    // Mass coefficient: 1/dt + S2, computed per quadrature point
+    // Zhang Eq 3.11: NO density on time derivative
+    // Kelvin force uses m^{n-1} and h̃^{n-1} (from previous step, not yet updated)
 
     // Iterate over all cells (synchronized across all DoFHandlers)
     auto ux_cell    = ux_dof_handler_.begin_active();
@@ -479,6 +482,7 @@ void NSSubsystem<dim>::assemble_coupled(
         }
 
         theta_fe_values.get_function_values(theta_relevant, theta_values);
+        theta_fe_values.get_function_values(theta_old_relevant, theta_old_values);
         theta_fe_values.get_function_gradients(theta_relevant, theta_gradients);
         psi_fe_values.get_function_values(psi_relevant, psi_values);
         psi_fe_values.get_function_gradients(psi_relevant, psi_gradients);
@@ -504,43 +508,56 @@ void NSSubsystem<dim>::assemble_coupled(
             if (include_convection)
                 div_U_old = ux_old_gradients[q][0] + uy_old_gradients[q][1];
 
-            // Variable viscosity ν(θ)
+            // Variable viscosity ν(θ^n) — Zhang Eq 3.11: use CURRENT theta
             const double theta_q = theta_values[q];
+            const double theta_old_q = theta_old_values[q];
             const double nu_q = viscosity(theta_q, params_.physics.epsilon,
                                           params_.physics.nu_water,
                                           params_.physics.nu_ferro);
 
-            // Magnetization (provided externally from DG field)
+            // Magnetization m^{n-1} (provided externally from DG field)
             Tensor<1, dim> M;
             M[0] = Mx_values[q];
             M[1] = My_values[q];
 
-            // Kelvin force: full DG skew cell kernel (Eq. 38, first line)
-            //   (M·∇)H · V + ½(∇·M)(H·V)
-            //
-            // H = ∇φ + h_a, so ∇H = Hess(φ) + ∇h_a
-            // div(M) = ∂Mx/∂x + ∂My/∂y (elementwise, DG)
+            // M gradients for b_stab (Zhang Eq 3.11)
+            const Tensor<1, dim>& grad_Mx = Mx_gradients[q];
+            const Tensor<1, dim>& grad_My = My_gradients[q];
+
+            // h̃ = ∇φ — Zhang Eq 3.11 Kelvin force uses h̃^{n-1} = ∇φ^{n-1}
+            // CRITICAL: Do NOT add h_a here! The Poisson equation
+            //   (∇φ, ∇χ) = (h_a - m, ∇χ)
+            // means φ already encodes the applied field effect.
+            // Adding h_a would double-count the applied field.
             const Tensor<2, dim>& hess_phi = phi_hessians[q];
-            Tensor<2, dim> grad_H = hess_phi;
-            {
-                Tensor<2, dim> grad_h_a = compute_applied_field_gradient<dim>(
-                    x_q, params_, current_time);
-                grad_H += grad_h_a;
-            }
-            const Tensor<1, dim> M_grad_H = KelvinForce::compute_M_grad_H<dim>(M, grad_H);
-            const double div_M = KelvinForce::compute_div_M<dim>(
-                Mx_gradients[q], My_gradients[q]);
+            const Tensor<2, dim>& grad_H = hess_phi;  // ∇h̃ = Hess(φ)
 
-            // H for the ½(∇·M)(H·V) term
-            Tensor<1, dim> H_total;
-            {
-                Tensor<1, dim> h_a_q = compute_applied_field<dim>(
-                    x_q, params_, current_time);
-                for (unsigned int d = 0; d < dim; ++d)
-                    H_total[d] = phi_gradients[q][d] + h_a_q[d];
-            }
+            // h̃ vector = ∇φ at this quadrature point
+            Tensor<1, dim> H_vec;
+            H_vec[0] = phi_gradients[q][0];
+            H_vec[1] = phi_gradients[q][1];
 
-            // Gravity body force: ρ(θ)g
+            // grad(h_a) needed only for ∇×h̃ term (curl)
+            // Since ∇×(∇φ) = 0 within CG elements, ∇×h̃ = 0
+            Tensor<2, dim> grad_h_a;  // zero — not needed
+
+            // Kelvin RHS term 1: μ₀(m·∇)H — Zhang Eq 3.11
+            const Tensor<1, dim> kelvin = KelvinForce::compute_M_grad_H<dim>(M, grad_H);
+
+            // Kelvin RHS term 3: μ₀(m × ∇×h̃, v) — Zhang Eq 3.11
+            // h̃ = ∇φ, and ∇×(∇φ) = 0 within CG elements.
+            // So this term is identically zero.
+            Tensor<1, dim> M_cross_curlH;  // zero
+            M_cross_curlH[0] = 0.0;
+            M_cross_curlH[1] = 0.0;
+
+            // Kelvin RHS term 2: μ₀/2(m × H̃, ∇×v) — assembled per test function
+            // In 2D: m × H̃ is scalar: m_x*H_y - m_y*H_x
+            const double M_cross_H = M[0] * H_vec[1] - M[1] * H_vec[0];
+
+            const double mu0 = params_.physics.mu_0;
+
+            // Gravity body force: ρ(θ^n)g
             Tensor<1, dim> F_gravity;
             if (params_.enable_gravity)
             {
@@ -549,27 +566,23 @@ void NSSubsystem<dim>::assemble_coupled(
                 F_gravity = rho_q * gravity;
             }
 
-            // Capillary force: θ ∇ψ
-            //
-            // Energy identity derivation:
-            //   Our ψ = λ(ε∆θ - (1/ε)f(θ)) absorbs both λ and 1/ε.
-            //   dE_CH/dt = -(ψ, θ_t), and θ_t = -u·∇θ + γ∆ψ, gives
-            //   dE_CH/dt = -(θ∇ψ, u) + γ||∇ψ||².
-            //   NS capillary = +θ∇ψ cancels the CH coupling term.
-            //
-            // Nochetto Eq 65d: (λ/ε)Θ∇Ψ with Ψ without λ or 1/ε.
-            // Zhang Eq 2.6:    Φ∇W with W = λ(-ε∆Φ + f(Φ)).
-            // Both equivalent. Our ψ has all factors baked in → just θ∇ψ.
+            // Capillary force: Φ^{n-1} ∇W^n — Zhang Eq 3.11
+            // Zhang has +(Φ^{n-1}∇W^n, v) on the LHS.
+            // Moved to RHS: -(Φ∇W, v) = -(θ·(-∇ψ), v) = +(θ∇ψ, v).
+            // So F_capillary = +θ_old·∇ψ on the RHS.
             Tensor<1, dim> F_capillary;
             {
                 const Tensor<1, dim>& grad_psi_q = psi_gradients[q];
-                F_capillary = theta_q * grad_psi_q;
+                F_capillary = theta_old_q * grad_psi_q;
             }
 
-            // Non-magnetic body forces (capillary + gravity)
-            Tensor<1, dim> F_non_magnetic;
-            F_non_magnetic = F_capillary + F_gravity;
+            // Mass coefficient: 1/dt + S2  (Zhang Eq 3.11: NO density on time derivative)
+            const double mass_coeff = 1.0 / dt + S2;
 
+            // b_stab precompute: quantities depending on m^{n-1} at this quad point
+            // (v·∇)m: for test V=(φ_i, 0): V·∇m_x = φ_i * ∂m_x/∂x, V·∇m_y = φ_i * ∂m_y/∂x
+            //         for test V=(0, φ_i): V·∇m_x = φ_i * ∂m_x/∂y, V·∇m_y = φ_i * ∂m_y/∂y
+            // div(m) = ∂m_x/∂x + ∂m_y/∂y
             for (unsigned int i = 0; i < dofs_per_cell_vel; ++i)
             {
                 const double phi_ux_i = ux_fe_values.shape_value(i, q);
@@ -580,26 +593,63 @@ void NSSubsystem<dim>::assemble_coupled(
                 auto T_V_x = compute_T_test_ux<dim>(grad_phi_ux_i);
                 auto T_V_y = compute_T_test_uy<dim>(grad_phi_uy_i);
 
-                // RHS: non-magnetic body forces
-                local_rhs_ux(i) += F_non_magnetic[0] * phi_ux_i * JxW;
-                local_rhs_uy(i) += F_non_magnetic[1] * phi_uy_i * JxW;
+                // RHS: capillary + gravity
+                local_rhs_ux(i) += (F_capillary[0] + F_gravity[0]) * phi_ux_i * JxW;
+                local_rhs_uy(i) += (F_capillary[1] + F_gravity[1]) * phi_uy_i * JxW;
 
-                // RHS: Kelvin force — full DG skew cell kernel (Eq. 38)
-                //   μ₀ [(M·∇)H · V + ½(∇·M)(H·V)]
-                double kelvin_ux, kelvin_uy;
-                KelvinForce::cell_kernel<dim>(
-                    M_grad_H, div_M, H_total,
-                    phi_ux_i, phi_uy_i,
-                    kelvin_ux, kelvin_uy);
-                local_rhs_ux(i) += params_.physics.mu_0 * kelvin_ux * JxW;
-                local_rhs_uy(i) += params_.physics.mu_0 * kelvin_uy * JxW;
+                // RHS: MMS source (only active when set via set_mms_source)
+                if (mms_source_)
+                {
+                    const auto F_mms = mms_source_(x_q, current_time);
+                    local_rhs_ux(i) += F_mms[0] * phi_ux_i * JxW;
+                    local_rhs_uy(i) += F_mms[1] * phi_uy_i * JxW;
+                }
 
-                // RHS: time derivative + S2 stabilization: (1/dt + S2) * U^{n-1}
+                // RHS: Kelvin term 1 — μ₀((m·∇)H̃, v)
+                local_rhs_ux(i) += mu0 * kelvin[0] * phi_ux_i * JxW;
+                local_rhs_uy(i) += mu0 * kelvin[1] * phi_uy_i * JxW;
+
+                // RHS: Kelvin term 2 — μ₀/2(m × H̃, ∇×v)
+                // In 2D: ∇×v for V=(φ_ux, 0) is -∂φ_ux/∂y, for V=(0,φ_uy) is ∂φ_uy/∂x
+                // Combined: ∇×V = ∂φ_uy/∂x - ∂φ_ux/∂y
+                // But we assemble ux and uy separately:
+                //   V=(φ_i, 0): curl_v = -grad_phi_ux_i[1]
+                //   V=(0, φ_i): curl_v = grad_phi_uy_i[0]
+                if (!params_.disable_kelvin_term2)
+                {
+                local_rhs_ux(i) += 0.5 * mu0 * M_cross_H * (-grad_phi_ux_i[1]) * JxW;
+                local_rhs_uy(i) += 0.5 * mu0 * M_cross_H * ( grad_phi_uy_i[0]) * JxW;
+                }
+
+                // RHS: Kelvin term 3 — μ₀(m × ∇×H̃, v)
+                local_rhs_ux(i) += mu0 * M_cross_curlH[0] * phi_ux_i * JxW;
+                local_rhs_uy(i) += mu0 * M_cross_curlH[1] * phi_uy_i * JxW;
+
+                // RHS: (1/dt + S2) * U^{n-1}
                 local_rhs_ux(i) += mass_coeff * ux_old_values[q] * phi_ux_i * JxW;
                 local_rhs_uy(i) += mass_coeff * uy_old_values[q] * phi_uy_i * JxW;
 
-                // Kelvin force face contribution: −μ₀(V·n)[[H]]·{M}
-                // assembled in dedicated face loop after cell loop
+                // b_stab precompute for test function V_i
+                // For V_i = (φ_ux_i, 0):
+                //   (V_i·∇)m = (φ_ux_i * ∂m_x/∂x, φ_ux_i * ∂m_y/∂x)  (vector)
+                //   (∇·V_i)m = (∂φ_ux_i/∂x * m_x, ∂φ_ux_i/∂x * m_y)  (vector)
+                //   m×(∇×V_i): ∇×V_i = -∂φ_ux_i/∂y (scalar), m×ω = (m_y*ω, -m_x*ω)
+                const double bstab_Vgrad_m_ux_x_i = phi_ux_i * grad_Mx[0];  // (V_i·∇)m_x
+                const double bstab_Vgrad_m_ux_y_i = phi_ux_i * grad_My[0];  // (V_i·∇)m_y
+                const double bstab_divV_m_ux_x_i  = grad_phi_ux_i[0] * M[0]; // (∇·V_i)*m_x
+                const double bstab_divV_m_ux_y_i  = grad_phi_ux_i[0] * M[1]; // (∇·V_i)*m_y
+                const double curl_V_ux_i = -grad_phi_ux_i[1];
+                const double bstab_mcurl_ux_x_i =  M[1] * curl_V_ux_i; // (m×∇×V_i)_x
+                const double bstab_mcurl_ux_y_i = -M[0] * curl_V_ux_i; // (m×∇×V_i)_y
+
+                // For V_i = (0, φ_uy_i):
+                const double bstab_Vgrad_m_uy_x_i = phi_uy_i * grad_Mx[1];
+                const double bstab_Vgrad_m_uy_y_i = phi_uy_i * grad_My[1];
+                const double bstab_divV_m_uy_x_i  = grad_phi_uy_i[1] * M[0];
+                const double bstab_divV_m_uy_y_i  = grad_phi_uy_i[1] * M[1];
+                const double curl_V_uy_i = grad_phi_uy_i[0];
+                const double bstab_mcurl_uy_x_i =  M[1] * curl_V_uy_i;
+                const double bstab_mcurl_uy_y_i = -M[0] * curl_V_uy_i;
 
                 for (unsigned int j = 0; j < dofs_per_cell_vel; ++j)
                 {
@@ -611,12 +661,11 @@ void NSSubsystem<dim>::assemble_coupled(
                     auto T_U_x = compute_T_test_ux<dim>(grad_phi_ux_j);
                     auto T_U_y = compute_T_test_uy<dim>(grad_phi_uy_j);
 
-                    // Mass + S2: (1/dt + S2)(U^n, V)
+                    // LHS mass: (1/dt + S2)(U^n, V)
                     local_ux_ux(i, j) += mass_coeff * phi_ux_j * phi_ux_i * JxW;
                     local_uy_uy(i, j) += mass_coeff * phi_uy_j * phi_uy_i * JxW;
 
                     // Viscous: (ν(θ) D(U), D(V)) = (ν/4)(T(U), T(V))
-                    // Zhang Eq 2.6: D = ½(∇u+∇u^T), T = 2D
                     local_ux_ux(i, j) += (nu_q / 4.0) * (T_U_x * T_V_x) * JxW;
                     local_uy_uy(i, j) += (nu_q / 4.0) * (T_U_y * T_V_y) * JxW;
                     local_ux_uy(i, j) += (nu_q / 4.0) * (T_U_y * T_V_x) * JxW;
@@ -633,6 +682,103 @@ void NSSubsystem<dim>::assemble_coupled(
                         local_ux_ux(i, j) += convect_ux * JxW;
                         local_uy_uy(i, j) += convect_uy * JxW;
                     }
+
+                    // b_stab(m^{n-1}; U^n, V) — Zhang Eq 3.11 stabilization
+                    // Three terms, all on LHS with coefficient μ₀*δt:
+                    //
+                    // Term 1: μ₀δt ((ũ·∇)m, (v·∇)m)
+                    // Term 2: 2μ₀δt ((∇·ũ)m, (∇·v)m)
+                    // Term 3: μ₀/2 δt (m×∇×ũ, m×∇×v)
+                    //
+                    if (!params_.disable_bstab)
+                    {
+                    // For ũ_j = (φ_ux_j, 0) tested against V_i = (φ_ux_i, 0):
+                    {
+                        // Term 1: (ũ_j·∇)m · (V_i·∇)m
+                        const double Ugrad_m_x_j = phi_ux_j * grad_Mx[0];
+                        const double Ugrad_m_y_j = phi_ux_j * grad_My[0];
+                        const double t1 = Ugrad_m_x_j * bstab_Vgrad_m_ux_x_i
+                                        + Ugrad_m_y_j * bstab_Vgrad_m_ux_y_i;
+
+                        // Term 2: 2((∇·ũ_j)m) · ((∇·V_i)m)
+                        const double divU_m_x_j = grad_phi_ux_j[0] * M[0];
+                        const double divU_m_y_j = grad_phi_ux_j[0] * M[1];
+                        const double t2 = 2.0 * (divU_m_x_j * bstab_divV_m_ux_x_i
+                                                + divU_m_y_j * bstab_divV_m_ux_y_i);
+
+                        // Term 3: 0.5*(m×∇×ũ_j) · (m×∇×V_i)
+                        const double curl_U_j = -grad_phi_ux_j[1];
+                        const double mcurl_x_j =  M[1] * curl_U_j;
+                        const double mcurl_y_j = -M[0] * curl_U_j;
+                        const double t3 = 0.5 * (mcurl_x_j * bstab_mcurl_ux_x_i
+                                                + mcurl_y_j * bstab_mcurl_ux_y_i);
+
+                        local_ux_ux(i, j) += mu0 * dt * (t1 + t2 + t3) * JxW;
+                    }
+
+                    // For ũ_j = (0, φ_uy_j) tested against V_i = (φ_ux_i, 0):
+                    {
+                        const double Ugrad_m_x_j = phi_uy_j * grad_Mx[1];
+                        const double Ugrad_m_y_j = phi_uy_j * grad_My[1];
+                        const double t1 = Ugrad_m_x_j * bstab_Vgrad_m_ux_x_i
+                                        + Ugrad_m_y_j * bstab_Vgrad_m_ux_y_i;
+
+                        const double divU_m_x_j = grad_phi_uy_j[1] * M[0];
+                        const double divU_m_y_j = grad_phi_uy_j[1] * M[1];
+                        const double t2 = 2.0 * (divU_m_x_j * bstab_divV_m_ux_x_i
+                                                + divU_m_y_j * bstab_divV_m_ux_y_i);
+
+                        const double curl_U_j = grad_phi_uy_j[0];
+                        const double mcurl_x_j =  M[1] * curl_U_j;
+                        const double mcurl_y_j = -M[0] * curl_U_j;
+                        const double t3 = 0.5 * (mcurl_x_j * bstab_mcurl_ux_x_i
+                                                + mcurl_y_j * bstab_mcurl_ux_y_i);
+
+                        local_ux_uy(i, j) += mu0 * dt * (t1 + t2 + t3) * JxW;
+                    }
+
+                    // For ũ_j = (φ_ux_j, 0) tested against V_i = (0, φ_uy_i):
+                    {
+                        const double Ugrad_m_x_j = phi_ux_j * grad_Mx[0];
+                        const double Ugrad_m_y_j = phi_ux_j * grad_My[0];
+                        const double t1 = Ugrad_m_x_j * bstab_Vgrad_m_uy_x_i
+                                        + Ugrad_m_y_j * bstab_Vgrad_m_uy_y_i;
+
+                        const double divU_m_x_j = grad_phi_ux_j[0] * M[0];
+                        const double divU_m_y_j = grad_phi_ux_j[0] * M[1];
+                        const double t2 = 2.0 * (divU_m_x_j * bstab_divV_m_uy_x_i
+                                                + divU_m_y_j * bstab_divV_m_uy_y_i);
+
+                        const double curl_U_j = -grad_phi_ux_j[1];
+                        const double mcurl_x_j =  M[1] * curl_U_j;
+                        const double mcurl_y_j = -M[0] * curl_U_j;
+                        const double t3 = 0.5 * (mcurl_x_j * bstab_mcurl_uy_x_i
+                                                + mcurl_y_j * bstab_mcurl_uy_y_i);
+
+                        local_uy_ux(i, j) += mu0 * dt * (t1 + t2 + t3) * JxW;
+                    }
+
+                    // For ũ_j = (0, φ_uy_j) tested against V_i = (0, φ_uy_i):
+                    {
+                        const double Ugrad_m_x_j = phi_uy_j * grad_Mx[1];
+                        const double Ugrad_m_y_j = phi_uy_j * grad_My[1];
+                        const double t1 = Ugrad_m_x_j * bstab_Vgrad_m_uy_x_i
+                                        + Ugrad_m_y_j * bstab_Vgrad_m_uy_y_i;
+
+                        const double divU_m_x_j = grad_phi_uy_j[1] * M[0];
+                        const double divU_m_y_j = grad_phi_uy_j[1] * M[1];
+                        const double t2 = 2.0 * (divU_m_x_j * bstab_divV_m_uy_x_i
+                                                + divU_m_y_j * bstab_divV_m_uy_y_i);
+
+                        const double curl_U_j = grad_phi_uy_j[0];
+                        const double mcurl_x_j =  M[1] * curl_U_j;
+                        const double mcurl_y_j = -M[0] * curl_U_j;
+                        const double t3 = 0.5 * (mcurl_x_j * bstab_mcurl_uy_x_i
+                                                + mcurl_y_j * bstab_mcurl_uy_y_i);
+
+                        local_uy_uy(i, j) += mu0 * dt * (t1 + t2 + t3) * JxW;
+                    }
+                    } // end if (!params_.disable_bstab)
                 }
 
                 // Pressure: −(p, ∇·V)
@@ -691,9 +837,12 @@ void NSSubsystem<dim>::assemble_coupled(
     // Without it, spurious forces break the directional balance.
     // ========================================================================
     // Kelvin force FACE loop: −μ₀(V·n⁻)[[H]]·{M}  (Eq. 38, second line)
-    // Required for energy identity B_h^m(H, H, M) = 0 (Lemma 3.1).
-    // Zhang, He & Yang (2021) Eq. 3.22: full skew form with face terms.
-    if (params_.enable_magnetic)
+    // DISABLED: Zhang uses simple cell-only form μ₀(M·∇)H, not the full DG
+    // skew form with face terms. The face loop implementation was incomplete
+    // (missing neighbor cell test function contributions) and caused instability.
+    // To implement the full Nochetto DG skew form correctly, both cell-side
+    // test functions must be assembled for each face.
+    if (false && params_.enable_magnetic)
     {
         QGauss<dim - 1> face_quadrature(fe_vel.degree + 2);
         const unsigned int n_face_q = face_quadrature.size();
@@ -853,13 +1002,15 @@ template void NSSubsystem<3>::assemble_stokes(double, double, bool, bool,
     const std::function<dealii::Tensor<1, 3>(const dealii::Point<3>&, double)>*, double);
 
 template void NSSubsystem<2>::assemble_coupled(
-    double, const dealii::TrilinosWrappers::MPI::Vector&, const dealii::DoFHandler<2>&,
+    double, const dealii::TrilinosWrappers::MPI::Vector&,
+    const dealii::TrilinosWrappers::MPI::Vector&, const dealii::DoFHandler<2>&,
     const dealii::TrilinosWrappers::MPI::Vector&, const dealii::DoFHandler<2>&,
     const dealii::TrilinosWrappers::MPI::Vector&, const dealii::DoFHandler<2>&,
     const dealii::TrilinosWrappers::MPI::Vector&, const dealii::TrilinosWrappers::MPI::Vector&,
     const dealii::DoFHandler<2>&, double, double, bool);
 template void NSSubsystem<3>::assemble_coupled(
-    double, const dealii::TrilinosWrappers::MPI::Vector&, const dealii::DoFHandler<3>&,
+    double, const dealii::TrilinosWrappers::MPI::Vector&,
+    const dealii::TrilinosWrappers::MPI::Vector&, const dealii::DoFHandler<3>&,
     const dealii::TrilinosWrappers::MPI::Vector&, const dealii::DoFHandler<3>&,
     const dealii::TrilinosWrappers::MPI::Vector&, const dealii::DoFHandler<3>&,
     const dealii::TrilinosWrappers::MPI::Vector&, const dealii::TrilinosWrappers::MPI::Vector&,
@@ -869,20 +1020,23 @@ template void NSSubsystem<3>::assemble_coupled(
 // ============================================================================
 // PUBLIC: assemble_coupled_algebraic_M()
 //
-// Zhang, He & Yang (SIAM J. Sci. Comput. 43, 2021) scheme:
-//   - Algebraic magnetization: M = chi(theta) * (grad phi + h_a)
-//   - S2 stabilization: +S2(u^{n+1} - u^n, v)
-//   - Kelvin force explicit: mu0*(M.grad)H on RHS
+// Zhang, He & Yang (SIAM J. Sci. Comput. 43, 2021), Eq 3.11:
+//   - Algebraic m^{n-1} = chi(Φ^{n-1}) * (∇φ^{n-1} + h_a)
+//   - S2 stabilization: +S2(ũ^n - u^{n-1}, v)
+//   - Three Kelvin RHS terms + b_stab on LHS
+//   - Viscosity ν(Φ^n) uses current theta, M uses old theta + old phi
 //
-// LHS: (1/tau + S2)(U^n, V) + nu(theta)(D(U^n), D(V))
-//       + B_h(U^{n-1}; U^n, V) - (P, div V) = 0
-// RHS: (1/tau + S2)(U^{n-1}, V) + mu0*(M.grad)H * V + theta*grad_psi * V
-//       + rho(theta)*g * V
+// LHS: (1/δt + S2)(ũ^n, v) + ν(Φ^n)(D(ũ^n), D(v))
+//       + b(u^{n-1}, ũ^n, v) + b_stab(m^{n-1}, ũ^n, v) - (p, ∇·v)
+// RHS: (1/δt + S2)(u^{n-1}, v) + μ₀((m^{n-1}·∇)h̃^{n-1}, v)
+//       + μ₀/2(m^{n-1}×h̃^{n-1}, ∇×v) + μ₀(m^{n-1}×∇×h̃^{n-1}, v)
+//       + Φ^{n-1}∇W^n·v + ρ(Φ^n)g·v
 // ============================================================================
 template <int dim>
 void NSSubsystem<dim>::assemble_coupled_algebraic_M(
     double dt,
     const dealii::TrilinosWrappers::MPI::Vector& theta_relevant,
+    const dealii::TrilinosWrappers::MPI::Vector& theta_old_relevant,
     const dealii::DoFHandler<dim>&               theta_dof_handler,
     const dealii::TrilinosWrappers::MPI::Vector& psi_relevant,
     const dealii::DoFHandler<dim>&               psi_dof_handler,
@@ -950,15 +1104,17 @@ void NSSubsystem<dim>::assemble_coupled_algebraic_M(
     std::vector<Tensor<1, dim>> uy_old_gradients(n_q_points);
 
     // Cross-subsystem values at quadrature points
-    std::vector<double>         theta_values(n_q_points);
-    std::vector<Tensor<1,dim>>  theta_gradients(n_q_points);
+    // Zhang Eq 3.11: ν(Φ^n), ρ(Φ^n) use CURRENT theta (theta_relevant)
+    //                m^{n-1} = χ(Φ^{n-1})h̃^{n-1} uses OLD theta (theta_old_relevant)
+    //                capillary: Φ^{n-1}∇W^n uses OLD theta
+    std::vector<double>         theta_values(n_q_points);          // Φ^n (for ν, ρ)
+    std::vector<double>         theta_old_values(n_q_points);      // Φ^{n-1} (for χ, capillary)
+    std::vector<Tensor<1,dim>>  theta_gradients(n_q_points);       // ∇Φ^n (unused, kept for generality)
+    std::vector<Tensor<1,dim>>  theta_old_gradients(n_q_points);   // ∇Φ^{n-1} (for ∇χ in b_stab)
     std::vector<double>         psi_values(n_q_points);
     std::vector<Tensor<1,dim>>  psi_gradients(n_q_points);
     std::vector<Tensor<1,dim>>  phi_gradients(n_q_points);
     std::vector<Tensor<2,dim>>  phi_hessians(n_q_points);
-
-    // Effective mass coefficient: 1/dt + S2
-    const double mass_coeff = 1.0 / dt + S2;
 
     // Physics
     const double eps    = params_.physics.epsilon;
@@ -1016,7 +1172,9 @@ void NSSubsystem<dim>::assemble_coupled_algebraic_M(
         }
 
         theta_fe_values.get_function_values(theta_relevant, theta_values);
+        theta_fe_values.get_function_values(theta_old_relevant, theta_old_values);
         theta_fe_values.get_function_gradients(theta_relevant, theta_gradients);
+        theta_fe_values.get_function_gradients(theta_old_relevant, theta_old_gradients);
         psi_fe_values.get_function_values(psi_relevant, psi_values);
         psi_fe_values.get_function_gradients(psi_relevant, psi_gradients);
         phi_fe_values.get_function_gradients(phi_relevant, phi_gradients);
@@ -1036,39 +1194,56 @@ void NSSubsystem<dim>::assemble_coupled_algebraic_M(
             if (include_convection)
                 div_U_old = ux_old_gradients[q][0] + uy_old_gradients[q][1];
 
-            // Variable viscosity nu(theta)
+            // Variable viscosity ν(Φ^n) — Zhang Eq 3.11: use CURRENT theta
             const double theta_q = theta_values[q];
+            const double theta_old_q = theta_old_values[q];
             const double nu_q = viscosity(theta_q, eps,
                                           params_.physics.nu_water,
                                           params_.physics.nu_ferro);
 
             // ============================================================
-            // Algebraic magnetization: M = chi(theta) * H_total
+            // Algebraic magnetization: m^{n-1} = chi(Φ^{n-1}) * h̃^{n-1}
+            // Zhang Eq 3.11: Kelvin force uses m^{n-1} from PREVIOUS step.
+            // theta_old = Φ^{n-1}, phi = φ^{n-1} (not yet updated).
             // ============================================================
-            const double chi_q = susceptibility(theta_q, eps, chi_0);
+            const double chi_q = susceptibility(theta_old_q, eps, chi_0);
 
-            // H_total = grad phi + h_a
-            const Tensor<1, dim>& grad_phi = phi_gradients[q];
-            Tensor<1, dim> h_a = compute_applied_field<dim>(
-                x_q, params_, current_time);
-            Tensor<1, dim> H_total = grad_phi + h_a;
+            // h̃ = ∇φ — Zhang Eq 3.11: Kelvin force uses h̃^{n-1} = ∇φ^{n-1}
+            // CRITICAL: Do NOT add h_a! The Poisson equation already encodes h_a
+            // in φ via (∇φ, ∇χ) = (h_a - m, ∇χ).
+            const Tensor<1, dim>& H_total = phi_gradients[q];  // h̃ = ∇φ
 
-            // M = chi(theta) * H_total (algebraic, no PDE)
+            // M = chi(theta) * h̃ (algebraic, no PDE)
             Tensor<1, dim> M = chi_q * H_total;
 
-            // Kelvin force: mu0 * (M . grad)H
-            // H = grad phi + h_a, so grad H = Hess(phi) + grad(h_a)
-            // For spatially varying h_a (dipoles), grad(h_a) != 0.
+            // ∇h̃ = Hess(φ) — gradient of the effective field
             const Tensor<2, dim>& hess_phi = phi_hessians[q];
-            Tensor<2, dim> grad_H = hess_phi;
-            {
-                Tensor<2, dim> grad_h_a = compute_applied_field_gradient<dim>(
-                    x_q, params_, current_time);
-                grad_H += grad_h_a;
-            }
+            const Tensor<2, dim>& grad_H = hess_phi;
+
+            // Kelvin RHS term 1: μ₀(m·∇)h̃
             Tensor<1, dim> kelvin = KelvinForce::compute_M_grad_H<dim>(M, grad_H);
 
-            // Gravity body force: rho(theta) * g
+            // Kelvin RHS term 3: μ₀(m × ∇×h̃, v)
+            // h̃ = ∇φ, ∇×(∇φ) = 0 → this term is zero
+            Tensor<1, dim> M_cross_curlH;
+            M_cross_curlH[0] = 0.0;
+            M_cross_curlH[1] = 0.0;
+
+            // Kelvin RHS term 2: μ₀/2(m × h̃, ∇×v)
+            const double M_cross_H = M[0] * H_total[1] - M[1] * H_total[0];
+
+            // Algebraic M gradient: ∇m = ∇(χ·h̃) = (∇χ)h̃ + χ(∇h̃)
+            // where h̃ = ∇φ and ∇h̃ = Hess(φ)
+            const double chi_prime_q = susceptibility_derivative(theta_old_q, eps, chi_0);
+            const Tensor<1, dim>& grad_theta = theta_old_gradients[q];
+            // M_x = chi * h̃_x, so dM_x/dx = chi'*dtheta/dx*h̃_x + chi*dh̃_x/dx
+            Tensor<1, dim> grad_Mx_alg, grad_My_alg;
+            grad_Mx_alg[0] = chi_prime_q * grad_theta[0] * H_total[0] + chi_q * grad_H[0][0];
+            grad_Mx_alg[1] = chi_prime_q * grad_theta[1] * H_total[0] + chi_q * grad_H[0][1];
+            grad_My_alg[0] = chi_prime_q * grad_theta[0] * H_total[1] + chi_q * grad_H[1][0];
+            grad_My_alg[1] = chi_prime_q * grad_theta[1] * H_total[1] + chi_q * grad_H[1][1];
+
+            // Gravity body force: ρ(θ^n)g
             Tensor<1, dim> F_gravity;
             if (params_.enable_gravity)
             {
@@ -1076,21 +1251,18 @@ void NSSubsystem<dim>::assemble_coupled_algebraic_M(
                 F_gravity = rho_q * gravity;
             }
 
-            // Capillary force: θ ∇ψ
-            //
-            // Our ψ = λ(ε∆θ - (1/ε)f(θ)) absorbs λ and 1/ε factors.
-            // Energy identity: dE_CH/dt = -(θ∇ψ, u) + γ||∇ψ||²,
-            // so NS capillary = +θ∇ψ for energy cancellation.
+            // Capillary force: Φ^{n-1} ∇W^n — Zhang Eq 3.11
+            // Zhang has +(Φ^{n-1}∇W^n, v) on the LHS.
+            // Moved to RHS: -(Φ∇W, v) = -(θ·(-∇ψ), v) = +(θ∇ψ, v).
+            // So F_capillary = +θ_old·∇ψ on the RHS.
             Tensor<1, dim> F_capillary;
             {
                 const Tensor<1, dim>& grad_psi_q = psi_gradients[q];
-                F_capillary = theta_q * grad_psi_q;
+                F_capillary = theta_old_q * grad_psi_q;
             }
 
-            // Total RHS force
-            Tensor<1, dim> F_source;
-            F_source = mu_0 * kelvin + F_capillary + F_gravity;
-
+            // Mass coefficient: 1/dt + S2 (Zhang Eq 3.11: NO density on time derivative)
+            const double mass_coeff = 1.0 / dt + S2;
 
             for (unsigned int i = 0; i < dofs_per_cell_vel; ++i)
             {
@@ -1102,13 +1274,50 @@ void NSSubsystem<dim>::assemble_coupled_algebraic_M(
                 auto T_V_x = compute_T_test_ux<dim>(grad_phi_ux_i);
                 auto T_V_y = compute_T_test_uy<dim>(grad_phi_uy_i);
 
-                // RHS: body forces
-                local_rhs_ux(i) += F_source[0] * phi_ux_i * JxW;
-                local_rhs_uy(i) += F_source[1] * phi_uy_i * JxW;
+                // RHS: capillary + gravity
+                local_rhs_ux(i) += (F_capillary[0] + F_gravity[0]) * phi_ux_i * JxW;
+                local_rhs_uy(i) += (F_capillary[1] + F_gravity[1]) * phi_uy_i * JxW;
 
-                // RHS: time derivative + S2 stabilization: (1/dt + S2) * U^{n-1}
+                // RHS: MMS source (only active when set via set_mms_source)
+                if (mms_source_)
+                {
+                    const auto F_mms = mms_source_(x_q, current_time);
+                    local_rhs_ux(i) += F_mms[0] * phi_ux_i * JxW;
+                    local_rhs_uy(i) += F_mms[1] * phi_uy_i * JxW;
+                }
+
+                // RHS: Kelvin term 1 — μ₀((m·∇)H̃, v)
+                local_rhs_ux(i) += mu_0 * kelvin[0] * phi_ux_i * JxW;
+                local_rhs_uy(i) += mu_0 * kelvin[1] * phi_uy_i * JxW;
+
+                // RHS: Kelvin term 2 — μ₀/2(m × H̃, ∇×v)
+                local_rhs_ux(i) += 0.5 * mu_0 * M_cross_H * (-grad_phi_ux_i[1]) * JxW;
+                local_rhs_uy(i) += 0.5 * mu_0 * M_cross_H * ( grad_phi_uy_i[0]) * JxW;
+
+                // RHS: Kelvin term 3 — μ₀(m × ∇×H̃, v)
+                local_rhs_ux(i) += mu_0 * M_cross_curlH[0] * phi_ux_i * JxW;
+                local_rhs_uy(i) += mu_0 * M_cross_curlH[1] * phi_uy_i * JxW;
+
+                // RHS: (1/dt + S2) * U^{n-1}
                 local_rhs_ux(i) += mass_coeff * ux_old_values[q] * phi_ux_i * JxW;
                 local_rhs_uy(i) += mass_coeff * uy_old_values[q] * phi_uy_i * JxW;
+
+                // b_stab precompute for test function V_i
+                const double bstab_Vgrad_m_ux_x_i = phi_ux_i * grad_Mx_alg[0];
+                const double bstab_Vgrad_m_ux_y_i = phi_ux_i * grad_My_alg[0];
+                const double bstab_divV_m_ux_x_i  = grad_phi_ux_i[0] * M[0];
+                const double bstab_divV_m_ux_y_i  = grad_phi_ux_i[0] * M[1];
+                const double curl_V_ux_i = -grad_phi_ux_i[1];
+                const double bstab_mcurl_ux_x_i =  M[1] * curl_V_ux_i;
+                const double bstab_mcurl_ux_y_i = -M[0] * curl_V_ux_i;
+
+                const double bstab_Vgrad_m_uy_x_i = phi_uy_i * grad_Mx_alg[1];
+                const double bstab_Vgrad_m_uy_y_i = phi_uy_i * grad_My_alg[1];
+                const double bstab_divV_m_uy_x_i  = grad_phi_uy_i[1] * M[0];
+                const double bstab_divV_m_uy_y_i  = grad_phi_uy_i[1] * M[1];
+                const double curl_V_uy_i = grad_phi_uy_i[0];
+                const double bstab_mcurl_uy_x_i =  M[1] * curl_V_uy_i;
+                const double bstab_mcurl_uy_y_i = -M[0] * curl_V_uy_i;
 
                 for (unsigned int j = 0; j < dofs_per_cell_vel; ++j)
                 {
@@ -1120,18 +1329,17 @@ void NSSubsystem<dim>::assemble_coupled_algebraic_M(
                     auto T_U_x = compute_T_test_ux<dim>(grad_phi_ux_j);
                     auto T_U_y = compute_T_test_uy<dim>(grad_phi_uy_j);
 
-                    // Mass + S2: (1/dt + S2)(U^n, V)
+                    // LHS mass: (1/dt + S2)(U^n, V)
                     local_ux_ux(i, j) += mass_coeff * phi_ux_j * phi_ux_i * JxW;
                     local_uy_uy(i, j) += mass_coeff * phi_uy_j * phi_uy_i * JxW;
 
-                    // Viscous: (ν(θ) D(U), D(V)) = (ν/4)(T(U), T(V))
-                    // Zhang Eq 2.6: D = ½(∇u+∇u^T), T = 2D
+                    // Viscous
                     local_ux_ux(i, j) += (nu_q / 4.0) * (T_U_x * T_V_x) * JxW;
                     local_uy_uy(i, j) += (nu_q / 4.0) * (T_U_y * T_V_y) * JxW;
                     local_ux_uy(i, j) += (nu_q / 4.0) * (T_U_y * T_V_x) * JxW;
                     local_uy_ux(i, j) += (nu_q / 4.0) * (T_U_x * T_V_y) * JxW;
 
-                    // Convection: B_h(U^{n-1}; U^n, V) skew-symmetric
+                    // Convection
                     if (include_convection)
                     {
                         const double convect_ux = skew_magnetic_cell_value_scalar<dim>(
@@ -1141,6 +1349,52 @@ void NSSubsystem<dim>::assemble_coupled_algebraic_M(
 
                         local_ux_ux(i, j) += convect_ux * JxW;
                         local_uy_uy(i, j) += convect_uy * JxW;
+                    }
+
+                    // b_stab — same 4 blocks as assemble_coupled
+                    // ũ_j=(φ_ux_j,0) vs V_i=(φ_ux_i,0)
+                    {
+                        const double t1 = phi_ux_j*grad_Mx_alg[0]*bstab_Vgrad_m_ux_x_i
+                                        + phi_ux_j*grad_My_alg[0]*bstab_Vgrad_m_ux_y_i;
+                        const double t2 = 2.0*(grad_phi_ux_j[0]*M[0]*bstab_divV_m_ux_x_i
+                                              +grad_phi_ux_j[0]*M[1]*bstab_divV_m_ux_y_i);
+                        const double cj = -grad_phi_ux_j[1];
+                        const double t3 = 0.5*(M[1]*cj*bstab_mcurl_ux_x_i
+                                              -M[0]*cj*bstab_mcurl_ux_y_i);
+                        local_ux_ux(i, j) += mu_0 * dt * (t1+t2+t3) * JxW;
+                    }
+                    // ũ_j=(0,φ_uy_j) vs V_i=(φ_ux_i,0)
+                    {
+                        const double t1 = phi_uy_j*grad_Mx_alg[1]*bstab_Vgrad_m_ux_x_i
+                                        + phi_uy_j*grad_My_alg[1]*bstab_Vgrad_m_ux_y_i;
+                        const double t2 = 2.0*(grad_phi_uy_j[1]*M[0]*bstab_divV_m_ux_x_i
+                                              +grad_phi_uy_j[1]*M[1]*bstab_divV_m_ux_y_i);
+                        const double cj = grad_phi_uy_j[0];
+                        const double t3 = 0.5*(M[1]*cj*bstab_mcurl_ux_x_i
+                                              -M[0]*cj*bstab_mcurl_ux_y_i);
+                        local_ux_uy(i, j) += mu_0 * dt * (t1+t2+t3) * JxW;
+                    }
+                    // ũ_j=(φ_ux_j,0) vs V_i=(0,φ_uy_i)
+                    {
+                        const double t1 = phi_ux_j*grad_Mx_alg[0]*bstab_Vgrad_m_uy_x_i
+                                        + phi_ux_j*grad_My_alg[0]*bstab_Vgrad_m_uy_y_i;
+                        const double t2 = 2.0*(grad_phi_ux_j[0]*M[0]*bstab_divV_m_uy_x_i
+                                              +grad_phi_ux_j[0]*M[1]*bstab_divV_m_uy_y_i);
+                        const double cj = -grad_phi_ux_j[1];
+                        const double t3 = 0.5*(M[1]*cj*bstab_mcurl_uy_x_i
+                                              -M[0]*cj*bstab_mcurl_uy_y_i);
+                        local_uy_ux(i, j) += mu_0 * dt * (t1+t2+t3) * JxW;
+                    }
+                    // ũ_j=(0,φ_uy_j) vs V_i=(0,φ_uy_i)
+                    {
+                        const double t1 = phi_uy_j*grad_Mx_alg[1]*bstab_Vgrad_m_uy_x_i
+                                        + phi_uy_j*grad_My_alg[1]*bstab_Vgrad_m_uy_y_i;
+                        const double t2 = 2.0*(grad_phi_uy_j[1]*M[0]*bstab_divV_m_uy_x_i
+                                              +grad_phi_uy_j[1]*M[1]*bstab_divV_m_uy_y_i);
+                        const double cj = grad_phi_uy_j[0];
+                        const double t3 = 0.5*(M[1]*cj*bstab_mcurl_uy_x_i
+                                              -M[0]*cj*bstab_mcurl_uy_y_i);
+                        local_uy_uy(i, j) += mu_0 * dt * (t1+t2+t3) * JxW;
                     }
                 }
 
@@ -1194,12 +1448,14 @@ void NSSubsystem<dim>::assemble_coupled_algebraic_M(
 
 // Explicit instantiations for assemble_coupled_algebraic_M
 template void NSSubsystem<2>::assemble_coupled_algebraic_M(
-    double, const dealii::TrilinosWrappers::MPI::Vector&, const dealii::DoFHandler<2>&,
+    double, const dealii::TrilinosWrappers::MPI::Vector&,
+    const dealii::TrilinosWrappers::MPI::Vector&, const dealii::DoFHandler<2>&,
     const dealii::TrilinosWrappers::MPI::Vector&, const dealii::DoFHandler<2>&,
     const dealii::TrilinosWrappers::MPI::Vector&, const dealii::DoFHandler<2>&,
     double, double, bool);
 template void NSSubsystem<3>::assemble_coupled_algebraic_M(
-    double, const dealii::TrilinosWrappers::MPI::Vector&, const dealii::DoFHandler<3>&,
+    double, const dealii::TrilinosWrappers::MPI::Vector&,
+    const dealii::TrilinosWrappers::MPI::Vector&, const dealii::DoFHandler<3>&,
     const dealii::TrilinosWrappers::MPI::Vector&, const dealii::DoFHandler<3>&,
     const dealii::TrilinosWrappers::MPI::Vector&, const dealii::DoFHandler<3>&,
     double, double, bool);

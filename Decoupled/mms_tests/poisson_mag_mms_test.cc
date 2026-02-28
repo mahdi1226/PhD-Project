@@ -310,8 +310,9 @@ static PoissonMagMMSResult run_single_level(
             poisson.get_solution_relevant(),
             current_time, L_y, mpi_comm);
 
-        result.phi_L2 = phi_err.L2;
-        result.phi_H1 = phi_err.H1;
+        result.phi_L2   = phi_err.L2;
+        result.phi_H1   = phi_err.H1;
+        result.phi_Linf = phi_err.Linf;
     }
 
     {
@@ -321,9 +322,10 @@ static PoissonMagMMSResult run_single_level(
             mag.get_My_relevant(),
             current_time, L_y, mpi_comm);
 
-        result.Mx_L2 = mag_err.Mx_L2;
-        result.My_L2 = mag_err.My_L2;
-        result.M_L2  = mag_err.M_L2;
+        result.Mx_L2  = mag_err.Mx_L2;
+        result.My_L2  = mag_err.My_L2;
+        result.M_L2   = mag_err.M_L2;
+        result.M_Linf = mag_err.M_Linf;
     }
 
     auto wall_end = std::chrono::high_resolution_clock::now();
@@ -331,7 +333,8 @@ static PoissonMagMMSResult run_single_level(
 
     pcout << "  Results: phi_L2=" << std::scientific << std::setprecision(2)
           << result.phi_L2 << "  phi_H1=" << result.phi_H1
-          << "  M_L2=" << result.M_L2
+          << "  phi_Linf=" << result.phi_Linf
+          << "  M_L2=" << result.M_L2 << "  M_Linf=" << result.M_Linf
           << "  time=" << std::fixed << std::setprecision(1)
           << result.time_s << "s\n";
 

@@ -151,7 +151,7 @@ void CahnHilliardSubsystem<dim>::assemble_system(
             for (unsigned int d = 0; d < dim; ++d)
                 U[d] = u_vals[d][q];
 
-            // Nonlinearity: f(θ^{n-1}) = (θ^{n-1})³ - θ^{n-1}
+            // Nonlinearity: f(θ^{n-1}) = ((θ^{n-1})³ - θ^{n-1})/4
             const double f_old = double_well_derivative(theta_old_q);
 
             for (unsigned int i = 0; i < dofs_per_cell; ++i)
@@ -265,16 +265,29 @@ void CahnHilliardSubsystem<dim>::assemble_system(
 }
 
 // ============================================================================
-// assemble_sav — Zhang's energy-stable SAV scheme
+// assemble_sav — Zhang's stabilized CH scheme (Eq 3.9-3.10)
 //
-// Modified CH with:
-//   Eq 42a LHS: (1/tau + S1)(theta^{n+1}, Lambda) - gamma(grad psi, grad Lambda)
-//   Eq 42a RHS: (1/tau + S1)(theta^{n-1}, Lambda) + (U^{n-1} . grad Lambda) theta^{n-1}
-//   Eq 42b LHS: (psi, Upsilon) + eps(grad theta, grad Upsilon) + (1/eta)(theta, Upsilon)
-//   Eq 42b RHS: -sav_factor*(1/eps)*f(theta^{n-1}) * Upsilon + (1/eta)(theta^{n-1}, Upsilon)
+// Reference: Zhang, He & Yang, SIAM J. Sci. Comput. 43(1), 2021
+//            Algorithm 3.1, Step 1: Cahn-Hilliard update
 //
-// sav_factor = r_n / sqrt(E1_old + C0)  (1.0 = standard scheme, no SAV)
-// S1 >= 1/eps is the CH stabilization constant
+// Sign convention: ψ = -W (Nochetto convention, negative chemical potential)
+//   This is compatible with the NS capillary force: F_cap = θ∇ψ = -θ∇W.
+//   Zhang uses W (positive), so all W terms get sign-flipped here.
+//
+// Zhang Eq 3.9 → in ψ=-W convention (θ equation):
+//   (d_t θ, Λ) - (u θ_old, ∇Λ) - (δt/2) θ_old² (∇ψ, ∇Λ)
+//     - M(∇ψ, ∇Λ) = 0
+//
+// Zhang Eq 3.10 → in ψ=-W convention (ψ equation):
+//   (ψ, X) + λε(∇θ, ∇X) + S(θ - θ_old, X) + (λ/ε)(f(θ_old), X) = 0
+//
+// Rearranged as Ax = b:
+//   θ eq LHS: (1/dt)(θ,Λ) - [M + (δt/2)θ_old²](∇ψ,∇Λ)
+//   θ eq RHS: (1/dt)(θ_old,Λ) + (u θ_old, ∇Λ)
+//   ψ eq LHS: (ψ,X) + λε(∇θ,∇X) + S(θ,X)
+//   ψ eq RHS: +S(θ_old,X) - (λ/ε)(f(θ_old),X)
+//
+// S = λ/(4ε) per Zhang p.B182: "we choose L = 1/(2ε), thus S = λ/(4ε)"
 // ============================================================================
 template <int dim>
 void CahnHilliardSubsystem<dim>::assemble_sav(
@@ -322,12 +335,11 @@ void CahnHilliardSubsystem<dim>::assemble_sav(
 
     const double eps = params_.physics.epsilon;
     const double lambda = params_.physics.lambda;
-    const double gamma = params_.physics.mobility;
-    // Zhang Eq 3.5-3.6: SAV scheme uses S₁ in the θ equation only.
-    // NO Douglas-Dupont (1/η) in ψ equation. λ multiplies ε and 1/ε terms in ψ.
+    const double gamma = params_.physics.mobility;  // M in Zhang's notation
 
-    // Effective mass coefficient: 1/dt + S1
-    const double mass_coeff = 1.0 / dt + S1;
+    // Zhang Eq 3.10: S stabilization in the ψ equation.
+    // S = λ/(4ε) per Zhang p.B182.
+    const double S = S1;
 
     bool use_convection = false;
     for (unsigned int d = 0; d < dim; ++d)
@@ -382,8 +394,13 @@ void CahnHilliardSubsystem<dim>::assemble_sav(
             for (unsigned int d = 0; d < dim; ++d)
                 U[d] = u_vals[d][q];
 
-            // Nonlinearity: f(theta^{n-1})
+            // Nonlinearity: f(θ^{n-1}) = ((θ^{n-1})³ - θ^{n-1})/4
             const double f_old = double_well_derivative(theta_old_q);
+
+            // SUPG coefficient: (δt/2) · θ_old² at this quadrature point
+            // Zhang Eq 3.9: +(δt/2)(Φ_old ∇W, Φ_old ∇Λ)
+            // In ψ=-W convention: -(δt/2) θ_old² (∇ψ, ∇Λ)
+            const double supg_coeff = 0.5 * dt * theta_old_q * theta_old_q;
 
             for (unsigned int i = 0; i < dofs_per_cell; ++i)
             {
@@ -405,32 +422,68 @@ void CahnHilliardSubsystem<dim>::assemble_sav(
                     const unsigned int j_theta = j;
                     const unsigned int j_psi = dofs_per_cell + j;
 
-                    // Eq 42a LHS: (1/tau + S1)(theta^n, Lambda)
-                    local_matrix(i_theta, j_theta) +=
-                        mass_coeff * theta_j * Lambda_i * JxW;
+                    // --------------------------------------------------------
+                    // θ equation LHS (Zhang Eq 3.9 in ψ=-W convention)
+                    //
+                    // Zhang: (d_t Φ,Λ) + M(∇W,∇Λ) + SUPG = (uΦ_old,∇Λ)
+                    // ψ=-W: (d_t θ,Λ) - M(∇ψ,∇Λ) - SUPG_ψ = (uθ_old,∇Λ)
+                    // --------------------------------------------------------
 
-                    // Eq 42a LHS: -gamma(grad psi, grad Lambda)
+                    // (1/τ)(θ^n, Λ) — time derivative mass term
+                    local_matrix(i_theta, j_theta) +=
+                        (1.0 / dt) * theta_j * Lambda_i * JxW;
+
+                    // -M(∇ψ^n, ∇Λ) — diffusion coupling (NEGATIVE: ψ=-W)
                     local_matrix(i_theta, j_psi) -=
                         gamma * (grad_psi_j * grad_Lambda_i) * JxW;
 
-                    // Eq 42b LHS: (psi, Upsilon)
+                    // -(δt/2) θ_old² (∇ψ^n, ∇Λ) — SUPG (same sign as diffusion)
+                    local_matrix(i_theta, j_psi) -=
+                        supg_coeff * (grad_psi_j * grad_Lambda_i) * JxW;
+
+                    // --------------------------------------------------------
+                    // ψ equation LHS (Zhang Eq 3.10 in ψ=-W convention)
+                    //
+                    // Zhang: (W,X) = λε(∇Φ,∇X) + S(δΦ,X) + (λ/ε)(f,X)
+                    // ψ=-W: -(ψ,X) = λε(∇θ,∇X) + S(δθ,X) + (λ/ε)(f,X)
+                    // → (ψ,X) + λε(∇θ,∇X) + S(θ,X) = S(θ_old,X) - (λ/ε)(f,X)
+                    // --------------------------------------------------------
+
+                    // (ψ^n, X) — mass term
                     local_matrix(i_psi, j_psi) +=
                         psi_j * Upsilon_i * JxW;
 
-                    // Zhang Eq 3.6 LHS: λε(∇θ^{n+1}, ∇Υ)
+                    // +λε(∇θ^n, ∇X) — Laplacian of θ (POSITIVE: ψ=-W flips)
                     local_matrix(i_psi, j_theta) +=
                         lambda * eps * (grad_theta_j * grad_Upsilon_i) * JxW;
+
+                    // +S(θ^n, X) — stabilization LHS part (POSITIVE)
+                    local_matrix(i_psi, j_theta) +=
+                        S * theta_j * Upsilon_i * JxW;
                 }
 
-                // Eq 42a RHS: (1/tau + S1)(theta^{n-1}, Lambda)
-                local_rhs(i_theta) +=
-                    mass_coeff * theta_old_q * Lambda_i * JxW;
+                // ============================================================
+                // θ equation RHS
+                // ============================================================
 
-                // Eq 42a RHS: convection (U^{n-1} . grad Lambda) theta^{n-1}
+                // (1/τ)(θ^{n-1}, Λ)
+                local_rhs(i_theta) +=
+                    (1.0 / dt) * theta_old_q * Lambda_i * JxW;
+
+                // +(u θ_old, ∇Λ) — convection (lagged)
                 local_rhs(i_theta) +=
                     theta_old_q * (U * grad_Lambda_i) * JxW;
 
-                // Zhang Eq 3.6 RHS: -(r/√(E₁+C₀)) · (λ/ε) · f(θ^{n-1}) · Υ
+                // ============================================================
+                // ψ equation RHS = +S(θ_old,X) - (λ/ε)(f,X)
+                // ============================================================
+
+                // +S(θ^{n-1}, X)
+                local_rhs(i_psi) +=
+                    S * theta_old_q * Upsilon_i * JxW;
+
+                // -(λ/ε) · sav_factor · (f(θ^{n-1}), X) — nonlinear (NEGATIVE: ψ=-W flips)
+                // SAV: sav_factor = r^n / sqrt(E1(θ^{n-1}) + C0)
                 local_rhs(i_psi) -=
                     sav_factor * (lambda / eps) * f_old * Upsilon_i * JxW;
 
@@ -476,7 +529,7 @@ void CahnHilliardSubsystem<dim>::assemble_sav(
 // ============================================================================
 // compute_bulk_energy — E1(theta) = (lambda/eps) * integral F(theta) dOmega
 //
-// F(theta) = (1/4)(theta^2 - 1)^2  (double-well potential)
+// F(theta) = (1/16)(theta^2 - 1)^2  (double-well potential, θ∈{-1,+1} convention)
 // This is used for the SAV variable: r(t) = sqrt(E1(theta) + C0)
 // ============================================================================
 template <int dim>

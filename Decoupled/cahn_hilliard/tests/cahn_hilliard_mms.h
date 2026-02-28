@@ -142,6 +142,27 @@ namespace CHMMS
 
         return -M_PI * M_PI * sum_inv_L2 * psi_exact_value<dim>(p, t, L);
     }
+    // ---- ∂θ/∂t = 4t³ ∏_d cos(πx_d/L_d) ----
+    template <int dim>
+    inline double theta_exact_dt(const dealii::Point<dim>& p, double t,
+                                  const double L[dim])
+    {
+        double val = 4.0 * t * t * t;
+        for (unsigned int d = 0; d < dim; ++d)
+            val *= std::cos(M_PI * p[d] / L[d]);
+        return val;
+    }
+
+    // ---- ∂ψ/∂t = 4t³ ∏_d sin(πx_d/L_d) ----
+    template <int dim>
+    inline double psi_exact_dt(const dealii::Point<dim>& p, double t,
+                                const double L[dim])
+    {
+        double val = 4.0 * t * t * t;
+        for (unsigned int d = 0; d < dim; ++d)
+            val *= std::sin(M_PI * p[d] / L[d]);
+        return val;
+    }
 } // namespace CHMMS
 
 
@@ -295,8 +316,8 @@ public:
         const double psi_n     = CHMMS::psi_exact_value<dim>(p, t, L_);
         const double lap_theta_n = CHMMS::lap_theta_exact<dim>(p, t, L_);
 
-        // f(θ^{n-1}) = θ³ - θ
-        const double f_old = theta_old * theta_old * theta_old - theta_old;
+        // f(θ^{n-1}) = (θ³ - θ)/4  (from F(θ) = (θ²-1)²/16)
+        const double f_old = 0.25 * (theta_old * theta_old * theta_old - theta_old);
 
         // η = ε  (stabilization)
         const double eta = epsilon_;
@@ -309,6 +330,44 @@ public:
 
 private:
     double epsilon_, dt_;
+    double L_[dim];
+};
+
+
+// ============================================================================
+// CONTINUOUS source terms for TEMPORAL convergence testing
+//
+// Uses ∂θ*/∂t (continuous) instead of (θ*^n - θ*^{n-1})/dt (discrete).
+// The BDF1 truncation error then appears as O(dt) in the solution.
+//
+// S_θ_continuous = ∂θ*/∂t + γ Δψ*
+// S_ψ: keep discrete stabilization (1/η)(θ*^n - θ*^{n-1}) — algebraic, not time evolution
+// ============================================================================
+
+template <int dim>
+class CHSourceThetaContinuous : public dealii::Function<dim>
+{
+public:
+    CHSourceThetaContinuous(double gamma, const double L[dim])
+        : dealii::Function<dim>(1), gamma_(gamma)
+    {
+        for (unsigned int d = 0; d < dim; ++d) L_[d] = L[d];
+    }
+
+    double value(const dealii::Point<dim>& p,
+                 const unsigned int /*component*/ = 0) const override
+    {
+        const double t = this->get_time();
+
+        // ∂θ*/∂t = 4t³ ∏_d cos(πx_d/L_d)
+        const double dtheta_dt = CHMMS::theta_exact_dt<dim>(p, t, L_);
+        const double lap_psi_n = CHMMS::lap_psi_exact<dim>(p, t, L_);
+
+        return dtheta_dt + gamma_ * lap_psi_n;
+    }
+
+private:
+    double gamma_;
     double L_[dim];
 };
 

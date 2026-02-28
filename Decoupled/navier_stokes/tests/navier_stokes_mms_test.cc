@@ -374,7 +374,8 @@ RefinementResult run_phase_A(unsigned int refinement, const Parameters& params,
 // --- Phase B: Unsteady Stokes (time stepping, no convection) ---
 template <int dim>
 RefinementResult run_phase_B(unsigned int refinement, const Parameters& params,
-                             unsigned int n_time_steps, MPI_Comm mpi_comm)
+                             unsigned int n_time_steps, MPI_Comm mpi_comm,
+                             bool use_continuous_dt = false)
 {
     RefinementResult result;
     result.refinement = refinement;
@@ -413,7 +414,10 @@ RefinementResult run_phase_B(unsigned int refinement, const Parameters& params,
 
         std::function<dealii::Tensor<1, dim>(const dealii::Point<dim>&, double)>
             body_force = [&](const dealii::Point<dim>& p, double t) {
-                return NSMMS::source_phase_B<dim>(p, t, t_old, nu, Ly);
+                if (use_continuous_dt)
+                    return NSMMS::source_phase_B_continuous<dim>(p, t, nu, Ly);
+                else
+                    return NSMMS::source_phase_B<dim>(p, t, t_old, nu, Ly);
             };
 
         ns.assemble_stokes(dt, nu, true, false, &body_force, current_time);
@@ -481,7 +485,8 @@ RefinementResult run_phase_C(unsigned int refinement, const Parameters& params,
 // --- Phase D: Unsteady NS (full production) ---
 template <int dim>
 RefinementResult run_phase_D(unsigned int refinement, const Parameters& params,
-                             unsigned int n_time_steps, MPI_Comm mpi_comm)
+                             unsigned int n_time_steps, MPI_Comm mpi_comm,
+                             bool use_continuous_dt = false)
 {
     RefinementResult result;
     result.refinement = refinement;
@@ -520,7 +525,10 @@ RefinementResult run_phase_D(unsigned int refinement, const Parameters& params,
 
         std::function<dealii::Tensor<1, dim>(const dealii::Point<dim>&, double)>
             body_force = [&](const dealii::Point<dim>& p, double t) {
-                return NSMMS::source_phase_D<dim>(p, t, t_old, nu, Ly);
+                if (use_continuous_dt)
+                    return NSMMS::source_phase_D_continuous<dim>(p, t, t_old, nu, Ly);
+                else
+                    return NSMMS::source_phase_D<dim>(p, t, t_old, nu, Ly);
             };
 
         ns.assemble_stokes(dt, nu, true, true, &body_force, current_time);
@@ -762,6 +770,217 @@ bool run_all_phases(
 
 
 // ============================================================================
+// Temporal convergence result structures
+//
+// For BDF1 (backward Euler), expect O(dt) convergence rate ≈ 1.0.
+// Fix spatial refinement (ref=5), sweep dt by varying n_time_steps over [0.1, 0.2].
+// Only applies to unsteady phases (B, D).
+// ============================================================================
+struct NSTemporalResult
+{
+    unsigned int n_time_steps = 0;
+    double dt = 0.0;
+
+    double ux_L2   = 0.0, ux_H1   = 0.0;
+    double uy_L2   = 0.0, uy_H1   = 0.0;
+    double p_L2    = 0.0;
+
+    double total_time = 0.0;
+};
+
+struct NSTemporalConvergenceResult
+{
+    std::string phase_id;       // "B" or "D"
+    std::string phase_label;
+    std::vector<NSTemporalResult> results;
+
+    std::vector<double> ux_L2_rates, ux_H1_rates;
+    std::vector<double> uy_L2_rates;
+    std::vector<double> p_L2_rates;
+
+    unsigned int fixed_refinement = 5;
+
+    void compute_rates()
+    {
+        ux_L2_rates.clear(); ux_H1_rates.clear();
+        uy_L2_rates.clear(); p_L2_rates.clear();
+
+        for (size_t i = 1; i < results.size(); ++i)
+        {
+            const double log_dt = std::log(results[i-1].dt / results[i].dt);
+            auto rate = [&](double e_coarse, double e_fine) {
+                return (e_coarse > 1e-15 && e_fine > 1e-15)
+                    ? std::log(e_coarse / e_fine) / log_dt : 0.0;
+            };
+            ux_L2_rates.push_back(rate(results[i-1].ux_L2, results[i].ux_L2));
+            ux_H1_rates.push_back(rate(results[i-1].ux_H1, results[i].ux_H1));
+            uy_L2_rates.push_back(rate(results[i-1].uy_L2, results[i].uy_L2));
+            p_L2_rates.push_back(rate(results[i-1].p_L2, results[i].p_L2));
+        }
+    }
+
+    void print() const
+    {
+        std::cout << "\n--- NS Temporal Convergence: " << phase_label
+                  << " (BDF1, ref=" << fixed_refinement << ") ---\n";
+        std::cout << std::left
+                  << std::setw(8)  << "Steps"
+                  << std::setw(12) << "dt"
+                  << std::setw(12) << "ux_L2"
+                  << std::setw(8)  << "rate"
+                  << std::setw(12) << "ux_H1"
+                  << std::setw(8)  << "rate"
+                  << std::setw(12) << "uy_L2"
+                  << std::setw(8)  << "rate"
+                  << std::setw(12) << "p_L2"
+                  << std::setw(8)  << "rate"
+                  << std::setw(10) << "wall(s)"
+                  << "\n";
+        std::cout << std::string(110, '-') << "\n";
+
+        for (size_t i = 0; i < results.size(); ++i)
+        {
+            const auto& r = results[i];
+            std::cout << std::left << std::setw(8) << r.n_time_steps
+                      << std::scientific << std::setprecision(2)
+                      << std::setw(12) << r.dt
+                      << std::setw(12) << r.ux_L2
+                      << std::fixed << std::setprecision(2)
+                      << std::setw(8) << (i > 0 ? ux_L2_rates[i-1] : 0.0)
+                      << std::scientific << std::setprecision(2)
+                      << std::setw(12) << r.ux_H1
+                      << std::fixed << std::setprecision(2)
+                      << std::setw(8) << (i > 0 ? ux_H1_rates[i-1] : 0.0)
+                      << std::scientific << std::setprecision(2)
+                      << std::setw(12) << r.uy_L2
+                      << std::fixed << std::setprecision(2)
+                      << std::setw(8) << (i > 0 ? uy_L2_rates[i-1] : 0.0)
+                      << std::scientific << std::setprecision(2)
+                      << std::setw(12) << r.p_L2
+                      << std::fixed << std::setprecision(2)
+                      << std::setw(8) << (i > 0 ? p_L2_rates[i-1] : 0.0)
+                      << std::fixed << std::setprecision(1)
+                      << std::setw(10) << r.total_time
+                      << "\n";
+        }
+    }
+
+    void write_csv(const std::string& filepath) const
+    {
+        std::ofstream f(filepath);
+        f << "n_time_steps,dt,ux_L2,ux_L2_rate,ux_H1,ux_H1_rate,"
+          << "uy_L2,uy_L2_rate,p_L2,p_L2_rate,walltime\n";
+        for (size_t i = 0; i < results.size(); ++i)
+        {
+            const auto& r = results[i];
+            f << r.n_time_steps << ","
+              << std::scientific << std::setprecision(6) << r.dt << ","
+              << r.ux_L2 << ","
+              << std::fixed << std::setprecision(3) << (i > 0 ? ux_L2_rates[i-1] : 0.0) << ","
+              << std::scientific << std::setprecision(6) << r.ux_H1 << ","
+              << std::fixed << std::setprecision(3) << (i > 0 ? ux_H1_rates[i-1] : 0.0) << ","
+              << std::scientific << std::setprecision(6) << r.uy_L2 << ","
+              << std::fixed << std::setprecision(3) << (i > 0 ? uy_L2_rates[i-1] : 0.0) << ","
+              << std::scientific << std::setprecision(6) << r.p_L2 << ","
+              << std::fixed << std::setprecision(3) << (i > 0 ? p_L2_rates[i-1] : 0.0) << ","
+              << std::fixed << std::setprecision(4) << r.total_time << "\n";
+        }
+        std::cout << "  CSV written: " << filepath << "\n";
+    }
+
+    // NS MMS exact solutions are LINEAR in t (u = t·spatial, p = t·spatial).
+    // BDF1 is exact for linear functions, so temporal error is zero.
+    //
+    // The pass criterion verifies that errors remain CONSTANT across dt
+    // (i.e., only spatial error is present, confirming BDF1 exactness).
+    // We check that all errors are within 10% of the first (coarsest dt) result.
+    bool passes(double rel_tol = 0.10) const
+    {
+        if (results.size() < 2) return false;
+        const double ref_error = results[0].ux_L2;
+        if (ref_error < 1e-15) return true;  // trivially zero
+
+        for (size_t i = 1; i < results.size(); ++i)
+        {
+            const double rel_change = std::abs(results[i].ux_L2 - ref_error) / ref_error;
+            if (rel_change > rel_tol)
+                return false;
+        }
+        return true;
+    }
+};
+
+
+// ============================================================================
+// run_temporal_convergence() — sweep dt for an unsteady phase
+// ============================================================================
+template <int dim>
+NSTemporalConvergenceResult run_temporal_convergence(
+    const std::string& phase,
+    unsigned int fixed_ref,
+    const std::vector<unsigned int>& step_counts,
+    const Parameters& params,
+    MPI_Comm mpi_comm)
+{
+    const unsigned int rank = dealii::Utilities::MPI::this_mpi_process(mpi_comm);
+
+    NSTemporalConvergenceResult tc;
+    tc.phase_id = phase;
+    tc.fixed_refinement = fixed_ref;
+
+    if (phase == "B")
+        tc.phase_label = "Phase B: Unsteady Stokes";
+    else
+        tc.phase_label = "Phase D: Unsteady NS";
+
+    if (rank == 0)
+    {
+        std::cout << "\n========================================\n";
+        std::cout << " Temporal: " << tc.phase_label << " (ref=" << fixed_ref << ")\n";
+        std::cout << "========================================\n";
+    }
+
+    for (unsigned int n_steps : step_counts)
+    {
+        if (rank == 0)
+            std::cout << "  n_steps=" << n_steps << "... " << std::flush;
+
+        // NS MMS solutions are linear in t → BDF1 is exact.
+        // Use discrete source (no continuous override needed).
+        RefinementResult r;
+        if (phase == "B")
+            r = run_phase_B<dim>(fixed_ref, params, n_steps, mpi_comm);
+        else
+            r = run_phase_D<dim>(fixed_ref, params, n_steps, mpi_comm);
+
+        const double dt = 0.1 / n_steps;  // T = 0.2 - 0.1 = 0.1
+
+        NSTemporalResult tr;
+        tr.n_time_steps = n_steps;
+        tr.dt           = dt;
+        tr.ux_L2        = r.ux_L2;
+        tr.ux_H1        = r.ux_H1;
+        tr.uy_L2        = r.uy_L2;
+        tr.p_L2         = r.p_L2;
+        tr.total_time   = r.total_time;
+        tc.results.push_back(tr);
+
+        if (rank == 0)
+        {
+            std::cout << "ux_L2=" << std::scientific << std::setprecision(2) << r.ux_L2
+                      << ", ux_H1=" << r.ux_H1
+                      << ", p_L2=" << r.p_L2
+                      << ", time=" << std::fixed << std::setprecision(1)
+                      << r.total_time << "s\n";
+        }
+    }
+
+    tc.compute_rates();
+    return tc;
+}
+
+
+// ============================================================================
 // CLI argument parsing
 // ============================================================================
 static std::vector<std::string> get_args_after(
@@ -789,6 +1008,14 @@ static unsigned int get_uint_arg(
         if (std::string(argv[i]) == flag)
             return static_cast<unsigned int>(std::atoi(argv[i + 1]));
     return default_val;
+}
+
+static bool has_flag(int argc, char* argv[], const std::string& flag)
+{
+    for (int i = 1; i < argc; ++i)
+        if (std::string(argv[i]) == flag)
+            return true;
+    return false;
 }
 
 
@@ -858,6 +1085,7 @@ int main(int argc, char* argv[])
                               << "  --ref 2 3 4 5     Refinement levels (default: 2 3 4 5)\n"
                               << "  --steps N         Time steps for unsteady phases (default: 10)\n"
                               << "  --dim D           Spatial dimension: 2 or 3 (default: 2)\n"
+                              << "  --temporal        Temporal convergence mode: fix h, sweep dt\n"
                               << "\n"
                               << "Phases:\n"
                               << "  A  Steady Stokes        (viscous + pressure)\n"
@@ -866,15 +1094,133 @@ int main(int argc, char* argv[])
                               << "  D  Unsteady NS          (full production)\n"
                               << "\n"
                               << "Expected rates (Q2/DG-Q1):\n"
-                              << "  vel L2 ~ O(h^3), vel H1 ~ O(h^2), p L2 ~ O(h^2)\n"
-                              << "  (Unsteady: vel L2 limited by O(dt) at fine h)\n";
+                              << "  Spatial:  vel L2 ~ O(h^3), vel H1 ~ O(h^2), p L2 ~ O(h^2)\n"
+                              << "  Temporal: vel L2 ~ O(dt^1) [BDF1]\n"
+                              << "  (Unsteady spatial: vel L2 limited by O(dt) at fine h)\n";
                 }
                 return 0;
             }
         }
 
         // ====================================================================
-        // Run validation
+        // Temporal convergence mode
+        // ====================================================================
+        const bool temporal_mode = has_flag(argc, argv, "--temporal");
+
+        if (temporal_mode)
+        {
+            // Only run unsteady phases (B, D) in temporal mode
+            const unsigned int fixed_ref = 4;
+            std::vector<unsigned int> step_counts = {2, 4, 8, 16};
+
+            // Filter to unsteady phases only
+            std::vector<std::string> temporal_phases;
+            for (const auto& p : phases)
+                if (p == "B" || p == "D")
+                    temporal_phases.push_back(p);
+            if (temporal_phases.empty())
+                temporal_phases = {"B", "D"};
+
+            if (rank == 0)
+            {
+                std::cout << "\n============================================================\n";
+                std::cout << "   NS Temporal Convergence Study (2D)\n";
+                std::cout << "============================================================\n";
+                std::cout << "  MPI ranks:       "
+                          << dealii::Utilities::MPI::n_mpi_processes(mpi_comm) << "\n";
+                std::cout << "  Fixed refinement: " << fixed_ref << "\n";
+                std::cout << "  Time window:     [0.1, 0.2]\n";
+                std::cout << "  Step counts:     ";
+                for (auto s : step_counts) std::cout << s << " ";
+                std::cout << "\n";
+                std::cout << "  Phases:          ";
+                for (const auto& p : temporal_phases) std::cout << p << " ";
+                std::cout << "\n";
+                std::cout << "  NOTE: NS MMS solutions are LINEAR in t, so BDF1\n"
+                          << "        is exact. Errors should be constant across dt\n"
+                          << "        (confirming zero temporal truncation error).\n";
+                std::cout << "============================================================\n";
+            }
+
+            bool all_pass_temporal = true;
+            std::vector<NSTemporalConvergenceResult> all_tc;
+
+            for (const auto& phase : temporal_phases)
+            {
+                NSTemporalConvergenceResult tc = run_temporal_convergence<2>(
+                    phase, fixed_ref, step_counts, params, mpi_comm);
+                all_tc.push_back(tc);
+
+                if (rank == 0)
+                {
+                    tc.print();
+
+                    std::string phase_lower = phase;
+                    std::transform(phase_lower.begin(), phase_lower.end(),
+                                   phase_lower.begin(), ::tolower);
+                    const std::string csv_name = timestamped_filename(
+                        "ns_mms_temporal_phase_" + phase_lower, ".csv");
+                    tc.write_csv(out_dir + "/" + csv_name);
+
+                    double total_wall = 0.0;
+                    for (const auto& r : tc.results) total_wall += r.total_time;
+
+                    std::cout << "\nExpected: constant ux_L2 across dt (BDF1 exact for linear-in-t)"
+                              << "  |  Wall time: " << std::fixed << std::setprecision(1)
+                              << total_wall << "s\n";
+
+                    if (tc.passes())
+                        std::cout << "[PASS] " << tc.phase_label << " temporal\n";
+                    else
+                    {
+                        std::cout << "[FAIL] " << tc.phase_label << " temporal\n";
+                        all_pass_temporal = false;
+                    }
+                }
+
+                // Broadcast pass/fail
+                {
+                    int local_pass = tc.passes() ? 1 : 0;
+                    int global_pass;
+                    MPI_Allreduce(&local_pass, &global_pass, 1, MPI_INT, MPI_MIN, mpi_comm);
+                    if (!global_pass) all_pass_temporal = false;
+                }
+            }
+
+            // Summary
+            if (rank == 0)
+            {
+                std::cout << "\n============================================================\n";
+                std::cout << "   TEMPORAL CONVERGENCE SUMMARY\n";
+                std::cout << "============================================================\n";
+                for (const auto& tc : all_tc)
+                {
+                    // Compute max relative variation from first result
+                    double max_var = 0.0;
+                    if (!tc.results.empty() && tc.results[0].ux_L2 > 1e-15)
+                        for (size_t j = 1; j < tc.results.size(); ++j)
+                            max_var = std::max(max_var,
+                                std::abs(tc.results[j].ux_L2 - tc.results[0].ux_L2) / tc.results[0].ux_L2);
+
+                    std::cout << std::left << std::setw(30) << tc.phase_label
+                              << std::fixed << std::setprecision(4)
+                              << "  ux_L2 max_var: " << max_var
+                              << "  " << (tc.passes() ? "[PASS]" : "[FAIL]") << "\n";
+                }
+                std::cout << "============================================================\n";
+
+                if (all_pass_temporal)
+                    std::cout << "   [ALL PASS] NS Temporal Convergence PASSED\n";
+                else
+                    std::cout << "   [FAIL] NS Temporal Convergence FAILED\n";
+                std::cout << "============================================================\n";
+            }
+
+            return all_pass_temporal ? 0 : 1;
+        }
+
+        // ====================================================================
+        // Run validation (spatial convergence, default mode)
         // ====================================================================
         bool all_pass = true;
 

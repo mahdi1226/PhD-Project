@@ -22,11 +22,11 @@
 // Spikes form via Rosensweig instability.
 //
 // Domain: [0,1] × [0,0.6]
-// IC: flat interface at y = 0.3, θ = tanh((0.3 - y)/(√2 ε))
-// ε = 5e-3, M (mobility) = 5e-4, β = 1, λ = 1
-// ν_f = ν_w = 1, μ₀ = 0.1, χ₀ = 2, g = 10
-// Applied field: 5 dipoles at y=-15, slope=1000
-// dt = 1e-4, h = 1/128
+// IC: Φ = 1 for y ≤ 0.2, Φ = 0 for y > 0.2 (Heaviside at y=0.2)
+// ε = 5e-3, M = 2e-4, β = 1, λ = 1, τ = 1e-4
+// ν_f = 2, ν_w = 1, μ₀ = 1, χ₀ = 0.5, r = 0.1
+// g = (0, -6e4), h = 1e-2, δt = 1e-3
+// Applied field: 5 dipoles at y=-15, α ramps 0→8000 over t∈[0,1.6], slope=5000
 // ============================================================================
 void Parameters::setup_rosensweig()
 {
@@ -41,7 +41,7 @@ void Parameters::setup_rosensweig()
     // Physics — Zhang Eq 4.4 (SIAM J. Sci. Comput. 43(1), 2021, p.B186)
     physics.epsilon = 5e-3;        // ε = 5e-3
     physics.chi_0 = 0.5;          // χ₀ = 0.5
-    physics.mu_0 = 1.0;           // μ = 1
+    physics.mu_0 = 1.0;           // μ₀ = 1
 
     // Physics — Magnetization (Zhang Eq 4.4: full PDE with β=1, τ=1e-4)
     physics.tau_M = 1e-4;         // Zhang Eq 4.4: τ = 1e-4
@@ -49,14 +49,15 @@ void Parameters::setup_rosensweig()
     physics.enable_beta_term = true;
 
     // Physics — Cahn-Hilliard
-    physics.mobility = 2e-4;      // Zhang Eq 4.4: M = 2e-4
-    physics.lambda = 1.0;         // Zhang Eq 4.4: λ = 1
+    // Zhang Eq 4.4 uses Φ∈{0,1}. Convert: λ_θ = λ_Φ/4, M_θ = 4·M_Φ.
+    physics.lambda = 0.25;        // Zhang λ=1 → θ-space: 1/4
+    physics.mobility = 8e-4;      // Zhang M=2e-4 → θ-space: 4×
 
     // Physics — Navier-Stokes
     physics.nu_water = 1.0;       // Zhang Eq 4.4: ν_w = 1
     physics.nu_ferro = 2.0;       // Zhang Eq 4.4: ν_f = 2
     physics.r = 0.1;              // Zhang Eq 4.4: r = 0.1 (density ratio)
-    physics.gravity_magnitude = 6e4;    // Zhang Eq 4.4: g = 6e4
+    physics.gravity_magnitude = 6e4;    // Zhang Eq 4.4: g = (0, -6e4)
     physics.gravity_direction = {0.0, -1.0};
 
     // Applied field: 5 dipoles far below domain (y = -15)
@@ -68,9 +69,9 @@ void Parameters::setup_rosensweig()
     dipoles.positions.push_back(dealii::Point<2>( 1.0, -15.0));
     dipoles.positions.push_back(dealii::Point<2>( 1.5, -15.0));
     dipoles.direction    = {0.0, 1.0};
-    dipoles.ramp_slope   = 5000.0;   // Zhang: α from 0→8000 over [0,1.6], slope=8000/1.6=5000
+    dipoles.ramp_slope   = 5000.0;   // Zhang Eq 4.4: α ramps 0→8000 over [0,1.6]
     dipoles.ramp_time    = 0.0;
-    dipoles.intensity_max = 8000.0;  // Zhang: cap at 8000 for t > 1.6
+    dipoles.intensity_max = 8000.0;  // Zhang Eq 4.4: cap at α_s = 8000 after t=1.6
 
     // Time stepping — Zhang Eq 4.4: δt = 1e-3
     time.dt = 1e-3;
@@ -87,7 +88,7 @@ void Parameters::setup_rosensweig()
     enable_gravity = true;
     use_reduced_magnetic_field = false;
 
-    // Picard (not used in decoupled driver, but set for completeness)
+    // Picard sub-iteration for Poisson-Magnetization coupling
     picard_iterations = 7;
     picard_tolerance = 0.01;
 
@@ -95,7 +96,7 @@ void Parameters::setup_rosensweig()
     use_algebraic_magnetization = false;  // Zhang solves mag PDE (Eq 3.15-3.16)
     use_sav = true;
     sav.C0 = 1.0;
-    sav.S1 = 0.0;   // auto-computed: S1 = lambda/(4*epsilon) = 50
+    sav.S1 = 0.0;   // auto-computed: S1 = lambda_theta/(4*epsilon) = 12.5
     sav.S2 = 0.0;   // start with 0, increase if needed
 }
 
@@ -276,39 +277,62 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             if (params.validation_test == "square")
             {
                 // ============================================================
-                // Square test (Section 4.2, Fig 4.3):
-                // Pure CH relaxation — diamond → circle, NO magnetic, NO NS.
+                // Square test (Zhang, He & Yang, SIAM J. Sci. Comput. 43 (2021),
+                // Section 4.2, Fig 4.3):
                 //
-                // Domain: [0,1]², h = 1/64 (r=6 on 1-cell base grid)
-                // IC: diamond (L1 ball) radius 0.25 at center
-                // ε = 0.01, M(θ) = γε² with γ = 1 → mobility = ε² = 1e-4
-                // λ = 1/ε = 100 (for the energy functional)
+                // Diamond → circle relaxation. All fields active but zero
+                // applied field (h_a=0), zero initial velocity, zero initial M.
+                // Same parameters as MMS test (Eq 4.1).
+                //
+                // Domain: [0, 2π]², h = 2π/64 (r=6 on 1-cell base grid)
+                // IC: diamond at (π,π), R=1.75, θ = 0.5-0.5*tanh((d-R)/(1.2ε))
+                // ε = M = 0.05, ν_f = 2, ν_w = 1
+                // λ = μ = τ = β = χ₀ = 1
                 // dt = 1e-3, t_final = 5.0
                 // ============================================================
                 params.domain.x_min = 0.0;
-                params.domain.x_max = 1.0;
+                params.domain.x_max = 2.0 * M_PI;
                 params.domain.y_min = 0.0;
-                params.domain.y_max = 1.0;
+                params.domain.y_max = 2.0 * M_PI;
                 params.domain.initial_cells_x = 1;
                 params.domain.initial_cells_y = 1;
 
-                params.enable_magnetic = false;
-                params.enable_ns       = false;
-                params.enable_gravity  = false;
+                params.enable_magnetic = true;   // all fields ON
+                params.enable_ns       = true;
+                params.enable_gravity  = false;  // no gravity term in MMS params
 
+                // No applied field — h_a = 0
                 params.uniform_field.enabled = false;
                 params.dipoles.positions.clear();
                 params.dipoles.intensity_max = 0.0;
+                params.dipoles.ramp_slope = 0.0;
 
-                params.physics.epsilon  = 0.01;
-                params.physics.mobility = 1e-4;   // γε² with γ=1
-                params.physics.lambda   = 100.0;  // 1/ε
+                // Zhang Eq 4.1 / Section 4.2: same params as MMS
+                // Zhang uses Φ∈{0,1}. Convert: λ_θ = λ_Φ/4, M_θ = 4·M_Φ.
+                params.physics.epsilon  = 0.05;    // ε = 0.05
+                params.physics.lambda   = 0.25;    // Zhang λ=1 → θ-space: 1/4
+                params.physics.mobility = 0.2;     // Zhang M=0.05 → θ-space: 4×
+                params.physics.mu_0     = 1.0;     // μ = 1
+                params.physics.chi_0    = 1.0;     // χ₀ = 1
+                params.physics.tau_M    = 1.0;     // τ = 1
+                params.physics.beta     = 1.0;     // β = 1
+                params.physics.enable_beta_term = true;
+                params.physics.nu_water = 1.0;     // ν_w = 1
+                params.physics.nu_ferro = 2.0;     // ν_f = 2
+                params.physics.r        = 0.0;     // no density difference
+                params.physics.gravity_magnitude = 0.0;
 
                 params.time.dt        = 1e-3;
                 params.time.t_final   = 5.0;
                 params.time.max_steps = 5000;
 
-                params.mesh.initial_refinement = 6;  // h = 1/64
+                params.mesh.initial_refinement = 6;  // h = 2π/64 ≈ 0.098
+
+                params.use_algebraic_magnetization = false;
+                params.use_sav = true;
+                params.sav.C0 = 1.0;
+                params.sav.S1 = 0.0;   // auto-computed: S1 = lambda_theta/(4*epsilon) = 1.25
+                params.sav.S2 = 0.0;
             }
             else if (params.validation_test == "droplet")
             {
@@ -320,12 +344,10 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
                 //
                 // Domain: [0,1]², h = 1/128 (r=7)
                 // IC: circle at center, R = 0.1
-                // ε = 2e-3, M (mobility) = 2e-4, β = 1, λ = 1
-                // ν_f = ν_w = 1, ρ uniform
-                // μ₀ = 0.1, χ₀ = 2, τ_M = 1e-6 (fast relaxation)
-                // Applied field: 5 dipoles at y = -15, direction (0,1),
-                //   intensity α(t) = 1000*t (linear ramp, slope=1000)
-                // No gravity
+                // ε = 2e-3, M_Φ = 2e-4 (θ-space: 8e-4), β = 1, λ_Φ = 1 (θ-space: 0.25), τ = 1e-4
+                // ν_f = ν_w = 1, r = 0 (uniform density), no gravity
+                // μ₀ = 0.1, χ₀ = 2
+                // Applied field: 5 dipoles at y=-15, ramp slope=1000 (no cap)
                 // dt = 1e-3, t_final = 1.5
                 // ============================================================
                 params.domain.x_min = 0.0;
@@ -349,9 +371,9 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
                 params.dipoles.positions.push_back(dealii::Point<2>( 1.0, -15.0));
                 params.dipoles.positions.push_back(dealii::Point<2>( 1.5, -15.0));
                 params.dipoles.direction    = {0.0, 1.0};
-                params.dipoles.ramp_slope   = 1000.0;   // α(t) = 1000*t
+                params.dipoles.ramp_slope   = 1000.0;   // Zhang Eq 4.8: "slope of 1000"
                 params.dipoles.ramp_time    = 0.0;
-                params.dipoles.intensity_max = 0.0;      // unused with ramp_slope
+                params.dipoles.intensity_max = 0.0;      // no cap — Zhang doesn't specify one
 
                 params.physics.epsilon  = 2e-3;    // Zhang Eq 4.8
                 params.physics.chi_0    = 2.0;     // Zhang Eq 4.8
@@ -359,25 +381,28 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
                 params.physics.tau_M    = 1e-4;    // Zhang Eq 4.8: τ = 1e-4
                 params.physics.beta     = 1.0;     // Zhang Eq 4.8: β = 1
                 params.physics.enable_beta_term = true;
-                params.physics.mobility = 2e-4;    // Zhang Eq 4.8: M = 2e-4
-                params.physics.lambda   = 1.0;     // Zhang Eq 4.8
+                // Zhang Eq 4.8 specifies λ=1, M=2e-4 in Φ∈{0,1} convention.
+                // Code uses θ∈{-1,+1}: F(θ)=¼(θ²-1)² gives 4× surface energy
+                // vs G(Φ)=Φ²(1-Φ)². Convert: λ_θ = λ_Φ/4, M_θ = 4·M_Φ.
+                params.physics.lambda   = 0.25;    // Zhang λ=1 → θ-space: 1/4
+                params.physics.mobility = 8e-4;    // Zhang M=2e-4 → θ-space: 4×
                 params.physics.nu_water = 1.0;     // Zhang Eq 4.8: ν_w = 1
                 params.physics.nu_ferro = 1.0;     // Zhang Eq 4.8: ν_f = 1
                 params.physics.r        = 0.0;     // uniform density
                 params.physics.gravity_magnitude = 0.0;
 
-                params.time.dt        = 1e-3;      // Zhang Eq 4.8: τ = 1e-3
+                params.time.dt        = 1e-3;      // Zhang Eq 4.8: δt = 1e-3
                 params.time.t_final   = 1.5;
                 params.time.max_steps = 1500;
 
                 params.mesh.initial_refinement = 7;  // h = 1/128
 
                 // Zhang's SAV scheme — use FULL magnetization PDE
-                params.use_algebraic_magnetization = false;  // Zhang solves mag PDE
+                params.use_algebraic_magnetization = false;
                 params.use_sav = true;
                 params.sav.C0 = 1.0;
-                params.sav.S1 = 0.0;   // auto-computed: S1 = lambda/(4*epsilon) = 125
-                params.sav.S2 = 0.0;   // start with 0
+                params.sav.S1 = 0.0;   // auto-computed: S1 = lambda_theta/(4*epsilon) = 31.25
+                params.sav.S2 = 0.0;
             }
             else if (params.validation_test == "droplet_nofield")
             {
@@ -405,8 +430,9 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
                 params.physics.chi_0    = 2.0;
                 params.physics.mu_0     = 0.1;
                 params.physics.tau_M    = 1e-6;
-                params.physics.mobility = 2e-4;
-                params.physics.lambda   = 1.0;
+                // Zhang Φ∈{0,1} → θ-space: λ_θ = λ_Φ/4, M_θ = 4·M_Φ
+                params.physics.lambda   = 0.25;    // Zhang λ=1 → θ-space: 1/4
+                params.physics.mobility = 8e-4;    // Zhang M=2e-4 → θ-space: 4×
                 params.physics.nu_water = 1.0;
                 params.physics.nu_ferro = 1.0;
                 params.physics.r        = 0.0;
@@ -421,7 +447,7 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
                 params.use_algebraic_magnetization = true;
                 params.use_sav = true;
                 params.sav.C0 = 1.0;
-                params.sav.S1 = 0.0;
+                params.sav.S1 = 0.0;   // auto-computed: S1 = lambda_theta/(4*epsilon) = 31.25
                 params.sav.S2 = 0.0;
             }
             else

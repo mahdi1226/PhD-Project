@@ -124,6 +124,7 @@ public:
     void assemble_coupled(
         double dt,
         const dealii::TrilinosWrappers::MPI::Vector& theta_relevant,
+        const dealii::TrilinosWrappers::MPI::Vector& theta_old_relevant,
         const dealii::DoFHandler<dim>&               theta_dof_handler,
         const dealii::TrilinosWrappers::MPI::Vector& psi_relevant,
         const dealii::DoFHandler<dim>&               psi_dof_handler,
@@ -149,6 +150,7 @@ public:
     void assemble_coupled_algebraic_M(
         double dt,
         const dealii::TrilinosWrappers::MPI::Vector& theta_relevant,
+        const dealii::TrilinosWrappers::MPI::Vector& theta_old_relevant,
         const dealii::DoFHandler<dim>&               theta_dof_handler,
         const dealii::TrilinosWrappers::MPI::Vector& psi_relevant,
         const dealii::DoFHandler<dim>&               psi_dof_handler,
@@ -280,6 +282,17 @@ public:
     Diagnostics compute_diagnostics(double dt) const;
 
     // ========================================================================
+    // MMS source injection — for coupled MMS testing
+    //
+    // Callback signature: (point, time) → f(x,t) ∈ ℝ^dim
+    // Added to the RHS in assemble_coupled() alongside physical forces.
+    // Production code never calls this — only MMS tests.
+    // ========================================================================
+    using MmsSourceFunction = std::function<
+        dealii::Tensor<1, dim>(const dealii::Point<dim>&, double)>;
+    void set_mms_source(MmsSourceFunction source);
+
+    // ========================================================================
     // Direct access to internals (for MMS tests / coupled testing)
     // ========================================================================
     const dealii::IndexSet& get_ux_locally_owned() const   { return ux_locally_owned_; }
@@ -404,6 +417,11 @@ private:
     // Last solver result
     // ========================================================================
     SolverInfo last_solve_info_;
+
+    // ========================================================================
+    // MMS source callback (set via set_mms_source, used by assemble_coupled)
+    // ========================================================================
+    MmsSourceFunction mms_source_;
 
     // ========================================================================
     // Private helpers (implemented in navier_stokes_setup.cc)

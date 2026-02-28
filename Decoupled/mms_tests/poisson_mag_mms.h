@@ -78,13 +78,15 @@ struct PoissonMagMMSResult
     double h = 0.0;
 
     // Poisson errors
-    double phi_L2 = 0.0;
-    double phi_H1 = 0.0;
+    double phi_L2   = 0.0;
+    double phi_H1   = 0.0;
+    double phi_Linf = 0.0;
 
     // Magnetization errors
-    double Mx_L2 = 0.0;
-    double My_L2 = 0.0;
-    double M_L2  = 0.0;
+    double Mx_L2  = 0.0;
+    double My_L2  = 0.0;
+    double M_L2   = 0.0;
+    double M_Linf = 0.0;
 
     // Picard iterations (last time step)
     unsigned int picard_iters = 0;
@@ -103,19 +105,25 @@ struct PoissonMagMMSConvergenceResult
     // Computed rates (index 0 = 0, meaningful from index 1)
     std::vector<double> phi_L2_rate;
     std::vector<double> phi_H1_rate;
+    std::vector<double> phi_Linf_rate;
     std::vector<double> M_L2_rate;
+    std::vector<double> M_Linf_rate;
 
     // Expected rates
-    double expected_phi_L2_rate = 3.0;   // Q2 → O(h³)
-    double expected_phi_H1_rate = 2.0;   // Q2 → O(h²)
-    double expected_M_L2_rate   = 2.0;   // DG-Q1 → O(h²)
+    double expected_phi_L2_rate   = 3.0;   // Q2 → O(h³)
+    double expected_phi_H1_rate   = 2.0;   // Q2 → O(h²)
+    double expected_phi_Linf_rate = 3.0;   // Q2 → O(h³)
+    double expected_M_L2_rate     = 2.0;   // DG-Q1 → O(h²)
+    double expected_M_Linf_rate   = 2.0;   // DG-Q1 → O(h²)
 
     void compute_rates()
     {
         const size_t n = results.size();
         phi_L2_rate.assign(n, 0.0);
         phi_H1_rate.assign(n, 0.0);
+        phi_Linf_rate.assign(n, 0.0);
         M_L2_rate.assign(n, 0.0);
+        M_Linf_rate.assign(n, 0.0);
 
         for (size_t i = 1; i < n; ++i)
         {
@@ -128,9 +136,11 @@ struct PoissonMagMMSConvergenceResult
                 return std::log(e_c / e_f) / std::log(h_c / h_f);
             };
 
-            phi_L2_rate[i] = rate(f.phi_L2, c.phi_L2, f.h, c.h);
-            phi_H1_rate[i] = rate(f.phi_H1, c.phi_H1, f.h, c.h);
-            M_L2_rate[i]   = rate(f.M_L2, c.M_L2, f.h, c.h);
+            phi_L2_rate[i]   = rate(f.phi_L2,   c.phi_L2,   f.h, c.h);
+            phi_H1_rate[i]   = rate(f.phi_H1,   c.phi_H1,   f.h, c.h);
+            phi_Linf_rate[i] = rate(f.phi_Linf, c.phi_Linf, f.h, c.h);
+            M_L2_rate[i]     = rate(f.M_L2,     c.M_L2,     f.h, c.h);
+            M_Linf_rate[i]   = rate(f.M_Linf,   c.M_Linf,   f.h, c.h);
         }
     }
 
@@ -138,11 +148,17 @@ struct PoissonMagMMSConvergenceResult
     {
         if (results.size() < 2) return false;
 
+        // L∞ norms degrade more at fine meshes (solver tolerances,
+        // Picard convergence effects), so use a wider tolerance
+        const double tol_Linf = tol + 0.2;
+
         for (size_t i = 1; i < results.size(); ++i)
         {
-            if (phi_L2_rate[i] < expected_phi_L2_rate - tol) return false;
-            if (phi_H1_rate[i] < expected_phi_H1_rate - tol) return false;
-            if (M_L2_rate[i]   < expected_M_L2_rate - tol)   return false;
+            if (phi_L2_rate[i]   < expected_phi_L2_rate   - tol)      return false;
+            if (phi_H1_rate[i]   < expected_phi_H1_rate   - tol)      return false;
+            if (phi_Linf_rate[i] < expected_phi_Linf_rate - tol_Linf) return false;
+            if (M_L2_rate[i]     < expected_M_L2_rate     - tol)      return false;
+            if (M_Linf_rate[i]   < expected_M_Linf_rate   - tol_Linf) return false;
         }
         return true;
     }
@@ -155,8 +171,10 @@ struct PoissonMagMMSConvergenceResult
                   << std::setw(12) << "φ_L2"
                   << std::setw(8) << "rate"
                   << std::setw(12) << "φ_H1"
+                  << std::setw(8) << "rate"
+                  << std::setw(12) << "φ_L∞"
                   << std::setw(8) << "rate" << "\n";
-        std::cout << std::string(57, '-') << "\n";
+        std::cout << std::string(77, '-') << "\n";
 
         for (size_t i = 0; i < results.size(); ++i)
         {
@@ -167,7 +185,9 @@ struct PoissonMagMMSConvergenceResult
                       << std::setw(8) << std::fixed << std::setprecision(2)
                       << phi_L2_rate[i]
                       << std::setw(12) << std::scientific << results[i].phi_H1
-                      << std::setw(8) << std::fixed << phi_H1_rate[i] << "\n";
+                      << std::setw(8) << std::fixed << phi_H1_rate[i]
+                      << std::setw(12) << std::scientific << results[i].phi_Linf
+                      << std::setw(8) << std::fixed << phi_Linf_rate[i] << "\n";
         }
 
         std::cout << "\n--- Magnetization (M) ---\n";
@@ -175,10 +195,12 @@ struct PoissonMagMMSConvergenceResult
                   << std::setw(12) << "h"
                   << std::setw(12) << "M_L2"
                   << std::setw(8) << "rate"
+                  << std::setw(12) << "M_L∞"
+                  << std::setw(8) << "rate"
                   << std::setw(12) << "Mx_L2"
                   << std::setw(12) << "My_L2"
                   << std::setw(10) << "time(s)" << "\n";
-        std::cout << std::string(71, '-') << "\n";
+        std::cout << std::string(91, '-') << "\n";
 
         for (size_t i = 0; i < results.size(); ++i)
         {
@@ -188,6 +210,9 @@ struct PoissonMagMMSConvergenceResult
                       << std::setw(12) << results[i].M_L2
                       << std::setw(8) << std::fixed << std::setprecision(2)
                       << M_L2_rate[i]
+                      << std::setw(12) << std::scientific << results[i].M_Linf
+                      << std::setw(8) << std::fixed << std::setprecision(2)
+                      << M_Linf_rate[i]
                       << std::setw(12) << std::scientific << results[i].Mx_L2
                       << std::setw(12) << results[i].My_L2
                       << std::setw(10) << std::fixed << std::setprecision(1)
@@ -205,7 +230,9 @@ struct PoissonMagMMSConvergenceResult
 
         file << "refinement,h,n_dofs,"
              << "phi_L2,phi_L2_rate,phi_H1,phi_H1_rate,"
-             << "M_L2,M_L2_rate,Mx_L2,My_L2,"
+             << "phi_Linf,phi_Linf_rate,"
+             << "M_L2,M_L2_rate,M_Linf,M_Linf_rate,"
+             << "Mx_L2,My_L2,"
              << "picard_iters,time_s\n";
 
         for (size_t i = 0; i < results.size(); ++i)
@@ -215,7 +242,9 @@ struct PoissonMagMMSConvergenceResult
                  << results[i].n_dofs << ","
                  << results[i].phi_L2 << "," << phi_L2_rate[i] << ","
                  << results[i].phi_H1 << "," << phi_H1_rate[i] << ","
+                 << results[i].phi_Linf << "," << phi_Linf_rate[i] << ","
                  << results[i].M_L2 << "," << M_L2_rate[i] << ","
+                 << results[i].M_Linf << "," << M_Linf_rate[i] << ","
                  << results[i].Mx_L2 << "," << results[i].My_L2 << ","
                  << results[i].picard_iters << ","
                  << results[i].time_s << "\n";
