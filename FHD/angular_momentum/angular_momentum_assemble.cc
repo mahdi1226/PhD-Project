@@ -176,7 +176,9 @@ void AngularMomentumSubsystem<dim>::assemble(
                     w_old_disc = w_old_vals[q];
                 f_mms = mms_source_(x_q, current_time,
                                      current_time - dt,
-                                     j, c1, nu_r, w_old_disc);
+                                     j, c1, nu_r, w_old_disc,
+                                     U_old, div_U_old,
+                                     include_convection);
             }
 
             for (unsigned int i = 0; i < dpc; ++i)

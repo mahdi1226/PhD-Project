@@ -107,7 +107,8 @@ dealii::Tensor<1, dim> compute_mag_mms_source_coupled(
     const dealii::Tensor<1, dim>& H_discrete,
     const dealii::Tensor<1, dim>& /*U*/,
     double /*div_U*/,
-    const dealii::Tensor<1, dim>& /*M_old_disc*/)
+    const dealii::Tensor<1, dim>& /*M_old_disc*/,
+    double /*w_disc*/)
 {
     const double tau = t_new - t_old;
 

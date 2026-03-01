@@ -171,10 +171,14 @@ static NSAngMomMMSResult run_single_level(
         [](const dealii::Point<dim>& p,
            double t_new, double t_old,
            double j_micro, double c1, double nu_r_am,
-           double w_old_disc)
+           double w_old_disc,
+           const dealii::Tensor<1, dim>& U_old_disc,
+           double div_U_old_disc,
+           bool include_convection)
         {
             return compute_angmom_mms_source_coupled<dim>(
-                p, t_new, t_old, j_micro, c1, nu_r_am, w_old_disc);
+                p, t_new, t_old, j_micro, c1, nu_r_am, w_old_disc,
+                U_old_disc, div_U_old_disc, include_convection);
         });
 
     // ----------------------------------------------------------------

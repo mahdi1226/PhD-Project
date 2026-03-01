@@ -123,7 +123,7 @@
 
 **Impact**: Negligible — the direct solver produces correct results, just slower. At ref 6 the conditioning improves and CG works. At ref 7 this should not be an issue.
 
-### 13. Missing Spin-Magnetization Coupling (M × W) — CRITICAL, UNRESOLVED
+### 13. Missing Spin-Magnetization Coupling (M × W) — RESOLVED
 
 **Found during**: Paper audit (full comparison of Eq. 52d against assembler).
 
@@ -132,46 +132,30 @@
 (δM^k/τ, Z) − b_h^m(U^k, Z, M^k) + σ a_h(M^k, Z) + (M^k × W^k, Z) + (1/T)(M^k, Z) = (κ₀/T)(H^k, Z)
 ```
 
-**Missing term**: `(M^k × W^k, Z)` — the spin-magnetization coupling.
+**Fix**: Treated explicitly (M^{k-1} instead of M^k) to preserve the shared-matrix approach where Mx and My use the same system matrix. The term moves to the RHS as `-(M_old × W, Z)`:
+- Mx RHS contribution: `-w * My_old`
+- My RHS contribution: `+w * Mx_old`
 
-This comes from the continuous equation (1d): `m_t + (u·∇)m − σΔm = w × m − (1/T)(m − κ₀h)`.
+**Implementation**:
+1. Extended `magnetization.h` `assemble()` with optional `w_relevant` + `w_dof_handler`
+2. CG-to-DG evaluation: w (CG Q2) evaluated at DG quadrature points via `cell->as_dof_handler_iterator()`
+3. Extended MmsSourceFunction typedef to include `w_disc` parameter
+4. Updated all 6 MMS source functions: standalone/pairwise (w ignored), full coupled (w used)
+5. Full coupled MMS source: `f[0] += w_disc * My_old_disc`, `f[1] -= w_disc * Mx_old_disc`
+6. Driver passes `w_old_rel` and `&am.get_dof_handler()` to `mag.assemble()`
+7. All MMS convergence rates preserved (M_L2=2.92, all others unchanged)
 
-In 2D, `M × W = w·(My, −Mx)` where w is the scalar angular velocity (pseudoscalar in 3D).
-
-**Our assembler**: Only has mass + transport + diffusion + relaxation. The `w` field is never passed to or used in `magnetization_assemble.cc`.
-
-**Why MMS didn't catch it**: The MMS source function also omits this term — so both assembler and source are consistently missing it, and convergence rates pass by construction.
-
-**Physical meaning**: Angular velocity rotates the local magnetization. Without this term, the spin-magnetization feedback loop is broken — AngMom receives torque from M×H but M doesn't get rotated by w.
-
-**Impact estimate**: For Section 7 experiments with T_relax = 10^{-4}, the relaxation term `(1/T)m ≈ 10^4 m` dominates the LHS. The `M × W` term is `O(w·M)`. For approach 1 (w ≈ 0.01), this is `O(0.01·M)` vs `O(10^4·M)` from relaxation — negligible. For approach 2 with larger w, still likely small relative to relaxation. But this must be verified.
-
-**Resolution needed**:
-1. Add `w_relevant` as input to `magnetization_assemble.cc`
-2. In cell loop: evaluate `w` at DG quadrature points via CG FEValues
-3. Add LHS contribution: `+w_q * My_j * Zx_i − w_q * Mx_j * Zy_i` (implicit in M^k)
-   — OR RHS contribution: `+w_q * My_old * Zx_i − w_q * Mx_old * Zy_i` (explicit in M^{k-1})
-4. Paper uses M^k (implicit): the term is on the LHS of Eq. 52d, meaning it multiplies the unknown M^k. Since Mx and My share one matrix, this couples them — the term `w·(My, −Mx)` mixes Mx and My. This means the single shared matrix approach may need modification (separate Mx/My systems or a coupled 2-component system).
-5. Update MMS source to include the w × m contribution
-6. Re-verify coupled MMS convergence rates
-
-### 14. Angular Momentum Convection Disabled — MODERATE, UNRESOLVED
+### 14. Angular Momentum Convection Disabled — RESOLVED
 
 **Found during**: Paper audit (Eq. 52c vs driver).
 
 **Paper Eq. 52c** (p.11): `j(δW^k/τ, X) + j b_h(U^k, W^k, X) + c₁(∇W^k, ∇X) + ... = ...`
 
-Both schemes (52) and (78) include the angular momentum convection `j b_h(U^k, W^k, X)`.
-
-**Our code**: `include_convection = false` in fhd_driver.cc (line 600).
-
-**Impact**: For approach 1 (U≈0.01), negligible. For approach 2 (U≈1-5), potentially significant.
-
-**Resolution needed**:
-1. Change `include_convection` to `true` for angular momentum in the driver
-2. The infrastructure already exists (the assembler supports it)
-3. Update MMS source if needed (it already supports convection flag)
-4. Re-verify coupled MMS convergence rates
+**Fix**: Changed `include_convection` from `false` to `true` for angular momentum in both driver and full coupled MMS test. Extended AngMom MMS source functions (4 files) to accept `U_old_disc`, `div_U_old_disc`, and `include_convection` flag. Convection source uses:
+```
+j * [(U_old_disc · ∇)w*(t_new) + 0.5 * div_U_old_disc * w*(t_new)]
+```
+All MMS convergence rates preserved (w_L2=3.09, w_H1=2.06)
 
 ## Potential Future Issues
 

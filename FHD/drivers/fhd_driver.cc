@@ -518,13 +518,15 @@ int main(int argc, char* argv[])
             poisson.solve();
             poisson.update_ghosts();
 
-            // Step B: Magnetization -> M_raw using phi, u_old
+            // Step B: Magnetization -> M_raw using phi, u_old, w_old
+            //   Includes spin-magnetization coupling: -(M_old × W, z) on RHS
             mag.assemble(Mx_old, My_old,
                          poisson.get_solution_relevant(),
                          poisson.get_dof_handler(),
                          ux_old_rel, uy_old_rel,
                          ns.get_ux_dof_handler(),
-                         dt, current_time);
+                         dt, current_time,
+                         w_old_rel, &am.get_dof_handler());
             mag.solve();
             mag.update_ghosts();
 
@@ -591,13 +593,14 @@ int main(int argc, char* argv[])
         ns.update_ghosts();
 
         // ============================================================
-        // Phase 3: AngMom with curl coupling + magnetic torque
+        // Phase 3: AngMom with curl coupling + magnetic torque + convection
+        //   Paper Eq. 52c: j b_h(U^k, W^k, X) is included
         // ============================================================
         am.assemble(w_old_rel,
                     dt, current_time,
                     ns.get_ux_relevant(), ns.get_uy_relevant(),
                     ns.get_ux_dof_handler(),
-                    /*include_convection=*/false,
+                    /*include_convection=*/true,
                     Mx_relaxed, My_relaxed,
                     &mag.get_dof_handler(),
                     poisson.get_solution_relevant(),

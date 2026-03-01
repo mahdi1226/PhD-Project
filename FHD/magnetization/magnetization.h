@@ -1,12 +1,17 @@
 // ============================================================================
 // magnetization/magnetization.h - Magnetization Subsystem (Public Facade)
 //
-// PAPER EQUATION 42c (Nochetto, Salgado & Tomas, arXiv:1511.04381):
+// PAPER EQUATION 52d (Nochetto, Salgado & Tomas, arXiv:1511.04381):
 //
-//   (m^k/τ, z) + σ·a_h^m(m^k, z) + B_h^m(u^{k-1}; m^k, z) + (1/𝒯)(m^k, z)
+//   (m^k/τ, z) + σ·a_h^m(m^k, z) + B_h^m(u^{k-1}; m^k, z)
+//     + (m^k × w^k, z) + (1/𝒯)(m^k, z)
 //     = (1/𝒯)(κ₀·h^k, z) + (m^{k-1}/τ, z) + f_mms
 //
-// where h^k = h_a^k + ∇φ^k is the total magnetic field.
+// The (m × w) spin-magnetization coupling is treated EXPLICITLY:
+//   (m_old × w, z) moved to RHS → -(m_old × w, z) on RHS
+//   In 2D: m × w = (w·My, -w·Mx), so RHS gets (-w·My_old, +w·Mx_old)
+//
+// where h^k = ∇φ^k is the total magnetic field (h_a encoded via Poisson).
 //
 // FE space: M_h = DG [Q_ℓ]^d (discontinuous Galerkin, componentwise)
 //   Mx and My solved as separate scalar DG systems sharing one DoFHandler.
@@ -65,14 +70,16 @@ public:
     // ========================================================================
     // Assemble — matrix + RHS (call each Picard iteration / timestep)
     //
-    // Eq. 42c: LHS has mass + diffusion + transport + relaxation
-    //          RHS has old-time mass + relaxation source + MMS
+    // Eq. 52d: LHS has mass + diffusion + transport + relaxation
+    //          RHS has old-time mass + relaxation source + spin coupling + MMS
     //
     // Inputs from other subsystems:
     //   phi_relevant, phi_dof_handler: potential from Poisson (CG)
     //   ux_relevant, uy_relevant, u_dof_handler: velocity from NS (CG)
     //   dt: time step size
     //   current_time: for h_a ramp and MMS time dependence
+    //   w_relevant, w_dof_handler: angular velocity from AngMom (CG)
+    //     (optional: if empty/nullptr, spin-magnetization coupling is skipped)
     //
     // If velocity is empty (size 0), assembles without transport (standalone).
     // ========================================================================
@@ -85,7 +92,10 @@ public:
         const dealii::TrilinosWrappers::MPI::Vector& uy_relevant,
         const dealii::DoFHandler<dim>& u_dof_handler,
         double dt,
-        double current_time);
+        double current_time,
+        const dealii::TrilinosWrappers::MPI::Vector& w_relevant
+            = dealii::TrilinosWrappers::MPI::Vector(),
+        const dealii::DoFHandler<dim>* w_dof_handler = nullptr);
 
     // ========================================================================
     // Solve — call after assemble
@@ -103,10 +113,12 @@ public:
     // MMS source injection
     //
     // Source callback for MMS testing. Signature:
-    //   f(point, t_new, t_old, tau_M, kappa_0, H_disc, U, div_U, M_old_disc)
+    //   f(point, t_new, t_old, tau_M, kappa_0, H_disc, U, div_U, M_old_disc,
+    //     w_disc)
     //   → returns Tensor<1,dim> = (f_Mx, f_My)
     //
-    // CRITICAL: Uses discrete H and M_old (from assembly), not analytical.
+    // CRITICAL: Uses discrete H, M_old, and w (from assembly), not analytical.
+    // w_disc: angular velocity at quadrature point (for spin-mag coupling).
     // ========================================================================
     using MmsSourceFunction = std::function<
         dealii::Tensor<1, dim>(const dealii::Point<dim>&,
@@ -114,7 +126,8 @@ public:
                                const dealii::Tensor<1, dim>&,
                                const dealii::Tensor<1, dim>&,
                                double,
-                               const dealii::Tensor<1, dim>&)>;
+                               const dealii::Tensor<1, dim>&,
+                               double)>;
     void set_mms_source(MmsSourceFunction source);
 
     // ========================================================================

@@ -166,7 +166,10 @@ double compute_angmom_mms_source_coupled(
     const dealii::Point<dim>& p,
     double t_new, double t_old,
     double j_micro, double c1, double nu_r,
-    double /*w_old_disc*/)
+    double /*w_old_disc*/,
+    const dealii::Tensor<1, dim>& /*U_old_disc*/,
+    double /*div_U_old_disc*/,
+    bool /*include_convection*/)
 {
     const double tau = t_new - t_old;
     const double w_new = angular_momentum_exact<dim>(p, t_new);
@@ -183,6 +186,8 @@ double compute_angmom_mms_source_coupled(
 
     // Curl coupling: -2ν_r · curl(u*(t_new))
     f -= 2.0 * nu_r * curl_scalar_u_exact<dim>(p, t_new);
+
+    // Note: Convection not included here (pairwise test uses include_convection=false)
 
     return f;
 }

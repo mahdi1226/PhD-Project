@@ -200,10 +200,15 @@ static FullCoupledMMSResult run_single_level(
         [mu_0](const Point<dim>& p,
                double t_new, double t_old,
                double j_micro, double c1, double nu_r_am,
-               double w_old_disc)
+               double w_old_disc,
+               const Tensor<1, dim>& U_old_disc,
+               double div_U_old_disc,
+               bool include_convection)
         {
             return compute_full_angmom_mms_source<dim>(
-                p, t_new, t_old, j_micro, c1, nu_r_am, mu_0, w_old_disc);
+                p, t_new, t_old, j_micro, c1, nu_r_am, mu_0,
+                w_old_disc, U_old_disc, div_U_old_disc,
+                include_convection);
         });
 
     // ----------------------------------------------------------------
@@ -307,13 +312,14 @@ static FullCoupledMMSResult run_single_level(
             poisson.solve();
             poisson.update_ghosts();
 
-            // Step B: Magnetization → M_raw^k using φ^k, u_old
+            // Step B: Magnetization → M_raw^k using φ^k, u_old, w_old
             mag.assemble(Mx_old, My_old,
                          poisson.get_solution_relevant(),
                          poisson.get_dof_handler(),
                          ux_old_rel, uy_old_rel,
                          ns.get_ux_dof_handler(),
-                         dt, current_time);
+                         dt, current_time,
+                         w_old_rel, &am.get_dof_handler());
             mag.solve();
             mag.update_ghosts();
 
@@ -384,14 +390,14 @@ static FullCoupledMMSResult run_single_level(
         ns.update_ghosts();
 
         // ============================================================
-        // Phase 3: AngMom with curl coupling + magnetic torque
+        // Phase 3: AngMom with curl coupling + magnetic torque + convection
         //   Inputs: w_old, u_new, M_converged, φ_converged
         // ============================================================
         am.assemble(w_old_rel,
                     dt, current_time,
                     ns.get_ux_relevant(), ns.get_uy_relevant(),
                     ns.get_ux_dof_handler(),
-                    /*include_convection=*/false,
+                    /*include_convection=*/true,
                     Mx_relaxed, My_relaxed,
                     &mag.get_dof_handler(),
                     poisson.get_solution_relevant(),

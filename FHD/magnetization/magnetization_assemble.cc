@@ -1,10 +1,15 @@
 // ============================================================================
 // magnetization/magnetization_assemble.cc - DG Assembly
 //
-// PAPER EQUATION 42c (Nochetto, Salgado & Tomas, arXiv:1511.04381):
+// PAPER EQUATION 52d (Nochetto, Salgado & Tomas, arXiv:1511.04381):
 //
-//   (m^k/τ, z) + σ·a_h^m(m^k, z) + B_h^m(u^{k-1}; m^k, z) + (1/𝒯)(m^k, z)
+//   (m^k/τ, z) + σ·a_h^m(m^k, z) + B_h^m(u^{k-1}; m^k, z)
+//     + (m^k × w^k, z) + (1/𝒯)(m^k, z)
 //     = (1/𝒯)(κ₀·h^k, z) + (m^{k-1}/τ, z) + f_mms
+//
+// The (m × w) spin-magnetization coupling is treated EXPLICITLY:
+//   moved to RHS as -(m_old × w, z).
+//   In 2D: m × w = (w·My, -w·Mx), so RHS gets (-w·My_old, +w·Mx_old).
 //
 // DG forms:
 //   a_h^m (Eq. 63-65): Symmetric interior penalty for diffusion
@@ -18,6 +23,7 @@
 // RHS (separate for Mx, My):
 //   (1/τ)(m^{k-1}, z)         — old-time mass
 //   (1/𝒯)(κ₀·h^k, z)         — relaxation source (h = ∇φ, total field)
+//   -(m_old × w, z)           — spin-magnetization coupling (explicit)
 //   (f_mms, z)                — MMS source (if enabled)
 //
 // Reference: Nochetto, Salgado & Tomas, arXiv:1511.04381 (2015)
@@ -43,7 +49,9 @@ void MagnetizationSubsystem<dim>::assemble(
     const dealii::TrilinosWrappers::MPI::Vector& uy_relevant,
     const dealii::DoFHandler<dim>& u_dof_handler,
     double dt,
-    double current_time)
+    double current_time,
+    const dealii::TrilinosWrappers::MPI::Vector& w_relevant,
+    const dealii::DoFHandler<dim>* w_dof_handler)
 {
     dealii::Timer timer;
     timer.start();
@@ -59,6 +67,7 @@ void MagnetizationSubsystem<dim>::assemble(
 
     const bool has_velocity = (ux_relevant.size() > 0);
     const bool has_phi = (phi_relevant.size() > 0);
+    const bool has_w = (w_relevant.size() > 0 && w_dof_handler != nullptr);
 
     const unsigned int degree = fe_.degree;
     const dealii::QGauss<dim> quadrature(degree + 1);
@@ -111,6 +120,16 @@ void MagnetizationSubsystem<dim>::assemble(
             dealii::update_values);
     }
 
+    // FEValues for angular velocity w (CG) — evaluate w at DG quadrature points
+    // Needed for spin-magnetization coupling: -(M_old × W, z) on RHS
+    std::unique_ptr<dealii::FEValues<dim>> fe_values_w;
+    if (has_w)
+    {
+        fe_values_w = std::make_unique<dealii::FEValues<dim>>(
+            w_dof_handler->get_fe(), quadrature,
+            dealii::update_values);
+    }
+
     // ========================================================================
     // Local storage
     // ========================================================================
@@ -129,6 +148,9 @@ void MagnetizationSubsystem<dim>::assemble(
     std::vector<dealii::Tensor<1, dim>> grad_phi_vals(n_q_points);
     std::vector<double> ux_vals(n_q_points), uy_vals(n_q_points);
     std::vector<dealii::Tensor<1, dim>> grad_ux_vals(n_q_points), grad_uy_vals(n_q_points);
+
+    // Angular velocity buffer
+    std::vector<double> w_vals(n_q_points);
 
     // Face velocity buffers
     std::vector<double> ux_face_vals(n_face_q_points);
@@ -178,6 +200,14 @@ void MagnetizationSubsystem<dim>::assemble(
             fe_values_U->get_function_gradients(uy_relevant, grad_uy_vals);
         }
 
+        // Get angular velocity w (CG) at DG quadrature points
+        if (has_w)
+        {
+            const auto w_cell = cell->as_dof_handler_iterator(*w_dof_handler);
+            fe_values_w->reinit(w_cell);
+            fe_values_w->get_function_values(w_relevant, w_vals);
+        }
+
         for (unsigned int q = 0; q < n_q_points; ++q)
         {
             const auto& x_q = fe_values_M.quadrature_point(q);
@@ -198,6 +228,11 @@ void MagnetizationSubsystem<dim>::assemble(
                 div_U = grad_ux_vals[q][0] + grad_uy_vals[q][1];
             }
 
+            // Angular velocity at quadrature point
+            double w_q = 0.0;
+            if (has_w)
+                w_q = w_vals[q];
+
             for (unsigned int i = 0; i < dpc; ++i)
             {
                 const double z_i = fe_values_M.shape_value(i, q);
@@ -210,6 +245,14 @@ void MagnetizationSubsystem<dim>::assemble(
                 cell_rhs_y(i) += (old_coeff * My_old_vals[q] * z_i
                                    + relax_coeff * H[1] * z_i) * JxW;
 
+                // Spin-magnetization coupling: -(M_old × W, z) on RHS
+                // In 2D: M × W = (w·My, -w·Mx), so -(M×W) = (-w·My, +w·Mx)
+                if (has_w)
+                {
+                    cell_rhs_x(i) += (-w_q * My_old_vals[q]) * z_i * JxW;
+                    cell_rhs_y(i) += (+w_q * Mx_old_vals[q]) * z_i * JxW;
+                }
+
                 // MMS source
                 if (params_.enable_mms && mms_source_)
                 {
@@ -219,7 +262,7 @@ void MagnetizationSubsystem<dim>::assemble(
                     const auto f = mms_source_(x_q, current_time,
                                                current_time - dt,
                                                tau_M, kappa_0, H, U, div_U,
-                                               M_old_q);
+                                               M_old_q, w_q);
                     cell_rhs_x(i) += f[0] * z_i * JxW;
                     cell_rhs_y(i) += f[1] * z_i * JxW;
                 }
@@ -418,7 +461,9 @@ template void MagnetizationSubsystem<2>::assemble(
     const dealii::TrilinosWrappers::MPI::Vector&,
     const dealii::TrilinosWrappers::MPI::Vector&,
     const dealii::DoFHandler<2>&,
-    double, double);
+    double, double,
+    const dealii::TrilinosWrappers::MPI::Vector&,
+    const dealii::DoFHandler<2>*);
 
 template void MagnetizationSubsystem<3>::assemble(
     const dealii::TrilinosWrappers::MPI::Vector&,
@@ -428,4 +473,6 @@ template void MagnetizationSubsystem<3>::assemble(
     const dealii::TrilinosWrappers::MPI::Vector&,
     const dealii::TrilinosWrappers::MPI::Vector&,
     const dealii::DoFHandler<3>&,
-    double, double);
+    double, double,
+    const dealii::TrilinosWrappers::MPI::Vector&,
+    const dealii::DoFHandler<3>*);

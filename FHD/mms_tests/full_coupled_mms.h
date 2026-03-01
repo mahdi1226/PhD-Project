@@ -245,20 +245,26 @@ dealii::Tensor<1, dim> compute_full_ns_mms_source(
 }
 
 // ============================================================================
-// FULL ANGMOM MMS SOURCE (Eq. 42f with ALL coupling)
+// FULL ANGMOM MMS SOURCE (Eq. 52c with ALL coupling + convection)
 //
 // f_w = j(w*_new - w_old_disc)/tau - c1 Delta w* + 4 nu_r w*
+//       + [j convection: (U_old_disc · ∇)w* + 0.5 div_U_old_disc * w*]
 //       - 2 nu_r curl(u*(t_new))
 //       - mu_0 (m*(t_new) x h*(t_new))
 //
 // CRITICAL: Uses discrete w_old_disc (from assembly) in time derivative.
+// Convection uses discrete U_old_disc and div_U_old_disc to match
+// the skew-symmetric form j * b_h(u_old; w, z).
 // ============================================================================
 template <int dim>
 double compute_full_angmom_mms_source(
     const dealii::Point<dim>& p,
     double t_new, double t_old,
     double j_micro, double c1, double nu_r, double mu_0,
-    double w_old_disc)
+    double w_old_disc,
+    const dealii::Tensor<1, dim>& U_old_disc,
+    double div_U_old_disc,
+    bool include_convection)
 {
     const double tau = t_new - t_old;
     const double w_new = angular_momentum_exact<dim>(p, t_new);
@@ -271,6 +277,15 @@ double compute_full_angmom_mms_source(
 
     // Reaction: 4 nu_r w*
     f += 4.0 * nu_r * w_new;
+
+    // Convection: j * [(U_old_disc · ∇)w* + 0.5 div_U_old_disc * w*]
+    // Matches the assembly's skew-symmetric form j * b_h(u_old; w, z)
+    if (include_convection)
+    {
+        const auto grad_w = angular_momentum_exact_gradient<dim>(p, t_new);
+        f += j_micro * (U_old_disc[0] * grad_w[0] + U_old_disc[1] * grad_w[1]
+                        + 0.5 * div_U_old_disc * w_new);
+    }
 
     // Curl coupling: -2 nu_r curl(u*(t_new))
     f -= 2.0 * nu_r * curl_u_scalar<dim>(p, t_new);
@@ -303,14 +318,18 @@ double compute_full_poisson_mms_source(const dealii::Point<dim>& p, double t)
 }
 
 // ============================================================================
-// FULL MAGNETIZATION MMS SOURCE (Eq. 42c with velocity transport)
+// FULL MAGNETIZATION MMS SOURCE (Eq. 52d with velocity transport + spin coupling)
 //
-// f_M = (M* - M*_old)/tau + M*/T_relax - (kappa_0/T_relax) H_disc
-//       + (u*_old . grad) M*
+// f_M = (M* - M_old_disc)/tau + M*/T_relax - (kappa_0/T_relax) H_disc
+//       + transport terms + spin-magnetization coupling
 //
 // Transport (u*.grad)M* uses analytical velocity and M gradient.
 // Assembly adds discrete transport B_h^m(U_disc; M, z) on LHS;
 // the pollution from u* vs U_disc converges.
+//
+// Spin-magnetization: The assembler adds -(M_old × W, z) on the RHS
+// (explicit treatment). The MMS source must include +(M_old_disc × W_disc)
+// to compensate. In 2D: M_old × W = (w·My_old, -w·Mx_old).
 //
 // Note: div(u*) = 0 so the 1/2(div u)M skew term vanishes analytically.
 // ============================================================================
@@ -322,7 +341,8 @@ dealii::Tensor<1, dim> compute_full_mag_mms_source(
     const dealii::Tensor<1, dim>& H_discrete,
     const dealii::Tensor<1, dim>& U_disc,
     double div_U_disc,
-    const dealii::Tensor<1, dim>& M_old_disc)
+    const dealii::Tensor<1, dim>& M_old_disc,
+    double w_disc)
 {
     const double tau = t_new - t_old;
 
@@ -350,6 +370,12 @@ dealii::Tensor<1, dim> compute_full_mag_mms_source(
           + 0.5 * div_U_disc * M_new[0];
     f[1] += U_disc[0] * gMy[0] + U_disc[1] * gMy[1]
           + 0.5 * div_U_disc * M_new[1];
+
+    // Spin-magnetization coupling: +(M_old_disc × W_disc)
+    // Compensates the -(M_old × W, z) term added on RHS by the assembler.
+    // In 2D: M × W = (w·My, -w·Mx)
+    f[0] += w_disc * M_old_disc[1];    // +w · My_old
+    f[1] += -w_disc * M_old_disc[0];   // -w · Mx_old
 
     return f;
 }

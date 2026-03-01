@@ -74,26 +74,15 @@ Wire all cross-coupling terms and verify with full MMS test.
 
 #### Next steps (in order of priority):
 
-**Step 7a: Add missing (M × W) spin-magnetization coupling (CRITICAL)**
-Paper Eq. 52d includes `(M^k × W^k, Z)` on the LHS — the angular velocity rotates
-magnetization. This term is entirely missing from our assembler. Steps:
-1. Pass `w_relevant` + `w_dof_handler` to `magnetization_assemble()`
-2. Evaluate `w` at DG quadrature points via CG FEValues on the mag cell
-3. The term `(M^k × W^k, Z)` with M^k implicit means: for Mx eq, add `+w * My^k * z`
-   to LHS; for My eq, add `-w * Mx^k * z` to LHS. Since M^k is the unknown, this
-   **couples Mx and My** — the shared-matrix approach no longer works. Options:
-   (a) Treat explicitly: use M^{k-1} (or Picard iterate), put `w * (My_old, -Mx_old)` on RHS
-   (b) Couple Mx/My into a single 2N×2N block system (significant refactor)
-   Option (a) is simpler and consistent with the semi-implicit time stepping.
-4. Update the magnetization MMS source to include `w × m` contribution
-5. Update driver to pass `w_old` (or `w_new`) to `mag.assemble()`
-6. Re-verify full coupled MMS convergence rates
+**Step 7a: Add missing (M × W) spin-magnetization coupling [DONE]**
+Treated explicitly (M^{k-1}), moves to RHS as -(M_old × W, Z). Extended magnetization
+assembler with optional w_relevant + w_dof_handler. Updated all MMS sources (6 files).
+Full coupled MMS rates preserved. See Diagnostics #13.
 
-**Step 7b: Enable angular momentum convection**
-Paper Eq. 52c includes `j b_h(U^k, W^k, X)`. Our infrastructure supports it but the
-driver disables it (`include_convection=false`). Steps:
-1. Change `include_convection` to `true` for angular momentum in fhd_driver.cc
-2. Re-verify coupled MMS convergence rates (source already supports convection)
+**Step 7b: Enable angular momentum convection [DONE]**
+Changed include_convection to true in driver and full coupled MMS test. Extended AngMom
+MMS sources (4 files) with U_old_disc, div_U_old_disc, include_convection. Full coupled
+MMS rates preserved. See Diagnostics #14.
 
 **Step 7c: Re-run Sections 7.1-7.3 with corrected physics**
 After implementing Steps 7a-7b, re-run all experiments to see if results change:

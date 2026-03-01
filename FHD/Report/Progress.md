@@ -75,6 +75,24 @@
 - [x] 200 steps, dt=0.01, 10 Picard iters/step, wall time 1723s
 - [x] Results qualitatively match paper Section 7.2
 
+### Physics Completeness Fixes (Steps 7a-7b)
+- [x] **Spin-magnetization coupling (M × W)** (Eq. 52d, Issue #13): Treated explicitly,
+  Mx RHS: -w·My_old, My RHS: +w·Mx_old. Extended mag assembler + 6 MMS source files.
+- [x] **Angular momentum convection** (Eq. 52c, Issue #14): Enabled include_convection=true
+  in driver and full MMS test. Extended 4 AngMom MMS source files.
+- [x] All MMS convergence rates preserved after both fixes:
+
+| Field | Rate | Expected |
+|-------|------|----------|
+| U_L2  | 2.99 | 3.0 |
+| U_H1  | 2.00 | 2.0 |
+| p_L2  | 2.37 | 2.0 |
+| w_L2  | 3.09 | 3.0 |
+| w_H1  | 2.06 | 2.0 |
+| phi_L2| 3.00 | 3.0 |
+| phi_H1| 2.00 | 2.0 |
+| M_L2  | 2.92 | 3.0 |
+
 ### Paper Validation — Section 7.3: Stirring (IN PROGRESS)
 - [x] **Approach 1** (`--stirring-1`): 2 dipoles at y=-0.4, opposite polarity, f=20Hz
   - 400 steps completed, ref 5, wall time 1275s

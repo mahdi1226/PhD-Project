@@ -30,6 +30,7 @@
 #define FHD_ANGULAR_MOMENTUM_MMS_H
 
 #include <deal.II/base/point.h>
+#include <deal.II/base/tensor.h>
 #include <deal.II/base/quadrature_lib.h>
 #include <deal.II/dofs/dof_handler.h>
 #include <deal.II/fe/fe_values.h>
@@ -80,7 +81,10 @@ double compute_angular_mms_source_standalone(
     const dealii::Point<dim>& p,
     double t_new, double t_old,
     double j_micro, double c1, double nu_r,
-    double /*w_old_disc*/)
+    double /*w_old_disc*/,
+    const dealii::Tensor<1, dim>& /*U_old_disc*/,
+    double /*div_U_old_disc*/,
+    bool /*include_convection*/)
 {
     const double tau = t_new - t_old;
     const double w_new = angular_momentum_exact<dim>(p, t_new);

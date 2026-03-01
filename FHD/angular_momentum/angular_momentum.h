@@ -91,17 +91,22 @@ public:
     // ========================================================================
     // MMS source injection
     //
-    // Signature: f(point, t_new, t_old, j_micro, c1, nu_r, w_old_disc) → double
+    // Signature: f(point, t_new, t_old, j_micro, c1, nu_r, w_old_disc,
+    //              U_old_disc, div_U_old_disc, include_convection) → double
     //
     // CRITICAL: w_old_disc is the discrete old angular velocity at the
     // quadrature point. The source must use j(w*_new - w_old_disc)/τ to
     // avoid 1/τ amplification of pointwise error.
+    // U_old_disc and div_U_old_disc: discrete velocity for convection source.
     // ========================================================================
     using MmsSourceFunction = std::function<
         double(const dealii::Point<dim>&,
                double, double,
                double, double, double,
-               double)>;
+               double,
+               const dealii::Tensor<1, dim>&,
+               double,
+               bool)>;
     void set_mms_source(MmsSourceFunction source);
 
     // ========================================================================
