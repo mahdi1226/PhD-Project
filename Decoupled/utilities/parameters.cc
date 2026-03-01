@@ -101,6 +101,67 @@ void Parameters::setup_rosensweig()
 }
 
 // ============================================================================
+// Rosensweig instability under NONUNIFORM applied magnetic field
+// (Zhang, He & Yang, SIAM J. Sci. Comput. 43 (2021), Section 4.4,
+//  Fig 4.10-4.13)
+//
+// Same as Section 4.3 but with:
+//   - 42 dipoles (3 rows × 14) approximating a bar magnet (0.4 × 0.5)
+//   - χ₀ = 0.9, h = 1/120, δt = 2e-4
+//   - IC: flat interface at y = 0.1 (not 0.2)
+//   - α ramps with slope 1.2 (much slower than Section 4.3's 5000)
+//   - Figures shown up to t = 3.5
+// ============================================================================
+void Parameters::setup_rosensweig_nonuniform()
+{
+    // Start from uniform Rosensweig as base
+    setup_rosensweig();
+
+    // Override parameters per Section 4.4
+    physics.chi_0 = 0.9;          // Paper: "with χ₀ = 0.9"
+
+    // IC: flat interface at y = 0.1 (Paper Eq 4.5)
+    flat_interface_y = 0.1;
+
+    // Time stepping: δt = 2e-4 (5× smaller than Section 4.3)
+    time.dt = 2e-4;
+    time.t_final = 3.5;
+    time.max_steps = 17500;
+
+    // Mesh: h = 1/120 (Paper: "h = 1/120")
+    // Base grid 15×9 with refinement 3: 15×8=120 cells in x, 9×8=72 in y
+    domain.initial_cells_x = 15;
+    domain.initial_cells_y = 9;
+    mesh.initial_refinement = 3;   // 120×72 cells, h = 1/120
+
+    // 42 dipoles: 3 rows at y = -0.5, -0.75, -1.0
+    // 14 per row, equidistributed in x over [0.3, 0.7] (bar magnet width 0.4)
+    // Paper: "The intention of this setup of the dipoles is to create a crude
+    //         approximation of a bar magnet of 0.4 units width and 0.5 units height."
+    dipoles.positions.clear();
+    const double y_rows[3] = {-0.5, -0.75, -1.0};
+    const int n_per_row = 14;
+    const double x_start = 0.3;   // centered on domain, width = 0.4
+    const double x_end   = 0.7;
+    for (int row = 0; row < 3; ++row)
+    {
+        for (int j = 0; j < n_per_row; ++j)
+        {
+            double x = x_start + j * (x_end - x_start) / (n_per_row - 1);
+            dipoles.positions.push_back(dealii::Point<2>(x, y_rows[row]));
+        }
+    }
+    dipoles.direction    = {0.0, 1.0};
+    dipoles.ramp_slope   = 1.2;       // Paper: "slope of 1.2"
+    dipoles.ramp_time    = 0.0;
+    dipoles.intensity_max = 0.0;       // no cap mentioned
+
+    // More Picard iterations — nonuniform field is harder to resolve
+    picard_iterations = 10;
+    picard_tolerance = 0.01;
+}
+
+// ============================================================================
 // Command line parsing
 // ============================================================================
 Parameters Parameters::parse_command_line(int argc, char* argv[])
@@ -131,6 +192,8 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
         // ---- Presets ----
         else if (std::strcmp(argv[i], "--rosensweig") == 0)
             params.setup_rosensweig();
+        else if (std::strcmp(argv[i], "--rosensweig-nonuniform") == 0)
+            params.setup_rosensweig_nonuniform();
 
         // ---- Mesh ----
         else if (std::strcmp(argv[i], "--refinement") == 0 ||
@@ -480,7 +543,8 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             std::cout << "    --ref 2 3 4 5 6    Refinement levels for mms/temporal\n";
             std::cout << "    --steps N          Override number of time steps\n\n";
             std::cout << "  Presets:\n";
-            std::cout << "    --rosensweig        Rosensweig preset (Section 6.2)\n";
+            std::cout << "    --rosensweig        Rosensweig preset (Section 4.3, uniform field)\n";
+            std::cout << "    --rosensweig-nonuniform  Rosensweig preset (Section 4.4, 42 dipoles)\n";
             std::cout << "    --validation MODE   Validation test (droplet|square)\n\n";
             std::cout << "  Mesh:\n";
             std::cout << "    --refinement N      Mesh refinement level (2d/3d modes)\n\n";

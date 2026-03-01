@@ -366,6 +366,41 @@ Full Poisson-Mag-NS test with μ₀=0.1: **[PASS]** — all rates within toleran
 
 ---
 
+## 6c. Validation Test Results (Sessions 9-10, February 2026)
+
+### Completed Tests
+
+All tests rerun after DG face fix (Session 8) and nonuniform preset additions (Session 9).
+
+| Test | Steps | dt | theta range | |U|_max | Picard | Status |
+|------|-------|-----|-------------|---------|--------|--------|
+| Square (CH-only, r=6) | 5000 | 1e-3 | [-0.992, 1.01] | 0 | N/A | **PASS** |
+| Droplet w/field (r=7) | 1500 | 1e-3 | [-1.00, 1.03] | ~0.01 | 12 iters | **PASS** |
+| Rosensweig uniform (r=4) | 2000 | 1e-3 | [-1.00, 1.00] | ~0.5 | 10 iters | **PASS** |
+| Rosensweig nonuniform | 17500 | 2e-4 | [-1.06, 1.08] | 30+ | 2 iters | **FAIL** |
+
+### Nonuniform Rosensweig Failure Analysis
+
+**Parameters:** 42 dipoles (3 rows at y=-0.5,-0.75,-1.0), chi_0=0.9, h=1/120,
+interface at y=0.1, lambda=0.25.
+
+**Timeline:**
+- Steps 0-10000 (t=0 to 2.0): Correct behavior. Two spikes form gradually. |U|~0.5.
+- Step 10350 (t=2.07): Velocity jumps from 0.52 to 0.73 (40% in one step).
+- Steps 10350-10570: |U| explodes to 11.4, theta overshoots to [-1.02, 1.08].
+- Steps 10570+: Chaotic dynamics, spike morphology destroyed, |U| reaches 30+.
+
+**Root causes identified:**
+1. Picard convergence uses global L2 norm (misses local spike tip dynamics)
+2. S2 stabilization lags by one step (computed from phi^{n-1})
+3. No outer NS-Mag iteration under strong coupling (operator splitting instability)
+4. Nonuniform case has ~7x stronger Kelvin force than uniform (closer dipoles, higher chi_0)
+
+**VTK output:** Frames 0-200 (steps 0-10000) show physically correct two-spike Rosensweig
+instability. Frames >207 show numerical artifacts.
+
+---
+
 ## 7. Known Gaps and Future Work
 
 ### 7.1 Temporal Convergence Tests (Deferred)
@@ -393,7 +428,7 @@ Full Poisson-Mag-NS test with μ₀=0.1: **[PASS]** — all rates within toleran
 - `drivers/decoupled_driver.cc` implements Strategy A (Gauss-Seidel splitting)
 - Uses SAV (Scalar Auxiliary Variable) energy-stable time integration
 - Supports algebraic magnetization M = chi(theta)*H (skips magnetization PDE)
-- Validation presets: `--validation square|droplet|droplet_nofield|rosensweig`
+- Validation presets: `--validation square|droplet|droplet_nofield|rosensweig` and `--rosensweig-nonuniform`
 - Build: `cd drivers/build && cmake .. -DCMAKE_BUILD_TYPE=Release && make -j8`
 - Run: `mpirun -np 2 ./ferrofluid_decoupled --validation droplet -r 7 --vtk_interval 100 --sav_S1 5000`
 
@@ -471,5 +506,5 @@ Time step:     dt = 1e-3, max_steps = 1500
 ---
 
 *Generated: February 2025*
-*Updated: February 27, 2026 (Sessions 5-8: MMS framework + DG face fix)*
+*Updated: February 28, 2026 (Sessions 9-10: Validation suite + nonuniform Rosensweig analysis)*
 *Total source code: ~10,000 lines across 4 subsystems + shared libraries*

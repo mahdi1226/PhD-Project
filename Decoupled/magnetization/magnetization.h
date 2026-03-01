@@ -471,6 +471,18 @@ private:
     SolverInfo   last_My_info_;
 
     // ========================================================================
+    // Spin-vorticity RHS cache
+    //
+    // Zhang Eq 3.14: −½(∇×ũ^n × m^{n-1}, Z) on LHS → +½(ω_z)(-My,Mx)·Z on RHS
+    // In 2D: ω_z = ∂uy/∂x − ∂ux/∂y, (∇×u)×m = ω_z(-m_y, m_x)
+    //
+    // Computed during full assembly (matrix_and_rhs=true), cached for
+    // RHS-only Picard iterations (where U data is not available).
+    // ========================================================================
+    dealii::TrilinosWrappers::MPI::Vector  spin_vort_rhs_x_;
+    dealii::TrilinosWrappers::MPI::Vector  spin_vort_rhs_y_;
+
+    // ========================================================================
     // MMS
     // ========================================================================
     MmsSourceFunction  mms_source_;

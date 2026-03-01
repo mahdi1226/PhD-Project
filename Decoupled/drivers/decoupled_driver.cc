@@ -1124,10 +1124,10 @@ int main(int argc, char* argv[])
         else
         {
             // Default: flat interface (Rosensweig)
-            // Zhang et al. SIAM J. Sci. Comput. 43(1), 2021, Eq 4.3:
-            // Flat interface at y=0.2, NO perturbation.
-            // Rosensweig instability emerges naturally from the magnetic field.
-            const double y_interface = 0.2;
+            // Zhang et al. SIAM J. Sci. Comput. 43(1), 2021:
+            //   Eq 4.3 (Section 4.3): interface at y=0.2
+            //   Eq 4.5 (Section 4.4): interface at y=0.1
+            const double y_interface = params.flat_interface_y;
             pcout << "  IC: Flat interface (y=" << y_interface << ")\n";
             FlatInterfaceIC theta_ic(y_interface, eps);
             ZeroFunction psi_ic;
@@ -1198,7 +1198,8 @@ int main(int argc, char* argv[])
                 test_name = "droplet_wofield";
         }
         else if (params.enable_magnetic && params.enable_gravity)
-            test_name = "rosensweig";
+            test_name = (params.dipoles.positions.size() > 10)
+                        ? "rosensweig_nonuniform" : "rosensweig";
         else if (params.enable_magnetic)
             test_name = "magnetic";
         else if (params.enable_ns)

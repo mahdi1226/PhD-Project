@@ -92,8 +92,13 @@ void MagnetizationSubsystem<dim>::allocate_vectors()
     Mx_old_relevant_.reinit(locally_owned_dofs_, locally_relevant_dofs_, mpi_comm_);
     My_old_relevant_.reinit(locally_owned_dofs_, locally_relevant_dofs_, mpi_comm_);
 
+    // Spin-vorticity RHS cache (Zhang Eq 3.14 term: +½(∇×u × m^{n-1}, Z))
+    // Computed once per timestep, reused in Picard RHS-only iterations
+    spin_vort_rhs_x_.reinit(locally_owned_dofs_, mpi_comm_);
+    spin_vort_rhs_y_.reinit(locally_owned_dofs_, mpi_comm_);
+
     pcout_ << "[Magnetization Setup] Vectors allocated (Mx+My: "
-           << "2×solution, 2×rhs, 2×ghosted, 2×old_ghosted)" << std::endl;
+           << "2×solution, 2×rhs, 2×ghosted, 2×old_ghosted, 2×spin_vort)" << std::endl;
 }
 
 // ============================================================================

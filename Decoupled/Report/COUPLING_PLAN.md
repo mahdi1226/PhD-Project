@@ -671,5 +671,64 @@ magnetization transport** and should be rerun.
 
 ---
 
+---
+
+## Empirical Evidence: Strategy A Fails for Strong Coupling (Session 10)
+
+### The Problem
+
+Strategy A (fully decoupled) works for:
+- Square test (no magnetic field, chi_0=0)
+- Droplet with field (chi_0=2 but mu_0=0.1, so Kelvin force is weak)
+- Uniform Rosensweig (chi_0=0.5, dipoles at y=-15, moderate coupling)
+
+Strategy A **FAILS** for:
+- Nonuniform Rosensweig (chi_0=0.9, dipoles at y=-0.5 to -1.0, strong coupling)
+
+The failure manifests as a numerical instability after ~10000 steps (t=2.0) when
+two Rosensweig spikes have formed. The velocity explodes from |U|=0.5 to |U|=30+
+over ~200 steps, despite the Picard loop "converging" (2 iterations, rel_change=0).
+
+### Why Strategy A Fails
+
+The Kelvin force coupling strength scales as mu_0 * chi_0^2 * |H|^2 / nu. For the
+nonuniform case, this is roughly 7x larger than the uniform case:
+- chi_0: 0.9 vs 0.5 (3.2x in chi^2)
+- Dipole distance: 0.5-1.0 vs 15 (much stronger local gradients)
+
+In Strategy A, NS uses **stale** M^{n-1} and phi^{n-1} for the Kelvin force.
+When the coupling is strong enough, the one-step lag creates a positive feedback:
+1. NS computes U^n using stale M^{n-1} -> U^n is slightly wrong
+2. Mag transport uses U^n -> M^n shifts from equilibrium
+3. Poisson-Mag Picard converges to the wrong M^n (because it sees wrong U^n)
+4. Next step: NS sees bigger error in M -> bigger error in U -> feedback loop
+
+### Required Fix: Strategy B (Semi-Coupled)
+
+Strategy B adds an **outer iteration** around the NS solve:
+```
+FOR each timestep:
+  1. CH solve (lagged U)
+  2. OUTER iteration (k = 0..max_outer):
+     a. Picard for Poisson<->Mag (inner, using U^k)
+     b. NS solve -> U^{k+1} using updated M, phi
+     c. Check: ||U^{k+1} - U^k|| / ||U^{k+1}|| < tol
+```
+
+This resolves the NS<->Mag coupling within each time step, at the cost of
+~2-4x more NS solves per step.
+
+### Alternative Quick Fixes (to try first)
+1. Reduce dt: dt=1e-4 instead of 2e-4 (halves splitting error)
+2. Tighten Picard: tol=1e-6, max_picard=50 (won't help -- Picard is Poisson<->Mag only)
+3. S2 predictor: use extrapolated H_max instead of lagged
+
+### Status
+- Strategy A: IMPLEMENTED, passes for weak/moderate coupling, fails for strong
+- Strategy B: NOT YET IMPLEMENTED. Priority for next session.
+- Strategy C: NOT YET IMPLEMENTED. May not be needed if B works.
+
+---
+
 *Plan created: February 2025*
-*Updated: February 27, 2026 (Session 8 — DG face fix, Poisson-Mag-NS MMS verified)*
+*Updated: February 28, 2026 (Session 10 -- Strategy A failure analysis for strong coupling)*

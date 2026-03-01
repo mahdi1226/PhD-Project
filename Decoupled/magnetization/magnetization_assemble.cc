@@ -5,10 +5,11 @@
 //   assemble_system_internal()  — unified matrix+RHS or RHS-only
 //   initialize_preconditioner() — ILU from current matrix
 //
-// CELL INTEGRALS (Eq. 56-57, first line):
+// CELL INTEGRALS (Zhang Eq 3.14):
 //   LHS:  (1/τ + 1/τ_M)(M^k, Z) + (U·∇M^k)·Z + ½(∇·U)(M^k·Z)
 //   RHS:  (1/τ_M)(χ(θ)H^k, Z) + (1/τ)(M^{n-1}, Z)
-//         + β[M(M·H) - H|M|²]·Z    (Landau-Lifshitz, explicit)
+//         + ½(∇×U × M^{n-1}, Z)     (spin-vorticity coupling, explicit)
+//         + β[M(M·H) - H|M|²]·Z     (Landau-Lifshitz, explicit)
 //         + (F_mms, Z)               (MMS source, testing only)
 //
 // FACE INTEGRALS (Eq. 57, second line):
@@ -152,6 +153,8 @@ void MagnetizationSubsystem<dim>::assemble_system_internal(
     FullMatrix<double> local_matrix(dofs_per_cell, dofs_per_cell);
     Vector<double>     local_rhs_x(dofs_per_cell);
     Vector<double>     local_rhs_y(dofs_per_cell);
+    Vector<double>     local_sv_x(dofs_per_cell);  // spin-vorticity cache
+    Vector<double>     local_sv_y(dofs_per_cell);
     std::vector<types::global_dof_index> local_dofs(dofs_per_cell);
 
     // ========================================================================
@@ -175,7 +178,11 @@ const bool mms_active = static_cast<bool>(mms_source_);
     // Zero outputs
     // ========================================================================
     if (matrix_and_rhs)
+    {
         system_matrix_ = 0;
+        spin_vort_rhs_x_ = 0;
+        spin_vort_rhs_y_ = 0;
+    }
     Mx_rhs_ = 0;
     My_rhs_ = 0;
 
@@ -218,7 +225,11 @@ const bool mms_active = static_cast<bool>(mms_source_);
         fe_values_M.get_function_values(My_old_relevant, My_old_vals);
 
         if (matrix_and_rhs)
+        {
             local_matrix = 0;
+            local_sv_x = 0;
+            local_sv_y = 0;
+        }
         local_rhs_x = 0;
         local_rhs_y = 0;
 
@@ -262,6 +273,35 @@ const bool mms_active = static_cast<bool>(mms_source_);
                 div_U_q = grad_Ux[q][0];
                 if constexpr (dim > 1)
                     div_U_q += grad_Uy[q][1];
+            }
+
+            // ================================================================
+            // Spin-vorticity: +½(∇×U × M^{n-1}, Z)  (explicit, RHS)
+            //
+            // Zhang Eq 3.14 has −½(∇×ũ^n × m^{n-1}, n) on the LHS.
+            // Moving to RHS: +½(∇×ũ^n × m^{n-1}, Z).
+            //
+            // In 2D: ω_z = ∂u_y/∂x − ∂u_x/∂y
+            //         (∇×u) × m = ω_z(-m_y, m_x)
+            //
+            // Uses U^n (fixed per timestep) and M^{n-1} (old time).
+            // Computed only during full assembly; cached in spin_vort_rhs_
+            // vectors for reuse during Picard RHS-only iterations.
+            // ================================================================
+            double spin_vort_x = 0.0;
+            double spin_vort_y = 0.0;
+            if (matrix_and_rhs)
+            {
+                // Vorticity: ω_z = ∂u_y/∂x − ∂u_x/∂y
+                const double omega_z = grad_Uy[q][0] - grad_Ux[q][1];
+                const double Mx = Mx_old_vals[q];
+                const double My = (dim > 1) ? My_old_vals[q] : 0.0;
+
+                // (∇×u) × m = ω_z(-m_y, m_x)
+                // +½ factor from Eq 3.14
+                spin_vort_x = 0.5 * omega_z * (-My);
+                if constexpr (dim > 1)
+                    spin_vort_y = 0.5 * omega_z * Mx;
             }
 
             // ================================================================
@@ -333,6 +373,19 @@ const bool mms_active = static_cast<bool>(mms_source_);
                       + old_coeff * My_old_vals[q]
                     : 0.0;
 
+                // Spin-vorticity: +½(∇×U × M^{n-1}, Z) on RHS
+                // Add to main RHS and also cache separately for Picard reuse
+                if (matrix_and_rhs)
+                {
+                    rhs_x_val += spin_vort_x;
+                    local_sv_x(i) += spin_vort_x * Z_i * JxW;
+                    if constexpr (dim > 1)
+                    {
+                        rhs_y_val += spin_vort_y;
+                        local_sv_y(i) += spin_vort_y * Z_i * JxW;
+                    }
+                }
+
                 if (beta_active)
                 {
                     rhs_x_val += beta_term[0];
@@ -364,6 +417,10 @@ const bool mms_active = static_cast<bool>(mms_source_);
 
             if (matrix_and_rhs)
             {
+                // Distribute spin-vorticity cache
+                spin_vort_rhs_x_[local_dofs[i]] += local_sv_x(i);
+                spin_vort_rhs_y_[local_dofs[i]] += local_sv_y(i);
+
                 for (unsigned int j = 0; j < dofs_per_cell; ++j)
                     system_matrix_.add(local_dofs[i], local_dofs[j],
                                        local_matrix(i, j));
@@ -702,9 +759,25 @@ const bool mms_active = static_cast<bool>(mms_source_);
     // Compress (synchronize MPI contributions)
     // ========================================================================
     if (matrix_and_rhs)
+    {
         system_matrix_.compress(VectorOperation::add);
+        spin_vort_rhs_x_.compress(VectorOperation::add);
+        spin_vort_rhs_y_.compress(VectorOperation::add);
+    }
     Mx_rhs_.compress(VectorOperation::add);
     My_rhs_.compress(VectorOperation::add);
+
+    // ========================================================================
+    // In RHS-only mode (Picard), add cached spin-vorticity contribution.
+    // The spin_vort_rhs_ vectors were computed and cached during the full
+    // assembly (matrix_and_rhs=true) at the start of this timestep.
+    // They are constant within a timestep (depend only on U^n, M^{n-1}).
+    // ========================================================================
+    if (!matrix_and_rhs)
+    {
+        Mx_rhs_.add(1.0, spin_vort_rhs_x_);
+        My_rhs_.add(1.0, spin_vort_rhs_y_);
+    }
 
     timer.stop();
 

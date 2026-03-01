@@ -295,6 +295,7 @@ struct Parameters
     //   --validation square    Diamond IC, dipoles active, with gravity
     // ========================================================================
     std::string validation_test;  // "" = production, "droplet", "square"
+    double flat_interface_y = 0.2; // y-position of flat interface IC (Rosensweig)
 
     // ========================================================================
     // Subsystem enables
@@ -354,6 +355,7 @@ struct Parameters
     // Preset configurations
     // ========================================================================
     void setup_rosensweig();
+    void setup_rosensweig_nonuniform();
 
     // -- Other presets (hedgehog, droplet, dome) added later --
 
