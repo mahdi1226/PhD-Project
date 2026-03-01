@@ -325,11 +325,14 @@ static void assemble_ns_core(
                         local_uy_uy(i, j) += (1.0 / dt) * phi_uy_j * phi_uy_i * JxW;
                     }
 
-                    // Viscous term: ν(θ)(T(U), T(V)) - uses variable viscosity if enabled
-                    local_ux_ux(i, j) += (nu_q / 2.0) * (T_U_x * T_V_x) * JxW;
-                    local_uy_uy(i, j) += (nu_q / 2.0) * (T_U_y * T_V_y) * JxW;
-                    local_ux_uy(i, j) += (nu_q / 2.0) * (T_U_y * T_V_x) * JxW;
-                    local_uy_ux(i, j) += (nu_q / 2.0) * (T_U_x * T_V_y) * JxW;
+                    // Viscous term: (ν_θ T(U), T(V)) where T = ½(∇u + (∇u)^T)
+                    // Paper Eq. 42e: bilinear form is ν(T,T).
+                    // Code's "T" helper returns D = ∇u + (∇u)^T = 2T_paper.
+                    // So (ν/4)(D,D) = ν(T_paper, T_paper) matches the paper.
+                    local_ux_ux(i, j) += (nu_q / 4.0) * (T_U_x * T_V_x) * JxW;
+                    local_uy_uy(i, j) += (nu_q / 4.0) * (T_U_y * T_V_y) * JxW;
+                    local_ux_uy(i, j) += (nu_q / 4.0) * (T_U_y * T_V_x) * JxW;
+                    local_uy_ux(i, j) += (nu_q / 4.0) * (T_U_x * T_V_y) * JxW;
 
                     // --------------------------------------------------------
                     // Convection: B_h(U^{n-1}, U, V) using skew_forms.h (Eq. 37)
@@ -535,30 +538,29 @@ static void assemble_kelvin_force(
             // Compute applied field h_a from dipoles
             dealii::Tensor<1, dim> h_a = compute_applied_field<dim>(x_q, params, current_time);
 
-            // Total field H = h_a - ∇φ (paper convention, Eq. 2)
+            // Total field H = ∇φ (Nochetto CMAME 2016, Eq. 42d + p.506)
+            // The Poisson equation (∇φ, ∇X) = (h_a - M, ∇X) determines φ
+            // such that ∇φ IS the total magnetic field H.
+            // Do NOT add h_a — it is already encoded in φ via the Poisson RHS.
             dealii::Tensor<1, dim> H;
             if (params.use_reduced_magnetic_field)
             {
-                // Dome mode: H = h_a only
+                // Dome mode: skip Poisson, H ≈ h_a
                 H = h_a;
             }
             else
             {
-                // Hedgehog mode: H = -∇φ (demagnetizing field from Poisson)
-                // Sign: Poisson solves for φ where h_d = -∇φ, total H = h_a + h_d
-                H[0] = h_a[0] - phi_gradients[q][0];
-                H[1] = h_a[1] - phi_gradients[q][1];
+                // Hedgehog mode: H = ∇φ
+                H[0] = phi_gradients[q][0];
+                H[1] = phi_gradients[q][1];
             }
 
             // M vector
             dealii::Tensor<1, dim> M = KelvinForce::make_M_vector<dim>(Mx_values[q], My_values[q]);
 
-            // (M·∇)H: Since H = h_a - ∇φ and h_a varies slowly,
-            // (M·∇)H ≈ -(M·∇)(∇φ) = -M·Hess(φ)
-            // compute_M_grad_H returns M·Hess(φ), so we negate for full field
+            // (M·∇)H = M·Hess(φ) since H = ∇φ
+            // compute_M_grad_H returns M·Hess(φ) directly — no sign flip needed
             dealii::Tensor<1, dim> M_grad_H = KelvinForce::compute_M_grad_H<dim>(M, phi_hessians[q]);
-            if (!params.use_reduced_magnetic_field)
-                M_grad_H *= -1.0;
 
             // div(M) from DG gradients
             double div_M = KelvinForce::compute_div_M<dim>(Mx_gradients[q], My_gradients[q]);
@@ -618,12 +620,11 @@ static void assemble_kelvin_force(
                 const double JxW = ux_fe_face_values.JxW(q);
                 const auto& normal = ux_fe_face_values.normal_vector(q);
 
-                // H = -∇φ (h_a is continuous ⇒ [[h_a]]=0, so [[H]] = -[[∇φ]])
+                // H = ∇φ, so [[H]] = ∇φ⁻ - ∇φ⁺
                 const dealii::Tensor<1, dim>& grad_phi_minus = grad_phi_face_minus[q];
                 const dealii::Tensor<1, dim>& grad_phi_plus = grad_phi_face_plus[q];
 
-                // [[H]] = H⁻ - H⁺ = (-∇φ⁻) - (-∇φ⁺) = -(∇φ⁻ - ∇φ⁺)
-                dealii::Tensor<1, dim> jump_H = -(grad_phi_minus - grad_phi_plus);
+                dealii::Tensor<1, dim> jump_H = grad_phi_minus - grad_phi_plus;
 
                 dealii::Tensor<1, dim> M_minus = KelvinForce::make_M_vector<dim>(Mx_face_minus[q], My_face_minus[q]);
                 dealii::Tensor<1, dim> M_plus = KelvinForce::make_M_vector<dim>(Mx_face_plus[q], My_face_plus[q]);

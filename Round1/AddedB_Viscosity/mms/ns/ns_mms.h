@@ -2,8 +2,13 @@
 // ns_mms.h - Navier-Stokes MMS Exact Solutions (Parallel Version)
 //
 // PAPER EQUATION 42e (standalone, constant ν):
-//   (U^n - U^{n-1})/dt + B_h(U^{n-1}, U^n, V) + ν(T(U^n), T(V))/2
+//   (U^n - U^{n-1})/dt + B_h(U^{n-1}, U^n, V) + ν(T(U^n), T(V))
 //     - (p^n, ∇·V) + (∇·U^n, Q) = (f, V)
+//
+// VISCOUS TERM CONVENTION:
+//   Paper: ν(T(U),T(V)) where T = ½(∇u + (∇u)^T)
+//   Code helper returns D = ∇u + (∇u)^T = 2T, so bilinear form is (ν/4)(D,D)
+//   Strong form: -(ν/2)∆U
 //
 // EXACT SOLUTIONS (derived from stream function ψ = t·sin²(πx)·sin²(πy/L_y)):
 //   ux = t·(π/L_y)·sin²(πx)·sin(2πy/L_y)
@@ -211,9 +216,10 @@ double ns_mms_exact_pressure(
 /**
  * @brief Compute MMS source for STEADY STOKES (Phase A)
  *
- * Strong form: -ν∇²U + ∇p = f
- * (Assembler uses (ν/2)(T(U),T(V)) with T = ∇U + (∇U)^T.
- *  For div-free U*: (ν/2)(T,T) = ν(∇U,∇V), giving -ν∇²U after IBP.)
+ * Strong form: -(ν/2)∇²U + ∇p = f
+ * Paper Eq. 42e: bilinear form is (ν T(U), T(V)) with T = ½(∇U + (∇U)^T).
+ * Code helper returns D = ∇U + (∇U)^T = 2T, bilinear form is (ν/4)(D,D).
+ * For div-free U*: (ν/4)(D,D) = (ν/2)(∇U,∇V), giving -(ν/2)∇²U after IBP.
  */
 template <int dim>
 dealii::Tensor<1, dim> compute_steady_stokes_mms_source(
@@ -248,15 +254,15 @@ dealii::Tensor<1, dim> compute_steady_stokes_mms_source(
     const double d2uy_dy2 = -t * (2.0 * pi3 / (L_y * L_y)) * sin_2px * (cos_py * cos_py - sin_py * sin_py);
     const double laplacian_uy = d2uy_dx2 + d2uy_dy2;
 
-    // Viscous term: -ν∇²U
-    const double viscous_x = -nu * laplacian_ux;
-    const double viscous_y = -nu * laplacian_uy;
+    // Viscous term: -(ν/2)∇²U  (paper Eq. 42e: (ν T, T) → strong form -(ν/2)∆U)
+    const double viscous_x = -(nu / 2.0) * laplacian_ux;
+    const double viscous_y = -(nu / 2.0) * laplacian_uy;
 
     // Pressure gradient
     const double dp_dx = -t * pi * sin_px * cos_py;
     const double dp_dy = -t * (pi / L_y) * cos_px * sin_py;
 
-    // f = -ν∇²U + ∇p
+    // f = -(ν/2)∇²U + ∇p
     dealii::Tensor<1, dim> f;
     f[0] = viscous_x + dp_dx;
     f[1] = viscous_y + dp_dy;
@@ -267,7 +273,7 @@ dealii::Tensor<1, dim> compute_steady_stokes_mms_source(
 /**
  * @brief Compute MMS source for UNSTEADY STOKES (Phase B)
  *
- * Strong form: ∂U/∂t - 2ν∇²U + ∇p = f
+ * Strong form: ∂U/∂t - (ν/2)∇²U + ∇p = f
  * Uses continuous time derivative.
  */
 template <int dim>
@@ -304,7 +310,7 @@ dealii::Tensor<1, dim> compute_unsteady_stokes_mms_source(
 /**
  * @brief Compute MMS source for STEADY NS (Phase C)
  *
- * Strong form: (U·∇)U - 2ν∇²U + ∇p = f
+ * Strong form: (U·∇)U - (ν/2)∇²U + ∇p = f
  * Skew term ½(∇·U)U = 0 for divergence-free exact solution.
  */
 template <int dim>
@@ -356,7 +362,7 @@ dealii::Tensor<1, dim> compute_steady_ns_mms_source(
 /**
  * @brief Compute MMS source for UNSTEADY NS (Phase D) - Semi-implicit
  *
- * Discrete form: (U^n - U^{n-1})/τ + (U^{n-1}·∇)U^n - 2ν∇²U^n + ∇p^n = f
+ * Discrete form: (U^n - U^{n-1})/τ + (U^{n-1}·∇)U^n - (ν/2)∇²U^n + ∇p^n = f
  * This matches the production ns_assembler.cc discretization.
  */
 template <int dim>
@@ -490,22 +496,22 @@ dealii::Tensor<1, dim> compute_kelvin_force_mms_source(
     // Exact φ* from poisson_mms.h:
     //   φ* = t·cos(πx)·cos(πy/L_y)
     //
-    // Exact H* = -∇φ*:
-    //   Hx* = t·π·sin(πx)·cos(πy/L_y)
-    //   Hy* = t·(π/L_y)·cos(πx)·sin(πy/L_y)
+    // Exact H* = ∇φ* (Nochetto CMAME 2016: H = ∇Φ):
+    //   Hx* = ∂φ*/∂x = -t·π·sin(πx)·cos(πy/L_y)
+    //   Hy* = ∂φ*/∂y = -t·(π/L_y)·cos(πx)·sin(πy/L_y)
     // ---------------------------------------------
-    const double Hx = t * pi * sin_px * cos_py;
-    const double Hy = t * (pi / L_y) * cos_px * sin_py;
+    const double Hx = -t * pi * sin_px * cos_py;
+    const double Hy = -t * (pi / L_y) * cos_px * sin_py;
 
-    // Gradients of H* (Hessian of φ*):
-    //   ∂Hx/∂x = t·π²·cos(πx)·cos(πy/L_y)
-    //   ∂Hx/∂y = -t·(π²/L_y)·sin(πx)·sin(πy/L_y)
-    //   ∂Hy/∂x = -t·(π²/L_y)·sin(πx)·sin(πy/L_y)
-    //   ∂Hy/∂y = t·(π²/L_y²)·cos(πx)·cos(πy/L_y)
-    const double dHx_dx = t * pi2 * cos_px * cos_py;
-    const double dHx_dy = -t * (pi2 / L_y) * sin_px * sin_py;
-    const double dHy_dx = -t * (pi2 / L_y) * sin_px * sin_py;
-    const double dHy_dy = t * (pi2 / (L_y * L_y)) * cos_px * cos_py;
+    // Gradients of H* = Hess(φ*):
+    //   ∂Hx/∂x = ∂²φ*/∂x² = -t·π²·cos(πx)·cos(πy/L_y)
+    //   ∂Hx/∂y = ∂²φ*/∂x∂y = t·(π²/L_y)·sin(πx)·sin(πy/L_y)
+    //   ∂Hy/∂x = ∂²φ*/∂y∂x = t·(π²/L_y)·sin(πx)·sin(πy/L_y)
+    //   ∂Hy/∂y = ∂²φ*/∂y² = -t·(π²/L_y²)·cos(πx)·cos(πy/L_y)
+    const double dHx_dx = -t * pi2 * cos_px * cos_py;
+    const double dHx_dy = t * (pi2 / L_y) * sin_px * sin_py;
+    const double dHy_dx = t * (pi2 / L_y) * sin_px * sin_py;
+    const double dHy_dy = -t * (pi2 / (L_y * L_y)) * cos_px * cos_py;
 
     // ---------------------------------------------
     // Kelvin force: F_K = μ₀[(M·∇)H + 0.5(∇·M)H]

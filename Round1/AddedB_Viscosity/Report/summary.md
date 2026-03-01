@@ -22,23 +22,24 @@ creating instabilities and pattern formation at the fluid interface.
 
 ## 2. Governing Equations
 
-### 2.1 Navier-Stokes (Eq. 42a-b in paper)
+### 2.1 Navier-Stokes (Eq. 42e in paper)
 
 Momentum conservation with Kelvin force coupling:
 
-    rho * (du/dt + (u . grad)u) - div(2*eta*D(u)) + grad(p)
-        = mu_0 * (M . grad)H + rho*g + f_theta
+    rho * (du/dt + (u . grad)u) - div(eta*T(u)) + grad(p)
+        = mu_0 * B_h^m(V, H, M) + rho*g + f_theta
 
     div(u) = 0
 
 where:
 - rho(theta): density (phase-dependent)
 - eta(theta): viscosity (phase-dependent)
-- D(u) = (grad u + grad u^T) / 2: symmetric strain rate
-- mu_0 * (M . grad)H: Kelvin body force
+- T(u) = (grad u + grad u^T) / 2: symmetric strain rate (paper convention)
+  - Code helper returns D = grad u + grad u^T = 2T; bilinear form uses (ν/4)(D,D) = ν(T,T)
+- B_h^m(V, H, M): DG skew form Kelvin body force (Eq. 38, Lemma 3.1)
 - f_theta: capillary/surface tension force from Cahn-Hilliard
 
-### 2.2 Cahn-Hilliard (Eq. 42d-e)
+### 2.2 Cahn-Hilliard (Eq. 42a-b)
 
 Phase-field evolution with advection:
 
@@ -53,21 +54,24 @@ where:
 - gamma: mobility
 - F(theta) = (1/4)(theta^2 - 1)^2: double-well potential
 
-### 2.3 Magnetostatic Poisson (Eq. 42f)
+### 2.3 Magnetostatic Poisson (Eq. 42d)
 
 Magnetic potential from Maxwell's equations (magnetostatic limit):
 
-    -div(grad(phi)) = div(M - h_a)
+    (grad(phi), grad(X)) = (h_a - M, grad(X))    for all test X
 
     H = grad(phi)
 
 where:
 - phi: total magnetic potential
-- H: magnetic field intensity
-- h_a: applied (external) magnetic field
+- H = grad(phi): magnetic field intensity (TOTAL field, includes h_a effect)
+- h_a: applied (external) magnetic field (appears only in Poisson RHS)
 - M: magnetization vector
 
-The Poisson equation enforces div(B) = 0 where B = mu_0(H + M).
+**CRITICAL CONVENTION (page 506 of paper):**
+The Poisson equation determines phi such that grad(phi) IS the total magnetic field H.
+Do NOT add h_a to grad(phi) — that double-counts the applied field. The applied field
+h_a appears ONLY in the Poisson right-hand side as a source term.
 
 ### 2.4 Magnetization Transport (Eq. 42c)
 
@@ -80,11 +84,21 @@ where:
 - chi(theta): magnetic susceptibility (phase-dependent)
 - chi*H: equilibrium magnetization (paramagnetic response)
 
-The susceptibility depends on the phase field:
+### 2.5 DG Skew Form Kelvin Force (Eq. 38, Lemma 3.1)
 
-    chi(theta) = chi_0 * H_epsilon(theta)
+    B_h^m(V, H, M) = sum_T int_T [(M.grad)H . V + 1/2(div M)(H.V)] dx
+                    - sum_F int_F (V.n^-) [[H]] . {M} ds
 
-where H_epsilon is a regularized Heaviside function.
+where:
+- [[H]] = H^- - H^+ (jump using minus-side normal convention)
+- {M} = 1/2(M^- + M^+) (average)
+- n^- = outward normal of minus cell
+
+**Energy identity (Lemma 3.1):** B_h^m(H, H, M) = 0
+This cancellation requires all three invariants to hold:
+1. V.n on faces (full dot product, not component-wise)
+2. Single minus-side normal (never flip per cell)
+3. Elementwise div(M) from DG gradients + face repair
 
 ---
 
@@ -94,139 +108,104 @@ where H_epsilon is a regularized Heaviside function.
 
 | Field | Element | Degree | Space |
 |-------|---------|--------|-------|
-| Velocity u | Taylor-Hood | Q2-Q1 | CG (continuous Galerkin) |
-| Pressure p | Taylor-Hood | Q1 | CG |
+| Velocity u | Taylor-Hood | Q2 | CG |
+| Pressure p | Taylor-Hood | DG P1 | DG |
 | Phase field theta | Lagrange | Q1 | CG |
 | Chemical potential psi | Lagrange | Q1 | CG |
 | Magnetic potential phi | Lagrange | Q2 | CG |
-| Magnetization M | DG Lagrange | Q1 | DG (discontinuous Galerkin) |
+| Magnetization M | DG Lagrange | Q1 | DG |
 
 ### 3.2 DG Transport: Skew-Symmetric Form (Eq. 57)
 
 The magnetization transport uses a DG skew-symmetric bilinear form:
 
-    B_h^m(U, V, W) = sum_T integral_T [(U.grad)V . W + (1/2)(div U)(V . W)] dx
+    B_h^t(U, V, W) = sum_T integral_T [(U.grad)V . W + (1/2)(div U)(V . W)] dx
                     - sum_F integral_F (U.n) [[V]] . {W} dS
 
-where:
-- [[V]] = V^- - V^+  (jump across face)
-- {W} = (W^- + W^+)/2  (average across face)
-- n = outward normal of "-" side (FEInterfaceValues convention)
-
-**Key property**: B_h^m(U, M, M) = 0 (energy neutrality)
-
-This ensures the transport does not artificially create or destroy magnetization energy.
-The cancellation happens GLOBALLY: the volume boundary flux +1/2 * integral(U.n)|M|^2 ds
-cancels with the face term -(U.n)[[M]].{M} when summed over all cells.
+Key property: B_h^t(U, M, M) = 0 (energy neutrality for transport)
 
 ### 3.3 Temporal Discretization
 
 - First-order backward Euler (implicit)
-- Scheme (42) in the CMAME paper: all fields solved simultaneously per time step
+- dt = 5e-4 for Rosensweig benchmark (4000 steps, t_F = 2.0)
 
-### 3.4 Nonlinear Solver: Paper vs Our Implementation
+### 3.4 Nonlinear Solver
 
-**Paper's approach** (CMAME 2016, Section 6, p.520):
-Block-Gauss-Seidel (Picard-like) iteration with 3 blocks per time step:
-1. **Block 1**: Solve CH (θ, ψ) coupled — Eqs (42a)–(42b)
-2. **Block 2**: Solve Magnetization + Poisson (M, φ) coupled — Eqs (42c)–(42d)
-3. **Block 3**: Solve NS (U, P) coupled — Eqs (42e)–(42f)
+Block-Gauss-Seidel iteration (paper Section 6, p.520):
+1. **Block 1**: Solve CH (theta, psi) — Eqs (42a)-(42b)
+2. **Block 2**: Solve Magnetization + Poisson (M, phi) via Picard — Eqs (42c)-(42d)
+3. **Block 3**: Solve NS (U, P) — Eq (42e)
 
-Iterate all 3 blocks until convergence. The paper explicitly notes that
-Block-Jacobi (fully decoupled, no global iteration) did not yield satisfactory results.
-The companion M3AS paper (arXiv:1511.04381, Section 6) confirms: UMFPACK direct solver,
-fixed-point iteration for the nonlinear system.
-
-**Our implementation** (updated February 27, 2026):
-Block-Gauss-Seidel global iteration matching the paper:
-- Outer loop: [CH] → [Poisson ↔ Mag (Picard)] → [NS], repeat until convergence
-- Picard inner loop (7 iterations, tol=0.05, ω=0.35) for Poisson-Magnetization coupling
-- BGS convergence: max relative change over θ and U < 1e-2
-- Maximum 5 BGS iterations per time step (capped to prevent excessive cost)
-- Can be disabled with `--no_bgs` for comparison
-
-**Match summary**:
-| Aspect | Paper | Our code | Match? |
-|--------|-------|----------|--------|
-| Global iteration | Block-Gauss-Seidel | Block-Gauss-Seidel (max 5, tol=1e-2) | ✅ |
-| CH-NS coupling | Iterative | Iterative (re-solved each BGS iter) | ✅ |
-| Mag-Poisson coupling | Coupled block | Picard iteration | ✅ |
-| Linear solver | UMFPACK (direct) | UMFPACK/Mumps (direct) | ✅ |
+Iterate until convergence (max 5 BGS iterations, tolerance 1e-2).
 
 ### 3.5 Implementation
 
 - Library: deal.II (v9.5+)
 - Parallelism: MPI via Trilinos (distributed triangulations, vectors, matrices)
-- Linear solvers: Direct (UMFPACK) or GMRES with AMG preconditioner
+- Linear solvers: Direct (UMFPACK/Mumps)
 - Build system: CMake
 
 ---
 
-## 4. MMS Verification
+## 4. MMS Verification (COMPLETE)
 
-### 4.1 Manufactured Solutions
+### 4.1 Results (All 10 Spatial Tests Pass, np=4)
 
-All solutions are chosen to be smooth, satisfy boundary conditions, and produce
-analytically computable source terms.
+| Test | Key Fields | L2 Rate | Expected |
+|------|-----------|---------|----------|
+| CH_STANDALONE | theta | 3.00 | 3.0 |
+| POISSON_STANDALONE | phi | 3.00 | 3.0 |
+| NS_STANDALONE | U, p | 3.00, 2.0+ | 3.0, 2.0 |
+| MAGNETIZATION_STANDALONE | M | 2.00 | 2.0 |
+| POISSON_MAGNETIZATION | phi, M | 3.00, 2.00 | 3.0, 2.0 |
+| NS_MAGNETIZATION | U, p | 3.00, 2.0+ | 3.0, 2.0 |
+| CH_NS | theta, U | 3.00, 3.00 | 3.0, 3.0 |
+| MAG_CH | theta, M | 3.00, 2.00 | 3.0, 2.0 |
+| NS_POISSON_MAG | all | optimal | optimal |
+| FULL_SYSTEM | all | optimal | optimal |
 
-**Cahn-Hilliard:**
-    theta* = t * sin(pi*x) * sin(pi*y/L_y)
-    psi* computed from theta* via the CH equation
+### 4.2 Bug History
 
-**Navier-Stokes (solenoidal, zero on boundary):**
-    u_x* = t * (pi/L_y) * sin^2(pi*x) * sin(2*pi*y/L_y)
-    u_y* = -t * pi * sin(2*pi*x) * sin^2(pi*y/L_y)
-    p*   = t * sin(pi*x) * cos(pi*y/L_y)
-
-**Poisson:**
-    phi* = t * sin(pi*x) * sin(pi*y/L_y)
-    H* = -grad(phi*)
-
-**Magnetization (M*.n = 0 on boundary):**
-    M_x* = t * sin(pi*x) * sin(pi*y/L_y)
-    M_y* = t * cos(pi*x) * sin(pi*y/L_y)
-
-### 4.2 Test Hierarchy
-
-11 MMS tests organized from standalone to fully coupled:
-
-    Level 1 (Standalone):
-        CH_STANDALONE, POISSON_STANDALONE, NS_STANDALONE, MAGNETIZATION_STANDALONE
-
-    Level 2 (Pairwise Coupled):
-        POISSON_MAGNETIZATION, NS_MAGNETIZATION, MAG_CH, MAG_TRANSPORT
-
-    Level 3 (Full Coupling):
-        FULL_SYSTEM (all four subsystems)
-
-### 4.3 Expected Convergence Rates
-
-For smooth MMS solutions:
-- CG-Q1 (theta): O(h^2) in H1, O(h^3) in L2 (superconvergence)
-- CG-Q2 (u, phi): O(h^2) in H1, O(h^3) in L2
-- Q1 pressure: O(h^2) in L2
-- DG-Q1 (M): O(h^2) in L2
-
-### 4.4 Results
-
-ALL 11 tests achieve optimal convergence rates. Representative FULL_SYSTEM results:
-
-    Ref    h          theta_L2    U_L2       phi_L2     M_L2       p_L2
-    ---    -----      --------    -----      ------     -----      -----
-    2      3.54e-02   8.17e-09    3.65e-05   1.02e-06   7.43e-05   7.82e-05
-    3      1.77e-02   1.02e-09    4.56e-06   1.28e-07   1.86e-05   1.44e-05
-    4      8.84e-03   1.28e-10    5.71e-07   1.60e-08   4.65e-06   3.43e-06
-
-    Rates:           3.00        3.00       3.00       2.00       2.0+
+10 bugs found and fixed across 15 sessions:
+- 4 MMS-related bugs (Sessions 1-6)
+- 3 MPI/solver bugs (Sessions 7-9)
+- 1 test harness bug (Session 9)
+- 1 H field convention bug (Sessions 13-14)
+- 1 viscous term scaling bug (Session 15)
 
 ---
 
-## 5. Code Architecture
+## 5. Production Validation Status (IN PROGRESS)
+
+### 5.1 Droplet Tests
+
+**Droplet (no magnetic):** Stable, Laplace pressure approximately correct.
+
+**Droplet + Uniform B:** After H field fix (Bug 9), no longer explodes. However, still
+shows spurious Kelvin force (F_mag ~ 101) and exponentially growing velocity on a
+configuration that should produce ZERO Kelvin force. This indicates a remaining issue
+in the DG skew form Kelvin force discretization.
+
+### 5.2 Rosensweig Instability
+
+Running at r=4 (no AMR). Shows violent odd-even numerical oscillation starting at
+step ~630 (t=0.32, 22% of field ramp). F_mag ~ 275,000 at 22% ramp vs F_grav = 33,000.
+BGS iteration fails to converge. **The DG skew form Kelvin force is numerically unstable.**
+
+### 5.3 Known Working Reference
+
+The Decoupled project uses a different Kelvin force formulation (3 separate terms instead
+of the DG skew form) and produces correct Rosensweig instability patterns. A parallel
+Rosensweig run with the Decoupled project is currently in progress for comparison.
+
+---
+
+## 6. Code Architecture
 
     AddedB_Viscosity/
     |-- main.cc                    # Entry point
     |-- core/
-    |   |-- phase_field.cc         # Main time loop, Picard coupling
+    |   |-- phase_field.cc         # Main time loop, BGS + Picard coupling
     |   |-- phase_field_setup.cc   # Mesh, DOF, sparsity setup
     |
     |-- assembly/
@@ -236,17 +215,15 @@ ALL 11 tests achieve optimal convergence rates. Representative FULL_SYSTEM resul
     |
     |-- solvers/
     |   |-- ch_solver.h            # CH block solver
-    |   |-- ns_solver.h            # NS block solver (Schur complement)
+    |   |-- ns_solver.h            # NS block solver
     |   |-- poisson_solver.h       # Poisson CG+AMG solver
-    |   |-- magnetization_solver.h # Magnetization direct/GMRES solver
+    |   |-- magnetization_solver.h # Magnetization direct solver
     |
     |-- physics/
+    |   |-- kelvin_force.h         # DG skew form Kelvin force kernels
     |   |-- skew_forms.h           # DG skew-symmetric bilinear forms (Eq. 37, 57)
     |   |-- material_properties.h  # Density, viscosity, susceptibility
-    |   |-- applied_field.h        # External magnetic field (dipoles)
-    |
-    |-- setup/
-    |   |-- magnetization_setup.h  # DG sparsity pattern with face coupling
+    |   |-- applied_field.h        # External magnetic field (dipoles + uniform)
     |
     |-- mms/                       # Method of Manufactured Solutions
     |   |-- mms_core/test_mms.cc   # MMS test driver
@@ -254,69 +231,61 @@ ALL 11 tests achieve optimal convergence rates. Representative FULL_SYSTEM resul
     |   |-- ns/ns_mms.h            # NS exact solutions + source terms
     |   |-- poisson/poisson_mms.h  # Poisson exact solutions + source terms
     |   |-- magnetization/         # Magnetization MMS
-    |       |-- magnetization_mms.h         # Exact solutions + source terms
-    |       |-- magnetization_mms_test.cc   # Standalone + transport tests
     |
     |-- utilities/
     |   |-- parameters.h/cc        # All simulation parameters + CLI parsing
+    |   |-- tools.h                # Timestamps, CSV headers, utilities
     |
     |-- Report/                    # This documentation
-    |-- validation/                # Validation cases (Rosensweig, etc.)
-
----
-
-## 6. Reference Papers
-
-### Paper 1 (CMAME 2016): "A diffuse interface model for two-phase ferrofluid flows"
-- Nochetto, Salgado, Tomas. CMAME 309, 497-531 (2016)
-- Two-phase model: CH + NS + Poisson + Magnetization transport
-- Simplified model (no angular momentum, σ=0)
-- Rosensweig instability benchmark (Section 6.2): domain [0,1]×[0,0.6], 5 dipoles,
-  6 refinement levels, 4000 time steps, t_F=2.0
-- Ferrofluid hedgehog experiment (Section 6.3): 42 dipoles, non-uniform field
-- Key: Block-Gauss-Seidel solver, DG skew-symmetric form (Eq. 57), Kelly AMR
-
-### Paper 2 (M3AS 2016): "The equations of ferrohydrodynamics: modeling and numerical methods"
-- Nochetto, Salgado, Tomas. M3AS 26(13), 2393-2449 (2016). arXiv:1511.04381
-- Full Rosensweig model WITH angular momentum (w) and micropolar terms
-- Includes spin-vorticity coupling, magnetic torque (m × h)
-- Numerical validation with MMS (Section 6): UMFPACK, fixed-point iteration
-- Experiments: spinning magnet, ferrofluid pumping, ferromagnetic stirring
-- Our code has remnants of the Zhang-He-Yang extension from this model (beta damping,
-  angular velocity) — currently unused, scheduled for cleanup
+    |-- Results/                   # Simulation output directories
 
 ---
 
 ## 7. Key Numerical Details
 
-### 6.1 chi*H Cancellation in MMS
+### 7.1 H = grad(phi) Convention
+
+The Poisson equation `(grad phi, grad X) = (h_a - M, grad X)` determines phi such that
+grad(phi) IS the total magnetic field H. The applied field h_a enters ONLY as a source
+term in the Poisson RHS. This is confirmed by:
+- Nochetto CMAME 2016, page 506: "H^h = grad(Phi^k) in M_h"
+- Decoupled project (working): `H = grad(phi)` with explicit "Do NOT add h_a" comment
+- Magnetization assembler (correct): `H = grad(phi)`
+
+### 7.2 chi*H Cancellation in MMS
 
 The equilibrium term (chi/tau_M)*H appears in both the magnetization equation and its
 MMS source. Since the MMS source uses the DISCRETE H (from the Poisson solve), these
 terms cancel EXACTLY in the weak form, making the magnetization MMS error independent
-of the Poisson solution quality. This is by design.
+of the H convention used.
 
-### 6.2 DG Face Assembly: FEInterfaceValues DOF Numbering
+### 7.3 DG Face Assembly: FEInterfaceValues DOF Numbering
 
 For DG elements, FEInterfaceValues numbers interface DOFs sequentially:
 - DOFs 0 .. dofs_per_cell-1: belong to cell 0 ("here")
 - DOFs dofs_per_cell .. 2*dofs_per_cell-1: belong to cell 1 ("there")
 
-The shape_value(bool here_or_there, uint interface_dof, uint q_point) method:
-- shape_value(true, i, q): evaluates interface DOF i on cell 0's side
-- shape_value(false, i, q): evaluates interface DOF i on cell 1's side
+Must use `shape_value(false, dofs_per_cell + j, q)` to access cell 1's DOFs.
 
-For DG, shape functions have support only on their own cell, so:
-- shape_value(true, i, q) for i < dofs_per_cell: nonzero (cell 0's DOF on cell 0)
-- shape_value(false, i, q) for i < dofs_per_cell: ZERO (cell 0's DOF on cell 1)
-- shape_value(false, dofs_per_cell + i, q): nonzero (cell 1's DOF on cell 1)
+### 7.4 Viscous Term: ν(T,T) Convention
 
-### 6.3 Boundary Treatment for DG Transport
+Paper Eq. 42e uses bilinear form `ν(T(U), T(V))` where `T = ½(∇u + (∇u)^T)`.
+The code's helper `compute_symmetric_gradient()` returns `D = ∇u + (∇u)^T = 2T`.
 
-The skew-symmetric form B_h^m only involves interior face integrals. Boundary faces
-are skipped because:
-1. In the Nochetto model, U . n = 0 on the domain boundary (no-slip)
-2. Therefore (U.n)[[M]]{phi} = 0 on boundary faces
-3. The MMS velocity (NS MMS) also satisfies U . n = 0 on all boundaries
+Bilinear form: `(ν/4)(D,D) = (ν/4)(2T)(2T) = ν(T,T)` ← matches paper.
+Strong form: `-(ν/2)∆U` (since `div(T) = ½∆u` for incompressible flow).
 
-This is consistent with the physical setup (closed domain with no fluid in/outflow).
+**Bug 10 (Session 15):** Code previously used coefficient `ν/2`, giving `2ν(T,T)` —
+double the paper's viscosity. Fixed to `ν/4`. MMS source also corrected from `-ν∆U`
+to `-(ν/2)∆U`. MMS tests were unaffected (self-consistent error).
+
+### 7.5 DG Skew Form Kelvin Force Instability (OPEN ISSUE)
+
+The DG skew form B_h^m (Eq. 38) produces spurious forces and odd-even oscillations
+in production runs. The face term `-(V.n) [[H]].{M}` may be amplifying numerical noise
+from CG gradient discontinuities at quadrature points. Since phi is CG, grad(phi)
+should be nearly continuous across faces, making [[H]] ~ 0 in exact arithmetic but
+potentially O(h) at off-node quadrature points.
+
+The Decoupled project avoids this issue by using a different 3-term formulation that
+does not involve jumps in H across faces.
