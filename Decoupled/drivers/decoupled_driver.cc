@@ -415,20 +415,33 @@ class FlatInterfaceIC : public dealii::Function<dim>
 {
 public:
     FlatInterfaceIC(double y_interface, double /*epsilon*/,
-                    double /*perturb_amp*/ = 0.0, double /*perturb_k*/ = 0.0)
+                    double perturb_amp = 0.0)
         : dealii::Function<dim>(1)
         , y_if_(y_interface)
+        , amp_(perturb_amp)
     {}
 
     double value(const dealii::Point<dim>& p,
                  const unsigned int /*component*/) const override
     {
+        // Interface position with optional perturbation
+        double y_int = y_if_;
+        if (amp_ > 0.0)
+        {
+            // Small multi-mode perturbation to seed Rosensweig instability
+            // White-noise-like: sum of incommensurate modes
+            y_int += amp_ * (std::cos(5.0 * 2.0 * M_PI * p[0])
+                           + std::cos(7.0 * 2.0 * M_PI * p[0])
+                           + std::cos(11.0 * 2.0 * M_PI * p[0])) / 3.0;
+        }
+
         // Sharp step: Zhang Eq 4.3
-        return (p[1] <= y_if_) ? 1.0 : -1.0;
+        return (p[1] <= y_int) ? 1.0 : -1.0;
     }
 
 private:
     double y_if_;
+    double amp_;
 };
 
 class ZeroFunction : public dealii::Function<dim>
@@ -1128,8 +1141,10 @@ int main(int argc, char* argv[])
             //   Eq 4.3 (Section 4.3): interface at y=0.2
             //   Eq 4.5 (Section 4.4): interface at y=0.1
             const double y_interface = params.flat_interface_y;
-            pcout << "  IC: Flat interface (y=" << y_interface << ")\n";
-            FlatInterfaceIC theta_ic(y_interface, eps);
+            const double perturb_amp = 0.0;
+            pcout << "  IC: Flat interface (y=" << y_interface
+                  << ", perturb=" << perturb_amp << ")\n";
+            FlatInterfaceIC theta_ic(y_interface, eps, perturb_amp);
             ZeroFunction psi_ic;
             ch.project_initial_condition(theta_ic, psi_ic);
         }

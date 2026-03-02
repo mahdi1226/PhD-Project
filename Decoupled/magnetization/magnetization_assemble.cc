@@ -288,21 +288,19 @@ const bool mms_active = static_cast<bool>(mms_source_);
             // Computed only during full assembly; cached in spin_vort_rhs_
             // vectors for reuse during Picard RHS-only iterations.
             // ================================================================
+            // TEMPORARILY DISABLED for Rosensweig baseline test
+            // Spin-vorticity: +½(∇×U × M^{n-1}, Z)
             double spin_vort_x = 0.0;
             double spin_vort_y = 0.0;
-            if (matrix_and_rhs)
-            {
-                // Vorticity: ω_z = ∂u_y/∂x − ∂u_x/∂y
-                const double omega_z = grad_Uy[q][0] - grad_Ux[q][1];
-                const double Mx = Mx_old_vals[q];
-                const double My = (dim > 1) ? My_old_vals[q] : 0.0;
-
-                // (∇×u) × m = ω_z(-m_y, m_x)
-                // +½ factor from Eq 3.14
-                spin_vort_x = 0.5 * omega_z * (-My);
-                if constexpr (dim > 1)
-                    spin_vort_y = 0.5 * omega_z * Mx;
-            }
+            // if (matrix_and_rhs)
+            // {
+            //     const double omega_z = grad_Uy[q][0] - grad_Ux[q][1];
+            //     const double Mx = Mx_old_vals[q];
+            //     const double My = (dim > 1) ? My_old_vals[q] : 0.0;
+            //     spin_vort_x = 0.5 * omega_z * (-My);
+            //     if constexpr (dim > 1)
+            //         spin_vort_y = 0.5 * omega_z * Mx;
+            // }
 
             // ================================================================
             // β-term: β M×(M×H) = β[M(M·H) - H|M|²]  (explicit, RHS)

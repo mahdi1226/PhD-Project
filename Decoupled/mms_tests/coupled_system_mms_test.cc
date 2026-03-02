@@ -161,7 +161,7 @@ static CoupledMMSResult run_single_level(
             return compute_poisson_mms_source_coupled<dim>(pt, time, L_y);
         });
 
-    // Magnetization source: with transport
+    // Magnetization source: with transport + spin-vorticity correction
     mag.set_mms_source(
         [L_y](const Point<dim>& pt,
               double t_new, double t_old,
@@ -170,8 +170,21 @@ static CoupledMMSResult run_single_level(
               const Tensor<1, dim>& U,
               double div_U) -> Tensor<1, dim>
         {
-            return compute_mag_mms_source_with_transport<dim>(
+            auto f = compute_mag_mms_source_with_transport<dim>(
                 pt, t_new, t_old, tau_M, chi_val, H, U, div_U, L_y);
+
+            // Spin-vorticity correction (D3 fix):
+            // Assembler adds +½·ω_z·(-My_old, Mx_old) to RHS.
+            // MMS source must subtract this exact contribution.
+            // ω_z = curl(U*) at t_new, M* at t_old.
+            const auto gux = NSMMS::ux_grad<dim>(pt, t_new, L_y);
+            const auto guy = NSMMS::uy_grad<dim>(pt, t_new, L_y);
+            const double omega_z = guy[0] - gux[1];
+            const auto M_old = mag_mms_exact_M<dim>(pt, t_old, L_y);
+            f[0] -= 0.5 * omega_z * (-M_old[1]);
+            f[1] -= 0.5 * omega_z * ( M_old[0]);
+
+            return f;
         });
 
     // ----------------------------------------------------------------
