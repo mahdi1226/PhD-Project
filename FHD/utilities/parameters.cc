@@ -392,6 +392,14 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
         else if (std::strcmp(argv[i], "--verbose") == 0 || std::strcmp(argv[i], "-v") == 0)
             params.output.verbose = true;
 
+        // ---- Solver ----
+        else if (std::strcmp(argv[i], "--block-schur") == 0)
+        {
+            params.solvers.navier_stokes.use_iterative = true;
+            params.solvers.navier_stokes.preconditioner =
+                LinearSolverParams::Preconditioner::BlockSchur;
+        }
+
         // ---- Help ----
         else if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0)
         {

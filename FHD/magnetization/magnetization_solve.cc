@@ -90,6 +90,27 @@ SolverInfo MagnetizationSubsystem<dim>::solve()
                 info.converged = false;
             }
         }
+        catch (const std::exception& /*e*/)
+        {
+            // Catch AztecOO "loss of precision" and other solver errors
+            if (solver_params.fallback_to_direct)
+            {
+                pcout_ << "  Mag GMRES exception, falling back to direct\n";
+                dealii::SolverControl direct_control(1, 0.0);
+                dealii::TrilinosWrappers::SolverDirect direct_solver(direct_control);
+                direct_solver.solve(system_matrix_, Mx_solution_, Mx_rhs_);
+                direct_solver.solve(system_matrix_, My_solution_, My_rhs_);
+
+                info.iterations = 1;
+                info.converged = true;
+                info.used_direct = true;
+                info.solver_name = "Magnetization-Direct-Fallback";
+            }
+            else
+            {
+                throw;
+            }
+        }
     }
 
     ghosts_valid_ = false;
