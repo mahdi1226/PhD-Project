@@ -94,6 +94,10 @@ void NavierStokesSubsystem<dim>::assemble(
     const dealii::QGauss<dim> quadrature(vel_degree + 1);
     const unsigned int n_q = quadrature.size();
 
+    // Face quadrature for Kelvin force face integral (Eq. 38, 2nd line)
+    const dealii::QGauss<dim - 1> face_quadrature(vel_degree + 1);
+    const unsigned int n_face_q = face_quadrature.size();
+
     const unsigned int ux_dpc = fe_velocity_.n_dofs_per_cell();
     const unsigned int uy_dpc = fe_velocity_.n_dofs_per_cell();
     const unsigned int p_dpc  = fe_pressure_.n_dofs_per_cell();
@@ -129,6 +133,33 @@ void NavierStokesSubsystem<dim>::assemble(
             dealii::update_gradients | dealii::update_hessians);
     }
 
+    // FEFaceValues for Kelvin force face integral (Eq. 38, 2nd line):
+    // −Σ_F ∫_F (V·n⁻) [[H]]·{M} ds
+    std::unique_ptr<dealii::FEFaceValues<dim>> fe_face_vel;
+    std::unique_ptr<dealii::FEFaceValues<dim>> fe_face_phi;
+    std::unique_ptr<dealii::FEFaceValues<dim>> fe_face_phi_neighbor;
+    std::unique_ptr<dealii::FEFaceValues<dim>> fe_face_M;
+    std::unique_ptr<dealii::FEFaceValues<dim>> fe_face_M_neighbor;
+    if (has_kelvin)
+    {
+        fe_face_vel = std::make_unique<dealii::FEFaceValues<dim>>(
+            fe_velocity_, face_quadrature,
+            dealii::update_values | dealii::update_normal_vectors
+            | dealii::update_JxW_values);
+        fe_face_phi = std::make_unique<dealii::FEFaceValues<dim>>(
+            phi_dof_handler->get_fe(), face_quadrature,
+            dealii::update_gradients);
+        fe_face_phi_neighbor = std::make_unique<dealii::FEFaceValues<dim>>(
+            phi_dof_handler->get_fe(), face_quadrature,
+            dealii::update_gradients);
+        fe_face_M = std::make_unique<dealii::FEFaceValues<dim>>(
+            M_dof_handler->get_fe(), face_quadrature,
+            dealii::update_values);
+        fe_face_M_neighbor = std::make_unique<dealii::FEFaceValues<dim>>(
+            M_dof_handler->get_fe(), face_quadrature,
+            dealii::update_values);
+    }
+
     // Local matrices (block structure)
     dealii::FullMatrix<double> local_ux_ux(ux_dpc, ux_dpc);
     dealii::FullMatrix<double> local_ux_uy(ux_dpc, uy_dpc);
@@ -139,6 +170,9 @@ void NavierStokesSubsystem<dim>::assemble(
     dealii::FullMatrix<double> local_p_ux(p_dpc, ux_dpc);
     dealii::FullMatrix<double> local_p_uy(p_dpc, uy_dpc);
     dealii::FullMatrix<double> local_p_p(p_dpc, p_dpc);  // zero — needed for constraint diagonal
+
+    // Pressure mass matrix local (for block-Schur preconditioner)
+    dealii::FullMatrix<double> local_Mp(p_dpc, p_dpc);
 
     dealii::Vector<double> local_rhs_ux(ux_dpc);
     dealii::Vector<double> local_rhs_uy(uy_dpc);
@@ -161,9 +195,26 @@ void NavierStokesSubsystem<dim>::assemble(
     std::vector<dealii::Tensor<1, dim>> phi_grad_vals(n_q);
     std::vector<dealii::Tensor<2, dim>> phi_hess_vals(n_q);
 
+    // Kelvin face integral buffers (Eq. 38, 2nd line)
+    std::vector<dealii::Tensor<1, dim>> phi_grad_face_minus(n_face_q);
+    std::vector<dealii::Tensor<1, dim>> phi_grad_face_plus(n_face_q);
+    std::vector<double> Mx_face_minus(n_face_q), My_face_minus(n_face_q);
+    std::vector<double> Mx_face_plus(n_face_q), My_face_plus(n_face_q);
+
     // Zero global system
     ns_matrix_ = 0.0;
     ns_rhs_ = 0.0;
+
+    if (use_block_schur_)
+    {
+        A_ux_ux_ = 0.0;
+        A_uy_uy_ = 0.0;
+        Bt_ux_ = 0.0;
+        Bt_uy_ = 0.0;
+        B_ux_ = 0.0;
+        B_uy_ = 0.0;
+        M_p_ = 0.0;
+    }
 
     // ========================================================================
     // Cell loop
@@ -225,7 +276,7 @@ void NavierStokesSubsystem<dim>::assemble(
         local_uy_ux = 0.0;  local_uy_uy = 0.0;
         local_ux_p = 0.0;   local_uy_p = 0.0;
         local_p_ux = 0.0;   local_p_uy = 0.0;
-        local_p_p = 0.0;
+        local_p_p = 0.0;    local_Mp = 0.0;
         local_rhs_ux = 0.0; local_rhs_uy = 0.0;
         local_rhs_p = 0.0;
 
@@ -360,6 +411,111 @@ void NavierStokesSubsystem<dim>::assemble(
                     local_p_uy(j, i) += (grad_phi_ux_i[1] * phi_p_j) * JxW;
                 }
             }
+
+            // Pressure mass matrix (for Schur complement approximation)
+            if (use_block_schur_)
+            {
+                for (unsigned int i = 0; i < p_dpc; ++i)
+                {
+                    const double phi_p_i = fe_values_p.shape_value(i, q);
+                    for (unsigned int j = 0; j < p_dpc; ++j)
+                    {
+                        const double phi_p_j = fe_values_p.shape_value(j, q);
+                        local_Mp(i, j) += phi_p_i * phi_p_j * JxW;
+                    }
+                }
+            }
+        }
+
+        // ================================================================
+        // Face loop: Kelvin force face integral — Eq. 38, 2nd line
+        // −Σ_F ∫_F (V·n⁻) [[H]]·{M} ds
+        //
+        // Process each interior face ONCE (dedup by CellId).
+        // CG velocity: evaluate test functions from one side only.
+        // RHS-only contribution (no matrix modification).
+        // ================================================================
+        if (has_kelvin)
+        {
+            for (unsigned int f = 0;
+                 f < dealii::GeometryInfo<dim>::faces_per_cell; ++f)
+            {
+                if (ux_cell->face(f)->at_boundary())
+                    continue;
+                if (ux_cell->neighbor_is_coarser(f))
+                    continue;
+
+                const auto neighbor = ux_cell->neighbor(f);
+
+                // Dedup: process each face once (smaller CellId)
+                if (ux_cell->level() == neighbor->level()
+                    && neighbor->id() < ux_cell->id())
+                    continue;
+
+                if (!neighbor->is_ghost() && !neighbor->is_locally_owned())
+                    continue;
+
+                const unsigned int nf = ux_cell->neighbor_of_neighbor(f);
+
+                // Velocity test functions on minus side
+                fe_face_vel->reinit(ux_cell, f);
+
+                // φ gradients on both sides → [[∇φ]]
+                const auto phi_minus = ux_cell->as_dof_handler_iterator(
+                    *phi_dof_handler);
+                const auto phi_plus = neighbor->as_dof_handler_iterator(
+                    *phi_dof_handler);
+                fe_face_phi->reinit(phi_minus, f);
+                fe_face_phi_neighbor->reinit(phi_plus, nf);
+                fe_face_phi->get_function_gradients(
+                    phi_relevant, phi_grad_face_minus);
+                fe_face_phi_neighbor->get_function_gradients(
+                    phi_relevant, phi_grad_face_plus);
+
+                // M values on both sides → {M}
+                const auto M_minus = ux_cell->as_dof_handler_iterator(
+                    *M_dof_handler);
+                const auto M_plus = neighbor->as_dof_handler_iterator(
+                    *M_dof_handler);
+                fe_face_M->reinit(M_minus, f);
+                fe_face_M_neighbor->reinit(M_plus, nf);
+                fe_face_M->get_function_values(Mx_relevant, Mx_face_minus);
+                fe_face_M->get_function_values(My_relevant, My_face_minus);
+                fe_face_M_neighbor->get_function_values(
+                    Mx_relevant, Mx_face_plus);
+                fe_face_M_neighbor->get_function_values(
+                    My_relevant, My_face_plus);
+
+                for (unsigned int q = 0; q < n_face_q; ++q)
+                {
+                    const double JxW = fe_face_vel->JxW(q);
+                    const auto& normal = fe_face_vel->normal_vector(q);
+
+                    // [[H]] = ∇φ⁻ − ∇φ⁺
+                    dealii::Tensor<1, dim> jump_H;
+                    jump_H = phi_grad_face_minus[q]
+                           - phi_grad_face_plus[q];
+
+                    // {M} = ½(M⁻ + M⁺)
+                    dealii::Tensor<1, dim> avg_M;
+                    avg_M[0] = 0.5 * (Mx_face_minus[q] + Mx_face_plus[q]);
+                    avg_M[1] = 0.5 * (My_face_minus[q] + My_face_plus[q]);
+
+                    for (unsigned int i = 0; i < ux_dpc; ++i)
+                    {
+                        const double phi_i =
+                            fe_face_vel->shape_value(i, q);
+
+                        double kelvin_ux, kelvin_uy;
+                        KelvinForce::face_kernel<dim>(
+                            phi_i, phi_i, normal, jump_H, avg_M,
+                            kelvin_ux, kelvin_uy);
+
+                        local_rhs_ux(i) += mu_0 * kelvin_ux * JxW;
+                        local_rhs_uy(i) += mu_0 * kelvin_uy * JxW;
+                    }
+                }
+            }
         }
 
         // ================================================================
@@ -401,10 +557,58 @@ void NavierStokesSubsystem<dim>::assemble(
         // distribute_local_to_global sets diagonal = 1 for pinned pressure DoF)
         ns_constraints_.distribute_local_to_global(
             local_p_p, local_rhs_p, coupled_p, ns_matrix_, ns_rhs_);
+
+        // ================================================================
+        // Distribute to separate block matrices (for Schur preconditioner)
+        // ================================================================
+        if (use_block_schur_)
+        {
+            // Velocity diagonal blocks
+            ux_constraints_.distribute_local_to_global(
+                local_ux_ux, ux_dofs, A_ux_ux_);
+            uy_constraints_.distribute_local_to_global(
+                local_uy_uy, uy_dofs, A_uy_uy_);
+
+            // B^T blocks (velocity × pressure): rows=vel, cols=p
+            // Use raw add since cross-block constraints are handled by monolithic
+            for (unsigned int i = 0; i < ux_dpc; ++i)
+                for (unsigned int j = 0; j < p_dpc; ++j)
+                {
+                    if (local_ux_p(i, j) != 0.0)
+                        Bt_ux_.add(ux_dofs[i], p_dofs[j], local_ux_p(i, j));
+                    if (local_uy_p(i, j) != 0.0)
+                        Bt_uy_.add(uy_dofs[i], p_dofs[j], local_uy_p(i, j));
+                }
+
+            // B blocks (pressure × velocity): rows=p, cols=vel
+            for (unsigned int i = 0; i < p_dpc; ++i)
+                for (unsigned int j = 0; j < ux_dpc; ++j)
+                {
+                    if (local_p_ux(i, j) != 0.0)
+                        B_ux_.add(p_dofs[i], ux_dofs[j], local_p_ux(i, j));
+                    if (local_p_uy(i, j) != 0.0)
+                        B_uy_.add(p_dofs[i], uy_dofs[j], local_p_uy(i, j));
+                }
+
+            // Pressure mass matrix
+            p_constraints_.distribute_local_to_global(
+                local_Mp, p_dofs, M_p_);
+        }
     }
 
     ns_matrix_.compress(dealii::VectorOperation::add);
     ns_rhs_.compress(dealii::VectorOperation::add);
+
+    if (use_block_schur_)
+    {
+        A_ux_ux_.compress(dealii::VectorOperation::add);
+        A_uy_uy_.compress(dealii::VectorOperation::add);
+        Bt_ux_.compress(dealii::VectorOperation::add);
+        Bt_uy_.compress(dealii::VectorOperation::add);
+        B_ux_.compress(dealii::VectorOperation::add);
+        B_uy_.compress(dealii::VectorOperation::add);
+        M_p_.compress(dealii::VectorOperation::add);
+    }
 
     timer.stop();
     last_assemble_time_ = timer.wall_time();
