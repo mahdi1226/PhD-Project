@@ -155,6 +155,12 @@ public:
         double residual = 0.0;
         double solve_time = 0.0;
         double assemble_time = 0.0;
+
+        // Kelvin force diagnostics (mesh-dependence tracking)
+        double kelvin_cell_L2 = 0.0;   // ||f_cell||_L2 (cell force density)
+        double kelvin_face_L2 = 0.0;   // ||f_face||_L2 (face force density)
+        double kelvin_Fx = 0.0;        // Total resultant Kelvin Fx (cell+face)
+        double kelvin_Fy = 0.0;        // Total resultant Kelvin Fy (cell+face)
     };
 
     Diagnostics compute_diagnostics() const;
@@ -166,6 +172,7 @@ private:
     void distribute_dofs();
     void build_constraints();
     void build_coupled_system();
+    void build_block_sparsity_patterns();
     void allocate_vectors();
 
     // ========================================================================
@@ -230,6 +237,19 @@ private:
     dealii::TrilinosWrappers::MPI::Vector ns_solution_;
 
     // ========================================================================
+    // Block matrices for Schur complement preconditioner
+    // ========================================================================
+    bool use_block_schur_ = false;
+
+    dealii::TrilinosWrappers::SparseMatrix A_ux_ux_;   // Velocity diagonal block (ux)
+    dealii::TrilinosWrappers::SparseMatrix A_uy_uy_;   // Velocity diagonal block (uy)
+    dealii::TrilinosWrappers::SparseMatrix Bt_ux_;     // B^T: pressure gradient (ux)
+    dealii::TrilinosWrappers::SparseMatrix Bt_uy_;     // B^T: pressure gradient (uy)
+    dealii::TrilinosWrappers::SparseMatrix B_ux_;      // B: divergence (ux)
+    dealii::TrilinosWrappers::SparseMatrix B_uy_;      // B: divergence (uy)
+    dealii::TrilinosWrappers::SparseMatrix M_p_;       // Pressure mass matrix
+
+    // ========================================================================
     // Component solution vectors
     // ========================================================================
     dealii::TrilinosWrappers::MPI::Vector ux_solution_;
@@ -248,6 +268,12 @@ private:
     MmsSourceFunction mms_source_;
     SolverInfo last_solve_info_;
     double last_assemble_time_ = 0.0;
+
+    // Kelvin force diagnostics (populated during assemble)
+    double last_kelvin_cell_L2_sq_ = 0.0;
+    double last_kelvin_face_L2_sq_ = 0.0;
+    double last_kelvin_Fx_ = 0.0;
+    double last_kelvin_Fy_ = 0.0;
 };
 
 extern template class NavierStokesSubsystem<2>;

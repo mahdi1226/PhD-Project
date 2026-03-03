@@ -29,16 +29,27 @@ NavierStokesSubsystem<dim>::NavierStokesSubsystem(
 template <int dim>
 void NavierStokesSubsystem<dim>::setup()
 {
+    use_block_schur_ =
+        (params_.solvers.navier_stokes.use_iterative &&
+         params_.solvers.navier_stokes.preconditioner ==
+             LinearSolverParams::Preconditioner::BlockSchur);
+
     distribute_dofs();
     build_constraints();
     build_coupled_system();
+
+    if (use_block_schur_)
+        build_block_sparsity_patterns();
+
     allocate_vectors();
 
     pcout_ << "  Navier-Stokes: "
            << n_ux_ + n_uy_ + n_p_ << " DoFs (CG Q"
            << params_.fe.degree_velocity << " velocity + DG P"
            << params_.fe.degree_pressure << " pressure: "
-           << n_ux_ << "+" << n_uy_ << "+" << n_p_ << ")\n";
+           << n_ux_ << "+" << n_uy_ << "+" << n_p_ << ")"
+           << (use_block_schur_ ? " [Block-Schur]" : " [Direct]")
+           << "\n";
 }
 
 template <int dim>

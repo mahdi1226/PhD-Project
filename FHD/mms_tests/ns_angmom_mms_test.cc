@@ -317,6 +317,7 @@ int main(int argc, char* argv[])
     // Defaults
     std::vector<unsigned int> refinements = {2, 3, 4, 5};
     unsigned int n_time_steps = 5;
+    bool use_block_schur = false;
 
     // Parse args
     for (int i = 1; i < argc; ++i)
@@ -329,17 +330,27 @@ int main(int argc, char* argv[])
                 if (argv[j][0] == '-') break;
                 refinements.push_back(std::stoul(argv[j]));
             }
-            break;
         }
         else if (std::strcmp(argv[i], "--steps") == 0 && i + 1 < argc)
         {
             n_time_steps = std::stoul(argv[++i]);
+        }
+        else if (std::strcmp(argv[i], "--block-schur") == 0)
+        {
+            use_block_schur = true;
         }
     }
 
     // MMS parameters
     Parameters params;
     params.setup_mms_validation();
+
+    if (use_block_schur)
+    {
+        params.solvers.navier_stokes.use_iterative = true;
+        params.solvers.navier_stokes.preconditioner =
+            LinearSolverParams::Preconditioner::BlockSchur;
+    }
 
     const unsigned int vel_degree = params.fe.degree_velocity;
     const unsigned int w_degree = params.fe.degree_angular;

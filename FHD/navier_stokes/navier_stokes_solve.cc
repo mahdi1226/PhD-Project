@@ -1,19 +1,24 @@
 // ============================================================================
-// navier_stokes/navier_stokes_solve.cc - Direct Solver + Solution Extraction
+// navier_stokes/navier_stokes_solve.cc - Iterative/Direct Solver
 //
-// Solves the monolithic saddle-point system using Trilinos Amesos.
-// Extracts component solutions (ux, uy, p) from the coupled vector.
+// Solver strategies:
+//   1. Block-Schur: FGMRES + block-Schur complement preconditioner
+//   2. GMRES + ILU: monolithic iterative (fallback)
+//   3. Direct: Trilinos Amesos (default, paper's approach)
 //
 // Reference: Nochetto, Salgado & Tomas, arXiv:1511.04381 (2015), Eq. 42e
 // ============================================================================
 
 #include "navier_stokes/navier_stokes.h"
+#include "navier_stokes/ns_block_schur_preconditioner.h"
 
 #include <deal.II/base/timer.h>
 #include <deal.II/base/quadrature_lib.h>
 #include <deal.II/fe/fe_values.h>
 #include <deal.II/lac/solver_control.h>
+#include <deal.II/lac/solver_gmres.h>
 #include <deal.II/lac/trilinos_solver.h>
+#include <deal.II/lac/trilinos_precondition.h>
 
 template <int dim>
 SolverInfo NavierStokesSubsystem<dim>::solve()
@@ -22,24 +27,159 @@ SolverInfo NavierStokesSubsystem<dim>::solve()
     timer.start();
 
     SolverInfo info;
-    info.solver_name = "NS-Direct";
     info.matrix_size = ns_matrix_.m();
 
-    dealii::SolverControl direct_control(1, 0.0);
-    dealii::TrilinosWrappers::SolverDirect direct_solver(direct_control);
+    const auto& solver_params = params_.solvers.navier_stokes;
 
-    try
+    if (use_block_schur_)
     {
-        direct_solver.solve(ns_matrix_, ns_solution_, ns_rhs_);
-        info.iterations = 1;
-        info.residual = 0.0;
-        info.converged = true;
-        info.used_direct = true;
+        // ================================================================
+        // Block-Schur complement preconditioner + FGMRES
+        // ================================================================
+        info.solver_name = "NS-FGMRES-BlockSchur";
+
+        const double nu_eff = params_.physics.nu + params_.physics.nu_r;
+
+        NSBlockSchurPreconditioner<dim> schur_precond(
+            A_ux_ux_, A_uy_uy_,
+            Bt_ux_, Bt_uy_,
+            B_ux_, B_uy_,
+            M_p_, nu_eff,
+            ux_locally_owned_, uy_locally_owned_, p_locally_owned_,
+            n_ux_, n_uy_,
+            solver_params, mpi_comm_);
+
+        schur_precond.initialize();
+
+        // Use relative tolerance (reduction) for outer FGMRES
+        dealii::ReductionControl solver_control(
+            solver_params.max_iterations,
+            /*abs_tol=*/1e-12,
+            /*reduction=*/solver_params.rel_tolerance);
+
+        dealii::SolverFGMRES<dealii::TrilinosWrappers::MPI::Vector>::AdditionalData
+            fgmres_data(solver_params.schur_gmres_restart);
+
+        dealii::SolverFGMRES<dealii::TrilinosWrappers::MPI::Vector>
+            solver(solver_control, fgmres_data);
+
+        try
+        {
+            solver.solve(ns_matrix_, ns_solution_, ns_rhs_, schur_precond);
+
+            info.iterations = solver_control.last_step();
+            info.residual = solver_control.last_value();
+            info.converged = true;
+            info.used_direct = false;
+        }
+        catch (const dealii::SolverControl::NoConvergence& e)
+        {
+            if (solver_params.fallback_to_direct)
+            {
+                pcout_ << "  NS FGMRES+BlockSchur failed after " << e.last_step
+                       << " iters (res=" << e.last_residual
+                       << "), falling back to direct\n";
+
+                dealii::SolverControl direct_control(1, 0.0);
+                dealii::TrilinosWrappers::SolverDirect direct_solver(direct_control);
+                direct_solver.solve(ns_matrix_, ns_solution_, ns_rhs_);
+
+                info.iterations = e.last_step;
+                info.residual = e.last_residual;
+                info.converged = true;
+                info.used_direct = true;
+                info.solver_name = "NS-BlockSchur-Direct-Fallback";
+            }
+            else
+            {
+                info.iterations = e.last_step;
+                info.residual = e.last_residual;
+                info.converged = false;
+            }
+        }
     }
-    catch (const std::exception& e)
+    else if (solver_params.use_iterative)
     {
-        pcout_ << "  NS direct solve failed: " << e.what() << "\n";
-        info.converged = false;
+        // ================================================================
+        // GMRES + ILU for the monolithic saddle-point system
+        // ================================================================
+        info.solver_name = "NS-GMRES-ILU";
+
+        dealii::TrilinosWrappers::PreconditionILU ilu;
+        dealii::TrilinosWrappers::PreconditionILU::AdditionalData ilu_data;
+        ilu_data.ilu_fill = 2;
+        ilu_data.ilu_atol = 1e-3;
+        ilu_data.ilu_rtol = 1.0;
+        ilu.initialize(ns_matrix_, ilu_data);
+
+        dealii::SolverControl solver_control(
+            solver_params.max_iterations,
+            solver_params.abs_tolerance);
+
+        dealii::SolverGMRES<dealii::TrilinosWrappers::MPI::Vector>::AdditionalData
+            gmres_data(solver_params.gmres_restart);
+
+        dealii::SolverGMRES<dealii::TrilinosWrappers::MPI::Vector>
+            solver(solver_control, gmres_data);
+
+        try
+        {
+            solver.solve(ns_matrix_, ns_solution_, ns_rhs_, ilu);
+
+            info.iterations = solver_control.last_step();
+            info.residual = solver_control.last_value();
+            info.converged = true;
+            info.used_direct = false;
+        }
+        catch (const dealii::SolverControl::NoConvergence& e)
+        {
+            if (solver_params.fallback_to_direct)
+            {
+                pcout_ << "  NS GMRES failed after " << e.last_step
+                       << " iters (res=" << e.last_residual
+                       << "), falling back to direct\n";
+
+                dealii::SolverControl direct_control(1, 0.0);
+                dealii::TrilinosWrappers::SolverDirect direct_solver(direct_control);
+                direct_solver.solve(ns_matrix_, ns_solution_, ns_rhs_);
+
+                info.iterations = e.last_step;
+                info.residual = e.last_residual;
+                info.converged = true;
+                info.used_direct = true;
+                info.solver_name = "NS-Direct-Fallback";
+            }
+            else
+            {
+                info.iterations = e.last_step;
+                info.residual = e.last_residual;
+                info.converged = false;
+            }
+        }
+    }
+    else
+    {
+        // ================================================================
+        // Direct solver (paper's approach for validation)
+        // ================================================================
+        info.solver_name = "NS-Direct";
+
+        dealii::SolverControl direct_control(1, 0.0);
+        dealii::TrilinosWrappers::SolverDirect direct_solver(direct_control);
+
+        try
+        {
+            direct_solver.solve(ns_matrix_, ns_solution_, ns_rhs_);
+            info.iterations = 1;
+            info.residual = 0.0;
+            info.converged = true;
+            info.used_direct = true;
+        }
+        catch (const std::exception& e)
+        {
+            pcout_ << "  NS direct solve failed: " << e.what() << "\n";
+            info.converged = false;
+        }
     }
 
     // Extract component solutions from monolithic vector
@@ -137,6 +277,12 @@ NavierStokesSubsystem<dim>::compute_diagnostics() const
     diag.residual = last_solve_info_.residual;
     diag.solve_time = last_solve_info_.solve_time;
     diag.assemble_time = last_assemble_time_;
+
+    // Kelvin force diagnostics (already MPI-reduced in assemble)
+    diag.kelvin_cell_L2 = std::sqrt(last_kelvin_cell_L2_sq_);
+    diag.kelvin_face_L2 = std::sqrt(last_kelvin_face_L2_sq_);
+    diag.kelvin_Fx = last_kelvin_Fx_;
+    diag.kelvin_Fy = last_kelvin_Fy_;
 
     return diag;
 }

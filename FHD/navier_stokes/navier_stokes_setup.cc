@@ -242,13 +242,141 @@ void NavierStokesSubsystem<dim>::allocate_vectors()
     ns_solution_.reinit(ns_locally_owned_, mpi_comm_);
 }
 
+template <int dim>
+void NavierStokesSubsystem<dim>::build_block_sparsity_patterns()
+{
+    const unsigned int vel_dpc = fe_velocity_.n_dofs_per_cell();
+    const unsigned int p_dpc  = fe_pressure_.n_dofs_per_cell();
+
+    std::vector<dealii::types::global_dof_index> ux_dofs(vel_dpc);
+    std::vector<dealii::types::global_dof_index> uy_dofs(vel_dpc);
+    std::vector<dealii::types::global_dof_index> p_dofs(p_dpc);
+
+    // A_ux_ux: velocity × velocity (ux block)
+    {
+        dealii::TrilinosWrappers::SparsityPattern sp(
+            ux_locally_owned_, ux_locally_owned_,
+            ux_locally_relevant_, mpi_comm_);
+
+        for (const auto& cell : ux_dof_handler_.active_cell_iterators())
+        {
+            if (!cell->is_locally_owned()) continue;
+            cell->get_dof_indices(ux_dofs);
+            ux_constraints_.add_entries_local_to_global(ux_dofs, sp);
+        }
+        sp.compress();
+        A_ux_ux_.reinit(sp);
+    }
+
+    // A_uy_uy: velocity × velocity (uy block) — same sparsity as ux
+    {
+        dealii::TrilinosWrappers::SparsityPattern sp(
+            uy_locally_owned_, uy_locally_owned_,
+            uy_locally_relevant_, mpi_comm_);
+
+        for (const auto& cell : uy_dof_handler_.active_cell_iterators())
+        {
+            if (!cell->is_locally_owned()) continue;
+            cell->get_dof_indices(uy_dofs);
+            uy_constraints_.add_entries_local_to_global(uy_dofs, sp);
+        }
+        sp.compress();
+        A_uy_uy_.reinit(sp);
+    }
+
+    // B_ux: pressure × ux velocity (divergence operator, ux component)
+    // B^T_ux: ux velocity × pressure (pressure gradient, ux component)
+    {
+        dealii::TrilinosWrappers::SparsityPattern sp_B(
+            p_locally_owned_, ux_locally_owned_,
+            p_locally_relevant_, mpi_comm_);
+
+        dealii::TrilinosWrappers::SparsityPattern sp_Bt(
+            ux_locally_owned_, p_locally_owned_,
+            ux_locally_relevant_, mpi_comm_);
+
+        for (const auto& cell : ux_dof_handler_.active_cell_iterators())
+        {
+            if (!cell->is_locally_owned()) continue;
+            cell->get_dof_indices(ux_dofs);
+
+            const auto p_cell = cell->as_dof_handler_iterator(p_dof_handler_);
+            p_cell->get_dof_indices(p_dofs);
+
+            // B_ux sparsity: rows = p, cols = ux
+            for (unsigned int i = 0; i < p_dpc; ++i)
+                for (unsigned int j = 0; j < vel_dpc; ++j)
+                    sp_B.add(p_dofs[i], ux_dofs[j]);
+
+            // Bt_ux sparsity: rows = ux, cols = p
+            for (unsigned int i = 0; i < vel_dpc; ++i)
+                for (unsigned int j = 0; j < p_dpc; ++j)
+                    sp_Bt.add(ux_dofs[i], p_dofs[j]);
+        }
+        sp_B.compress();
+        sp_Bt.compress();
+        B_ux_.reinit(sp_B);
+        Bt_ux_.reinit(sp_Bt);
+    }
+
+    // B_uy, Bt_uy: same structure but for uy
+    {
+        dealii::TrilinosWrappers::SparsityPattern sp_B(
+            p_locally_owned_, uy_locally_owned_,
+            p_locally_relevant_, mpi_comm_);
+
+        dealii::TrilinosWrappers::SparsityPattern sp_Bt(
+            uy_locally_owned_, p_locally_owned_,
+            uy_locally_relevant_, mpi_comm_);
+
+        for (const auto& cell : uy_dof_handler_.active_cell_iterators())
+        {
+            if (!cell->is_locally_owned()) continue;
+            cell->get_dof_indices(uy_dofs);
+
+            const auto p_cell = cell->as_dof_handler_iterator(p_dof_handler_);
+            p_cell->get_dof_indices(p_dofs);
+
+            for (unsigned int i = 0; i < p_dpc; ++i)
+                for (unsigned int j = 0; j < vel_dpc; ++j)
+                    sp_B.add(p_dofs[i], uy_dofs[j]);
+
+            for (unsigned int i = 0; i < vel_dpc; ++i)
+                for (unsigned int j = 0; j < p_dpc; ++j)
+                    sp_Bt.add(uy_dofs[i], p_dofs[j]);
+        }
+        sp_B.compress();
+        sp_Bt.compress();
+        B_uy_.reinit(sp_B);
+        Bt_uy_.reinit(sp_Bt);
+    }
+
+    // M_p: pressure mass matrix (p × p)
+    {
+        dealii::TrilinosWrappers::SparsityPattern sp(
+            p_locally_owned_, p_locally_owned_,
+            p_locally_relevant_, mpi_comm_);
+
+        for (const auto& cell : p_dof_handler_.active_cell_iterators())
+        {
+            if (!cell->is_locally_owned()) continue;
+            cell->get_dof_indices(p_dofs);
+            p_constraints_.add_entries_local_to_global(p_dofs, sp);
+        }
+        sp.compress();
+        M_p_.reinit(sp);
+    }
+}
+
 // Explicit instantiations
 template void NavierStokesSubsystem<2>::distribute_dofs();
 template void NavierStokesSubsystem<2>::build_constraints();
 template void NavierStokesSubsystem<2>::build_coupled_system();
+template void NavierStokesSubsystem<2>::build_block_sparsity_patterns();
 template void NavierStokesSubsystem<2>::allocate_vectors();
 
 template void NavierStokesSubsystem<3>::distribute_dofs();
 template void NavierStokesSubsystem<3>::build_constraints();
 template void NavierStokesSubsystem<3>::build_coupled_system();
+template void NavierStokesSubsystem<3>::build_block_sparsity_patterns();
 template void NavierStokesSubsystem<3>::allocate_vectors();

@@ -19,6 +19,7 @@
 #include <deal.II/lac/solver_cg.h>
 #include <deal.II/lac/solver_control.h>
 #include <deal.II/lac/trilinos_solver.h>
+#include <deal.II/lac/precondition.h>
 
 template <int dim>
 SolverInfo PoissonSubsystem<dim>::solve()
@@ -34,13 +35,17 @@ SolverInfo PoissonSubsystem<dim>::solve()
 
     if (solver_params.use_iterative && amg_initialized_)
     {
-        dealii::SolverControl solver_control(
+        // Use deal.II native CG instead of Trilinos AztecOO CG to avoid
+        // the "loss of precision" error (AztecOO error code -3) which is
+        // overly conservative for near-singular systems (Neumann + pin).
+        dealii::ReductionControl solver_control(
             solver_params.max_iterations,
             solver_params.abs_tolerance,
+            /*reduction=*/1e-8,
             /*log_history=*/false,
             /*log_result=*/false);
 
-        dealii::TrilinosWrappers::SolverCG solver(solver_control);
+        dealii::SolverCG<dealii::TrilinosWrappers::MPI::Vector> solver(solver_control);
 
         try
         {
@@ -77,32 +82,6 @@ SolverInfo PoissonSubsystem<dim>::solve()
                 info.iterations = e.last_step;
                 info.residual = e.last_residual;
                 info.converged = false;
-            }
-        }
-        catch (const std::exception& e)
-        {
-            // Catches Trilinos AztecOO errors (e.g., "loss of precision")
-            // which are thrown as dealii::ExcMessage, not NoConvergence
-            pcout_ << "  Poisson CG failed: " << e.what() << "\n";
-
-            if (solver_params.fallback_to_direct)
-            {
-                pcout_ << "  Falling back to direct solver...\n";
-                dealii::SolverControl direct_control(1, 0.0);
-                dealii::TrilinosWrappers::SolverDirect direct_solver(
-                    direct_control);
-                direct_solver.solve(system_matrix_, solution_, system_rhs_);
-
-                info.iterations = 1;
-                info.residual = 0.0;
-                info.converged = true;
-                info.used_direct = true;
-                info.solver_name = "Poisson-Direct-Fallback";
-            }
-            else
-            {
-                info.converged = false;
-                throw;
             }
         }
     }

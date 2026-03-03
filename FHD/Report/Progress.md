@@ -93,32 +93,66 @@
 | phi_H1| 2.00 | 2.0 |
 | M_L2  | 2.92 | 3.0 |
 
+### Block-Schur Preconditioner
+- [x] `ns_block_schur_preconditioner.h/.cc` — standalone class
+- [x] Right preconditioner P=[A B^T; 0 -S], S≈(1/ν_eff)M_p
+- [x] Inner A^{-1}: AMG+CG on diagonal vel blocks (separate ux, uy)
+- [x] Inner S^{-1}: Jacobi+CG on pressure mass matrix (scaled by ν_eff)
+- [x] Outer: FGMRES with ReductionControl (rel_tolerance=1e-6)
+- [x] Dual assembly: monolithic ns_matrix_ + 7 separate block matrices
+- [x] All 3 NS MMS tests pass (standalone, NS+AngMom, full 4-system)
+- [x] **Speedup at ref 7**: ~10s/step vs ~258s/step direct = **26× faster**
+- [x] CLI: `--block-schur`
+
+### Kelvin Force Face Integrals (Eq. 38, 2nd line)
+- [x] Missing face integral: −Σ_F ∫_F (V·n⁻)[[H]]·{M} ds
+- [x] Required for energy identity B_h^m(H,H,M)=0 (Lemma 3.1)
+- [x] CG velocity deduplication (single-side processing, CellId guard)
+- [x] RHS-only contribution (no matrix changes)
+- [x] All MMS rates preserved (face term vanishes for smooth solutions)
+
+### Kelvin Force Diagnostics
+- [x] Added per-step tracking of Kelvin cell/face L2 norms and resultant force
+- [x] CSV columns: kelvin_cell_L2, kelvin_face_L2, kelvin_Fx, kelvin_Fy
+- [x] Key finding: **Kelvin force converges across meshes, velocity does NOT**
+  - Cell L2: 3.58e4 → 3.70e4 → 3.73e4 (converged)
+  - Face L2: 203 → 50 → 10 (→ 0 as expected for CG φ)
+  - Fy: −7515 → −7638 → −7676 (converged)
+  - U_max: 4.09 → 1.03 → 0.51 (NOT converged — pressure robustness issue)
+
 ### Paper Validation — Section 7.3: Stirring (IN PROGRESS)
 - [x] **Approach 1** (`--stirring-1`): 2 dipoles at y=-0.4, opposite polarity, f=20Hz
-  - 400 steps completed, ref 5, wall time 1275s
+  - 400 steps completed, ref 7 with block-Schur, wall time 4010s (67 min)
   - U_max = 0.016, divU_L2 = 0.006, p = [-9, +100]
   - c in [0, 1.001], mass conserved to 0.0007% — excellent quality
-  - Matches paper expectation: minimal mixing (Figure 15)
+  - Matches paper: "less than 10⁻² for most of our experiments" ✅
 - [x] **Approach 2** (`--stirring-2`): 8 dipoles at y=-0.1, traveling wave, f=20Hz
-  - 100 steps completed, ref 6 (64x64), wall time ~3500s
-  - U_max = 1.75 (paper: 4.33), divU_L2 = 4.0 — quality issue (see Diagnostics)
-  - Mesh-dependent: ref 5 gives U=5.9, ref 6 gives U=1.7, paper (~100x100) gives U=4.33
-- [ ] **Approach 2 Enhanced** (`--stirring-2-enhanced`): f=40Hz, nu=nu_r=0.1, t=4.0 (Figure 19)
-  - Preset added, not yet run
-- [ ] Run approach 2 at ref 7 (128x128) to match paper's ~100x100 mesh
+  - Paper: f=20Hz, α₀=5, ν=ν_r=0.5, Figure 18 shows U=4.33
+  - **ref 5** (32²): U=4.31, divU=21.4 — matches paper but poor incompressibility
+  - **ref 6** (64²): U=1.18, divU=3.87
+  - **ref 7** (128²): U=0.51, divU=0.59
+  - Velocity mesh-dependent despite converged Kelvin force (see Diagnostics Issue 10)
+  - Hypothesis: paper uses ~32×32 mesh (proof of concept, not convergence study)
+- [x] **Approach 2 Enhanced** (`--stirring-2-enhanced`): f=40Hz, ν=ν_r=0.1, t=4.0 (Figure 19)
+  - ref 7 with block-Schur: 400 steps in 12829s (3.6h), ~32s/step, 4 Picard iters
+  - U_max range [1.85, 3.67], final ≈ 3.5
+- [ ] Determine paper's mesh for Section 7.3 (not stated in text)
+- [ ] Investigate pressure robustness of Q2/DG-P1 for near-singular Kelvin force
 - [ ] Visual validation of VTK output against paper Figures 15-19
 
 ## Remaining Work
 
-### Near-term (Section 7.3 Completion)
-- [ ] Run approach 2 at ref 7 (128x128) — paper uses "100 elements in each space direction"
-- [ ] Run approach 2 enhanced at ref 7 (Figure 19 validation)
-- [ ] Verify divU quality improves at ref 7
-- [ ] Visual comparison of passive scalar mixing patterns against Figures 15-19
+### Near-term (Section 7.3 Investigation)
+- [ ] Determine paper's mesh resolution for Section 7.3 (not stated explicitly)
+- [ ] Investigate pressure robustness: is the Q2/DG-P1 pair unable to properly
+      cancel the irrotational component of the strong Kelvin force?
+- [ ] Try higher pressure degree or pressure-robust formulation as diagnostic
+- [ ] Visual comparison of VTK output against paper Figures 15-19
+- [ ] Re-run enhanced stirring with SUPG (was c_max=2.81)
 
 ### Medium-term (Phase A Completion)
 - [ ] AMR support: Adaptive mesh refinement in coupled solver (subface handling in DG transport)
-- [ ] Performance optimization for ref 7 runs (~4x slower than ref 6)
+- [ ] Performance: block-Schur gives 26× speedup; further optimization possible
 
 ### Long-term (Phase B)
 - [ ] Cahn-Hilliard subsystem with Flory-Huggins logarithmic free energy
@@ -133,12 +167,12 @@
     ├── CMakeLists.txt
     ├── utilities/          — parameters, solver_info
     ├── mesh/               — mesh creation
-    ├── physics/            — skew_forms, applied_field, material_properties
+    ├── physics/            — skew_forms, applied_field, kelvin_force, material_properties
     ├── poisson/            — Poisson subsystem + MMS test
     ├── magnetization/      — DG magnetization subsystem + MMS test
-    ├── navier_stokes/      — Micropolar NS subsystem + MMS test
+    ├── navier_stokes/      — Micropolar NS + block-Schur precon + MMS test
     ├── angular_momentum/   — Angular momentum subsystem + MMS test
-    ├── passive_scalar/     — Passive scalar (Eq. 104) CG Q2 convection-diffusion
+    ├── passive_scalar/     — Passive scalar (Eq. 104) CG Q2 + SUPG
     ├── mms_tests/          — Coupled MMS tests (pairwise + full)
     ├── drivers/            — Production driver (fhd_driver.cc)
     ├── experiments/        — Validation experiment configs

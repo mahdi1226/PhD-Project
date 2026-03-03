@@ -65,6 +65,7 @@ add_library(navier_stokes_lib STATIC
     navier_stokes/navier_stokes_assemble.cc
     navier_stokes/navier_stokes_solve.cc
     navier_stokes/navier_stokes_output.cc
+    navier_stokes/ns_block_schur_preconditioner.cc
 )
 target_link_libraries(navier_stokes_lib utilities_lib)
 deal_ii_setup_target(navier_stokes_lib)

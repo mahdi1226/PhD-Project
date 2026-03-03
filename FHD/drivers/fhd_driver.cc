@@ -313,6 +313,8 @@ int main(int argc, char* argv[])
     TrilinosWrappers::MPI::Vector My_relaxed_owned(M_owned, mpi_comm);
     TrilinosWrappers::MPI::Vector Mx_prev(M_owned, mpi_comm);
     TrilinosWrappers::MPI::Vector My_prev(M_owned, mpi_comm);
+    TrilinosWrappers::MPI::Vector Mx_diff(M_owned, mpi_comm);
+    TrilinosWrappers::MPI::Vector My_diff(M_owned, mpi_comm);
 
     Mx_old = 0.0;
     My_old = 0.0;
@@ -460,6 +462,7 @@ int main(int argc, char* argv[])
         csv_file << "step,time,dt,picard_iters,picard_res,"
                  << "ux_min,ux_max,uy_min,uy_max,U_max,E_kin,divU_L2,"
                  << "p_min,p_max,"
+                 << "kelvin_cell_L2,kelvin_face_L2,kelvin_Fx,kelvin_Fy,"
                  << "w_min,w_max,w_max_abs,"
                  << "Mx_min,Mx_max,My_min,My_max,M_max,"
                  << "phi_min,phi_max,H_max,"
@@ -545,9 +548,7 @@ int main(int argc, char* argv[])
             Mx_relaxed = Mx_relaxed_owned;
             My_relaxed = My_relaxed_owned;
 
-            // Step D: Convergence check
-            TrilinosWrappers::MPI::Vector Mx_diff(M_owned, mpi_comm);
-            TrilinosWrappers::MPI::Vector My_diff(M_owned, mpi_comm);
+            // Step D: Convergence check (reuse pre-allocated diff vectors)
             Mx_diff = Mx_relaxed_owned;
             Mx_diff -= Mx_prev;
             My_diff = My_relaxed_owned;
@@ -571,11 +572,10 @@ int main(int argc, char* argv[])
             }
         }
 
-        // Final Poisson solve consistent with converged M
-        poisson.assemble_rhs(Mx_relaxed, My_relaxed,
-                             mag.get_dof_handler(), current_time);
-        poisson.solve();
-        poisson.update_ghosts();
+        // NOTE: No final Poisson re-solve needed. The last Picard iteration
+        // already solved Poisson with Mx_relaxed^{k-1}, and since Picard
+        // converged (|M^k - M^{k-1}| < tol), the phi is already consistent
+        // to within the Picard tolerance.
 
         // ============================================================
         // Phase 2: NS with Kelvin force + micropolar + convection
@@ -668,6 +668,10 @@ int main(int argc, char* argv[])
                      << ns_diag.E_kin << ","
                      << ns_diag.divU_L2 << ","
                      << ns_diag.p_min << "," << ns_diag.p_max << ","
+                     << ns_diag.kelvin_cell_L2 << ","
+                     << ns_diag.kelvin_face_L2 << ","
+                     << ns_diag.kelvin_Fx << ","
+                     << ns_diag.kelvin_Fy << ","
                      << am_diag.w_min << "," << am_diag.w_max << ","
                      << am_diag.w_max_abs << ","
                      << mag_diag.Mx_min << "," << mag_diag.Mx_max << ","

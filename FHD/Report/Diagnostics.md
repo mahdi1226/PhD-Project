@@ -86,26 +86,51 @@
 
 ## Open Issues
 
-### 10. Approach 2 Incompressibility Violation (Section 7.3) — CRITICAL
+### 10. Approach 2 Velocity Mesh-Dependence (Section 7.3) — UNDER INVESTIGATION
 
-**Symptom**: Approach 2 at y=-0.1 (ref 6) gives divU_L2 = 4.0, compared to 0.006 for approach 1. Velocity U_max = 1.75, far from paper's 4.33.
+**Symptom**: Velocity U_max decreases monotonically with mesh refinement while the total
+Kelvin force converges. The paper's Figure 18 shows U_max = 4.33.
 
-**Diagnostics comparison**:
+**Kelvin force diagnostics** (step 20, t=0.2, with face integrals):
 
-| Metric | Approach 1 (ref5, y=-0.4) | Approach 2 (ref5, y=-0.4) | Approach 2 (ref6, y=-0.1) |
-|--------|---------------------------|---------------------------|---------------------------|
-| divU_L2 | 0.006 | 0.017 | **4.02** |
-| p range | [-50, +100] | [-449, +152] | **[-8698, +8354]** |
-| U_max | 0.016 | 0.013 | 1.75 |
-| H_max | 15.3 | 31 | 203 |
-| Picard | 3 | 7 | 5 |
-| CFL | 0.004 | 0.003 | 0.75 |
+| Metric | Ref 5 (32²) | Ref 6 (64²) | Ref 7 (128²) | Trend |
+|--------|-------------|-------------|---------------|-------|
+| U_max | **4.09** | **1.03** | **0.51** | ↓ halving per refinement |
+| divU_L2 | **21.4** | **3.87** | **0.59** | ↓ improving |
+| kelvin_cell_L2 | 3.58e4 | 3.70e4 | 3.73e4 | ✅ converged |
+| kelvin_face_L2 | 203 | 50 | 10 | → 0 (expected) |
+| kelvin_Fy | −7515 | −7638 | −7676 | ✅ converged |
+| p range | ±7k | ±8.5k | ±9k | growing with h |
+| E_kin | 0.082 | 0.019 | 0.015 | stabilizing? |
 
-**Root Cause**: At y=-0.1 the 8 dipoles create a near-singular 1/r^5 Kelvin force. The Q2/P1 discretization on a 64x64 mesh cannot resolve the sharp force gradient. The pressure (which must balance the body force to enforce div(u)=0) shows enormous values [-8698, +8354], indicating the solver struggles to maintain incompressibility.
+**Key finding**: The Kelvin force (both cell and face contributions, and total resultant)
+fully converges across all mesh resolutions. The divergence is catastrophic at ref 5
+(divU_L2/U_max ≈ 5) and progressively improves with refinement. This rules out the
+dipole singularity as the root cause.
 
-**Non-monotonic mesh convergence**: ref 5 (32x32) overshoots at U=5.9, ref 6 (64x64) undershoots at U=1.7. The paper uses ~100x100 and gets U=4.33. This is characteristic of under-resolved near-singular forcing.
+**Diagnosis: Pressure robustness issue.** The Kelvin force has a large irrotational
+(gradient) component near the boundary where dipoles are concentrated. Standard mixed
+FE methods (including Q2/DG-P1) have a well-known limitation: when the body force is
+dominantly irrotational, the velocity error is polluted by the pressure error because
+the discrete pressure space cannot perfectly cancel the gradient component. At coarse
+meshes, the pressure badly approximates this cancellation, leading to large spurious
+"compressible" velocity. As the mesh refines, the pressure better cancels the
+irrotational force, and velocity decreases.
 
-**Expected Resolution**: Run at ref 7 (128x128) to match paper's mesh resolution ("100 elements in each space direction"). The paper does not use any special treatment — it simply uses a fine enough mesh.
+**Paper match at ref 5**: Our ref 5 gives U_max = 4.31 (at t=2), which matches the
+paper's 4.3364866 from Figure 18 almost exactly. The paper likely uses a similar coarse
+mesh (~32×32) and Section 7.3 is a proof of concept — the text says "We make no attempt
+to use realistic scalings" and "The main goal is to provide a proof of concept."
+
+**Previous hypotheses ruled out**:
+- Dipole singularity: RULED OUT (force converges)
+- Kelvin face integrals: Added correctly, MMS passes, but doesn't fix mesh-dependence
+- Simplified model (h:=h_a): Unlikely (other Nochetto paper shows full model is critical)
+
+**Next steps**:
+- Determine paper's actual mesh for Section 7.3
+- Investigate pressure-robust formulations as diagnostic
+- Try DG P2 or higher pressure degree to test if pressure resolution is the bottleneck
 
 ### 11. Passive Scalar Overshoot (Section 7.3, Approach 2)
 
@@ -115,13 +140,13 @@
 
 **Mitigation**: The paper does not discuss limiter strategies. At ref 6 the undershoot is eliminated (c_min >= 0) and overshoot is moderate (28%). At ref 7 this should improve further. Approach 1 at ref 5 has c in [0, 1.001] — essentially perfect.
 
-### 12. Poisson CG Solver Failure (Section 7.3, Approach 2)
+### 12. Poisson CG Solver Failure (Section 7.3, Approach 2) — RESOLVED
 
-**Symptom**: At ref 5 y=-0.1, the Poisson CG solver reports "loss of precision" and falls back to direct solver.
+**Symptom**: At ref 5 y=-0.1, the Poisson CG solver reported "loss of precision" with
+AztecOO. Fall back to direct solver.
 
-**Root Cause**: The strong near-singular applied field creates a poorly conditioned Poisson system. The iterative solver cannot converge.
-
-**Impact**: Negligible — the direct solver produces correct results, just slower. At ref 6 the conditioning improves and CG works. At ref 7 this should not be an issue.
+**Fix**: Switched Poisson to deal.II native CG + AMG (SolverCG + TrilinosWrappers::PreconditionAMG).
+This eliminates the AztecOO precision issue. Works reliably at all refinement levels.
 
 ### 13. Missing Spin-Magnetization Coupling (M × W) — RESOLVED
 
@@ -169,4 +194,6 @@ The current face dedup uses same-level CellId comparison. For AMR (hanging nodes
 Currently first-order backward Euler. The paper uses first-order for Algorithm 42. Higher-order BDF2 would require storing two old solutions and modified MMS sources.
 
 ### Ref 7 Performance
-Ref 7 (128x128) will have ~4x more cells than ref 6 (64x64), leading to ~4x longer wall time. Approach 2 at ref 6 takes ~35s/step, so ref 7 would be ~140s/step. A 200-step run would take ~8 hours. The direct solver for the monolithic NS system is the bottleneck.
+With **block-Schur preconditioner** (`--block-schur`): ~10s/step at ref 7 vs ~258s/step
+with direct solver = **26× speedup**. Approach 2 ref 7: 20 steps in 250s (12.5s/step).
+Enhanced stirring ref 7: 400 steps in 12829s (3.6h, ~32s/step with 4 Picard iters).

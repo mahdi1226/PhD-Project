@@ -216,6 +216,12 @@ void NavierStokesSubsystem<dim>::assemble(
         M_p_ = 0.0;
     }
 
+    // Kelvin force diagnostics accumulators (mesh-dependence tracking)
+    double local_kelvin_cell_sq = 0.0;  // Σ |f_cell|² JxW
+    double local_kelvin_face_sq = 0.0;  // Σ |f_face|² JxW
+    double local_kelvin_Fx = 0.0;       // Σ f_cell_x JxW + face
+    double local_kelvin_Fy = 0.0;       // Σ f_cell_y JxW + face
+
     // ========================================================================
     // Cell loop
     // ========================================================================
@@ -309,6 +315,34 @@ void NavierStokesSubsystem<dim>::assemble(
                                      current_time - dt, nu_eff,
                                      U_old_disc, div_U_old,
                                      include_convection);
+            }
+
+            // Kelvin cell force density diagnostic (independent of test function)
+            // f_cell = μ₀[(M·∇)H + ½ div(M) H]
+            if (has_kelvin)
+            {
+                dealii::Tensor<1, dim> M_q;
+                M_q[0] = Mx_vals[q];
+                M_q[1] = My_vals[q];
+
+                const dealii::Tensor<1, dim>& H_q = phi_grad_vals[q];
+                const dealii::Tensor<2, dim>& grad_H = phi_hess_vals[q];
+
+                // (M·∇)H
+                dealii::Tensor<1, dim> M_grad_H;
+                for (unsigned int d = 0; d < dim; ++d)
+                    for (unsigned int e = 0; e < dim; ++e)
+                        M_grad_H[d] += M_q[e] * grad_H[d][e];
+
+                const double div_M = grad_Mx_vals[q][0] + grad_My_vals[q][1];
+
+                dealii::Tensor<1, dim> f_cell;
+                for (unsigned int d = 0; d < dim; ++d)
+                    f_cell[d] = mu_0 * (M_grad_H[d] + 0.5 * div_M * H_q[d]);
+
+                local_kelvin_cell_sq += (f_cell * f_cell) * JxW;
+                local_kelvin_Fx += f_cell[0] * JxW;
+                local_kelvin_Fy += f_cell[1] * JxW;
             }
 
             for (unsigned int i = 0; i < ux_dpc; ++i)
@@ -501,6 +535,19 @@ void NavierStokesSubsystem<dim>::assemble(
                     avg_M[0] = 0.5 * (Mx_face_minus[q] + Mx_face_plus[q]);
                     avg_M[1] = 0.5 * (My_face_minus[q] + My_face_plus[q]);
 
+                    // Face force diagnostic: f_face = -μ₀ n [[H]]·{M}
+                    {
+                        const double jump_dot_avg = jump_H * avg_M;
+                        // |f_face|² = μ₀² (n[0]² + n[1]²)(jump·avg)²
+                        //            = μ₀² (jump·avg)²  (|n|=1)
+                        local_kelvin_face_sq += mu_0 * mu_0
+                            * jump_dot_avg * jump_dot_avg * JxW;
+                        local_kelvin_Fx += -mu_0 * normal[0]
+                            * jump_dot_avg * JxW;
+                        local_kelvin_Fy += -mu_0 * normal[1]
+                            * jump_dot_avg * JxW;
+                    }
+
                     for (unsigned int i = 0; i < ux_dpc; ++i)
                     {
                         const double phi_i =
@@ -609,6 +656,16 @@ void NavierStokesSubsystem<dim>::assemble(
         B_uy_.compress(dealii::VectorOperation::add);
         M_p_.compress(dealii::VectorOperation::add);
     }
+
+    // Kelvin force diagnostics: MPI reduce and store
+    last_kelvin_cell_L2_sq_ = dealii::Utilities::MPI::sum(
+        local_kelvin_cell_sq, mpi_comm_);
+    last_kelvin_face_L2_sq_ = dealii::Utilities::MPI::sum(
+        local_kelvin_face_sq, mpi_comm_);
+    last_kelvin_Fx_ = dealii::Utilities::MPI::sum(
+        local_kelvin_Fx, mpi_comm_);
+    last_kelvin_Fy_ = dealii::Utilities::MPI::sum(
+        local_kelvin_Fy, mpi_comm_);
 
     timer.stop();
     last_assemble_time_ = timer.wall_time();

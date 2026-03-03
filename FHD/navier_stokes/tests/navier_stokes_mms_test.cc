@@ -142,8 +142,9 @@ int main(int argc, char* argv[])
     const unsigned int n_ranks = dealii::Utilities::MPI::n_mpi_processes(mpi_comm);
     dealii::ConditionalOStream pcout(std::cout, rank == 0);
 
-    // Parse refinement levels
+    // Parse refinement levels and options
     std::vector<unsigned int> refinements = {2, 3, 4, 5, 6};
+    bool use_block_schur = false;
 
     for (int i = 1; i < argc; ++i)
     {
@@ -155,12 +156,22 @@ int main(int argc, char* argv[])
                 if (argv[j][0] == '-') break;
                 refinements.push_back(std::stoul(argv[j]));
             }
-            break;
+        }
+        else if (std::strcmp(argv[i], "--block-schur") == 0)
+        {
+            use_block_schur = true;
         }
     }
 
     Parameters params;
     params.setup_mms_validation();
+
+    if (use_block_schur)
+    {
+        params.solvers.navier_stokes.use_iterative = true;
+        params.solvers.navier_stokes.preconditioner =
+            LinearSolverParams::Preconditioner::BlockSchur;
+    }
 
     const unsigned int vel_degree = params.fe.degree_velocity;
 

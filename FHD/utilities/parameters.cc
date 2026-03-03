@@ -320,6 +320,14 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             if (++i >= argc) { std::cerr << "--refinement requires a value\n"; std::exit(1); }
             params.mesh.initial_refinement = std::stoul(argv[i]);
         }
+        else if (std::strcmp(argv[i], "--cells") == 0)
+        {
+            if (++i >= argc) { std::cerr << "--cells requires a value\n"; std::exit(1); }
+            const unsigned int n = std::stoul(argv[i]);
+            params.domain.initial_cells_x = n;
+            params.domain.initial_cells_y = n;
+            params.mesh.initial_refinement = 0;
+        }
 
         // ---- Time ----
         else if (std::strcmp(argv[i], "--dt") == 0)
@@ -447,8 +455,10 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             std::cout << "  --supg-factor VAL   SUPG scaling factor (default: 1.0)\n\n";
             std::cout << "Dipoles:\n";
             std::cout << "  --dipole-y VALUE    Override dipole y-position\n\n";
+            std::cout << "Mesh:\n";
+            std::cout << "  -r, --refinement N  Refinement level (default: preset)\n";
+            std::cout << "  --cells N           Use NxN mesh (sets refinement=0)\n\n";
             std::cout << "Run:\n";
-            std::cout << "  --mode <mms|2d>     --ref 2 3 4 5 6\n";
             std::cout << "  --dt VALUE          --t_final VALUE\n";
             std::exit(0);
         }
@@ -476,7 +486,14 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
         std::cout << "=== FHD Configuration ===\n";
         std::cout << "  Domain: [" << params.domain.x_min << "," << params.domain.x_max
                   << "] x [" << params.domain.y_min << "," << params.domain.y_max << "]\n";
-        std::cout << "  Refinement: " << params.mesh.initial_refinement << "\n";
+        const unsigned int cells_x = params.domain.initial_cells_x
+            * (1u << params.mesh.initial_refinement);
+        const unsigned int cells_y = params.domain.initial_cells_y
+            * (1u << params.mesh.initial_refinement);
+        std::cout << "  Mesh: " << cells_x << "×" << cells_y
+                  << " (" << params.domain.initial_cells_x << "×"
+                  << params.domain.initial_cells_y << " base, ref="
+                  << params.mesh.initial_refinement << ")\n";
         std::cout << "  ν=" << params.physics.nu << ", ν_r=" << params.physics.nu_r
                   << ", μ₀=" << params.physics.mu_0 << ", κ₀=" << params.physics.kappa_0 << "\n";
         std::cout << "  ȷ=" << params.physics.j_micro

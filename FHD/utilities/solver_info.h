@@ -40,9 +40,9 @@ struct LinearSolverParams
     bool verbose = false;
 
     // Block Schur settings (NS only)
-    double schur_inner_tolerance = 1e-3;
-    unsigned int schur_max_inner_iters = 20;
-    unsigned int schur_gmres_restart = 30;
+    double schur_inner_tolerance = 1e-2;
+    unsigned int schur_max_inner_iters = 50;
+    unsigned int schur_gmres_restart = 100;
 
     // Auto-selection threshold
     unsigned int direct_dof_threshold = 2000000;
