@@ -1,7 +1,7 @@
 // ============================================================================
 // passive_scalar/passive_scalar_solve.cc - Solver and Diagnostics
 //
-// SPD system: CG + AMG default, direct solver fallback.
+// Non-symmetric system (convection term): GMRES + ILU default, direct fallback.
 //
 // Reference: Nochetto, Salgado & Tomas, arXiv:1511.04381 (2015), Eq. 104
 // ============================================================================
@@ -11,7 +11,7 @@
 #include <deal.II/base/timer.h>
 #include <deal.II/base/quadrature_lib.h>
 #include <deal.II/fe/fe_values.h>
-#include <deal.II/lac/solver_cg.h>
+#include <deal.II/lac/solver_gmres.h>
 #include <deal.II/lac/solver_control.h>
 #include <deal.II/lac/trilinos_solver.h>
 #include <deal.II/lac/trilinos_precondition.h>
@@ -23,7 +23,7 @@ SolverInfo PassiveScalarSubsystem<dim>::solve()
     timer.start();
 
     SolverInfo info;
-    info.solver_name = "Scalar-CG-AMG";
+    info.solver_name = "Scalar-GMRES-ILU";
     info.matrix_size = dof_handler_.n_dofs();
 
     const auto& solver_params = params_.solvers.passive_scalar;
@@ -43,20 +43,21 @@ SolverInfo PassiveScalarSubsystem<dim>::solve()
     }
     else
     {
-        // CG + AMG
-        dealii::TrilinosWrappers::PreconditionAMG amg;
-        dealii::TrilinosWrappers::PreconditionAMG::AdditionalData amg_data;
-        amg.initialize(system_matrix_, amg_data);
+        // GMRES + ILU (non-symmetric due to convection term)
+        dealii::TrilinosWrappers::PreconditionILU ilu;
+        dealii::TrilinosWrappers::PreconditionILU::AdditionalData ilu_data;
+        ilu_data.ilu_fill = 1;
+        ilu.initialize(system_matrix_, ilu_data);
 
         dealii::SolverControl solver_control(
             solver_params.max_iterations,
             solver_params.abs_tolerance);
 
-        dealii::SolverCG<dealii::TrilinosWrappers::MPI::Vector> cg(solver_control);
+        dealii::TrilinosWrappers::SolverGMRES solver(solver_control);
 
         try
         {
-            cg.solve(system_matrix_, c_solution_, system_rhs_, amg);
+            solver.solve(system_matrix_, c_solution_, system_rhs_, ilu);
 
             info.iterations = solver_control.last_step();
             info.residual = solver_control.last_value();
@@ -67,7 +68,7 @@ SolverInfo PassiveScalarSubsystem<dim>::solve()
         {
             if (solver_params.fallback_to_direct)
             {
-                pcout_ << "  Scalar CG failed, falling back to direct\n";
+                pcout_ << "  Scalar GMRES failed, falling back to direct\n";
                 dealii::SolverControl direct_control(1, 0.0);
                 dealii::TrilinosWrappers::SolverDirect direct_solver(direct_control);
                 direct_solver.solve(system_matrix_, c_solution_, system_rhs_);
@@ -82,6 +83,26 @@ SolverInfo PassiveScalarSubsystem<dim>::solve()
                 info.iterations = e.last_step;
                 info.residual = e.last_residual;
                 info.converged = false;
+            }
+        }
+        catch (const std::exception& /*e*/)
+        {
+            // Catch AztecOO errors (loss of precision, etc.)
+            if (solver_params.fallback_to_direct)
+            {
+                pcout_ << "  Scalar GMRES exception, falling back to direct\n";
+                dealii::SolverControl direct_control(1, 0.0);
+                dealii::TrilinosWrappers::SolverDirect direct_solver(direct_control);
+                direct_solver.solve(system_matrix_, c_solution_, system_rhs_);
+
+                info.iterations = 1;
+                info.converged = true;
+                info.used_direct = true;
+                info.solver_name = "Scalar-Direct-Fallback";
+            }
+            else
+            {
+                throw;
             }
         }
     }

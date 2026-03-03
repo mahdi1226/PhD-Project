@@ -194,7 +194,7 @@ struct Parameters
         };
 
         LinearSolverParams magnetization = {
-            LinearSolverParams::Type::Direct,
+            LinearSolverParams::Type::GMRES,
             LinearSolverParams::Preconditioner::ILU,
             /*rel_tolerance=*/1e-8,
             /*abs_tolerance=*/1e-12,
@@ -202,14 +202,14 @@ struct Parameters
             /*gmres_restart=*/50,
             /*ssor_omega=*/1.2,
             /*ilu_strengthen=*/1.0,
-            /*use_iterative=*/false,
+            /*use_iterative=*/true,
             /*fallback_to_direct=*/true,
             /*verbose=*/false
         };
 
         LinearSolverParams navier_stokes = {
             LinearSolverParams::Type::Direct,
-            LinearSolverParams::Preconditioner::BlockSchur,
+            LinearSolverParams::Preconditioner::ILU,
             /*rel_tolerance=*/1e-6,
             /*abs_tolerance=*/1e-10,
             /*max_iterations=*/500,
@@ -236,12 +236,12 @@ struct Parameters
         };
 
         LinearSolverParams passive_scalar = {
-            LinearSolverParams::Type::CG,
-            LinearSolverParams::Preconditioner::AMG,
+            LinearSolverParams::Type::GMRES,
+            LinearSolverParams::Preconditioner::ILU,
             /*rel_tolerance=*/1e-8,
             /*abs_tolerance=*/1e-12,
             /*max_iterations=*/2000,
-            /*gmres_restart=*/50,
+            /*gmres_restart=*/100,
             /*ssor_omega=*/1.2,
             /*ilu_strengthen=*/1.0,
             /*use_iterative=*/true,
