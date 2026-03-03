@@ -267,8 +267,16 @@ struct Parameters
     struct PassiveScalar
     {
         double alpha = 0.001;   // diffusion coefficient
+
+        // SUPG stabilization (Codina 1998)
+        bool use_supg = true;         // enable SUPG for convection-dominated transport
+        double supg_factor = 1.0;     // scaling factor for tau_SUPG
     } passive_scalar;
     bool enable_passive_scalar = false;
+
+    // Dipole y-position override (for systematic y-position testing)
+    double dipole_y_override = -0.1;
+    bool has_dipole_y_override = false;
 
     // Phase B
     bool enable_cahn_hilliard = false;  // master switch for two-phase

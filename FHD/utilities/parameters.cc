@@ -399,6 +399,31 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             params.solvers.navier_stokes.preconditioner =
                 LinearSolverParams::Preconditioner::BlockSchur;
         }
+        else if (std::strcmp(argv[i], "--mag-direct") == 0)
+        {
+            params.solvers.magnetization.use_iterative = false;
+        }
+        else if (std::strcmp(argv[i], "--dipole-y") == 0)
+        {
+            if (++i >= argc) { std::cerr << "--dipole-y requires a value\n"; std::exit(1); }
+            params.dipole_y_override = std::stod(argv[i]);
+            params.has_dipole_y_override = true;
+        }
+
+        // ---- SUPG ----
+        else if (std::strcmp(argv[i], "--supg") == 0)
+        {
+            params.passive_scalar.use_supg = true;
+        }
+        else if (std::strcmp(argv[i], "--no-supg") == 0)
+        {
+            params.passive_scalar.use_supg = false;
+        }
+        else if (std::strcmp(argv[i], "--supg-factor") == 0)
+        {
+            if (++i >= argc) { std::cerr << "--supg-factor requires a value\n"; std::exit(1); }
+            params.passive_scalar.supg_factor = std::stod(argv[i]);
+        }
 
         // ---- Help ----
         else if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0)
@@ -415,6 +440,13 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             std::cout << "  --nu, --nu_r, --kappa_0, --T_relax, --sigma\n\n";
             std::cout << "Model:\n";
             std::cout << "  --simplified        h := h_a (no Poisson solve)\n\n";
+            std::cout << "Solver:\n";
+            std::cout << "  --block-schur       Block-Schur preconditioner for NS\n";
+            std::cout << "  --mag-direct        Force direct solver for magnetization\n";
+            std::cout << "  --supg / --no-supg  Enable/disable SUPG for passive scalar\n";
+            std::cout << "  --supg-factor VAL   SUPG scaling factor (default: 1.0)\n\n";
+            std::cout << "Dipoles:\n";
+            std::cout << "  --dipole-y VALUE    Override dipole y-position\n\n";
             std::cout << "Run:\n";
             std::cout << "  --mode <mms|2d>     --ref 2 3 4 5 6\n";
             std::cout << "  --dt VALUE          --t_final VALUE\n";
@@ -426,6 +458,13 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             std::cerr << "Use --help for usage information.\n";
             std::exit(1);
         }
+    }
+
+    // Apply dipole y-position override (must come after presets)
+    if (params.has_dipole_y_override)
+    {
+        for (auto& pos : params.dipoles.positions)
+            pos[1] = params.dipole_y_override;
     }
 
     // Print config from rank 0
@@ -445,8 +484,18 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
         std::cout << "  σ=" << params.physics.sigma << ", 𝒯=" << params.physics.T_relax << "\n";
         std::cout << "  dt=" << params.time.dt << ", t_final=" << params.time.t_final << "\n";
         std::cout << "  Model: " << (params.use_simplified_model ? "simplified (h:=h_a)" : "full") << "\n";
+        if (!params.solvers.magnetization.use_iterative)
+            std::cout << "  Magnetization solver: DIRECT (UMFPACK)\n";
+        if (params.has_dipole_y_override)
+            std::cout << "  Dipole y-override: " << params.dipole_y_override << "\n";
         if (params.enable_passive_scalar)
-            std::cout << "  Passive scalar: α=" << params.passive_scalar.alpha << "\n";
+        {
+            std::cout << "  Passive scalar: α=" << params.passive_scalar.alpha
+                      << ", SUPG=" << (params.passive_scalar.use_supg ? "on" : "off");
+            if (params.passive_scalar.use_supg)
+                std::cout << " (factor=" << params.passive_scalar.supg_factor << ")";
+            std::cout << "\n";
+        }
         std::cout << "=========================\n";
     }
 

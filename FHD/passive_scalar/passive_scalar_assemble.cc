@@ -11,6 +11,10 @@
 //
 // b_h = skew-symmetric convection for energy stability
 //
+// SUPG stabilization (Codina 1998): adds τ(u·∇v) test function perturbation
+//   τ = 1/√((2/dt)² + (2||u||/h)² + (4α/h²)²)
+//   Residual-based: preserves MMS convergence rates (R(c*)=0 for exact sol)
+//
 // Reference: Nochetto, Salgado & Tomas, arXiv:1511.04381 (2015)
 // ============================================================================
 
@@ -20,6 +24,8 @@
 #include <deal.II/base/quadrature_lib.h>
 #include <deal.II/base/timer.h>
 #include <deal.II/fe/fe_values.h>
+
+#include <cmath>
 
 template <int dim>
 void PassiveScalarSubsystem<dim>::assemble(
@@ -37,6 +43,10 @@ void PassiveScalarSubsystem<dim>::assemble(
 
     const bool has_old = (c_old_relevant.size() > 0);
     const bool has_vel = (ux_relevant.size() > 0);
+
+    // SUPG stabilization (Codina 1998)
+    const bool use_supg = params_.passive_scalar.use_supg && has_vel;
+    const double supg_factor = params_.passive_scalar.supg_factor;
 
     const unsigned int degree = fe_.degree;
     const dealii::QGauss<dim> quadrature(degree + 1);
@@ -99,6 +109,30 @@ void PassiveScalarSubsystem<dim>::assemble(
         cell_matrix = 0.0;
         cell_rhs = 0.0;
 
+        // SUPG stabilization parameter (per cell)
+        double tau_supg = 0.0;
+        if (use_supg)
+        {
+            const double h = cell->diameter();
+
+            // Average velocity magnitude over cell
+            double U_avg_sq = 0.0;
+            for (unsigned int qq = 0; qq < n_q; ++qq)
+                U_avg_sq += ux_vals[qq] * ux_vals[qq] + uy_vals[qq] * uy_vals[qq];
+            const double U_mag = std::sqrt(U_avg_sq / n_q);
+
+            if (U_mag > 1e-14)
+            {
+                // Codina (1998): tau = 1/sqrt((2/dt)^2 + (2||u||/h)^2 + (4α/h²)^2)
+                const double inv_dt   = 2.0 / dt;
+                const double inv_conv = 2.0 * U_mag / h;
+                const double inv_diff = 4.0 * alpha / (h * h);
+
+                tau_supg = supg_factor / std::sqrt(
+                    inv_dt * inv_dt + inv_conv * inv_conv + inv_diff * inv_diff);
+            }
+        }
+
         for (unsigned int q = 0; q < n_q; ++q)
         {
             const double JxW = fe_values.JxW(q);
@@ -120,7 +154,17 @@ void PassiveScalarSubsystem<dim>::assemble(
 
                 // RHS: (1/τ) c_old * φ_i
                 if (has_old)
+                {
                     cell_rhs(i) += mass_coeff * c_old_vals[q] * phi_i * JxW;
+
+                    // SUPG RHS: τ * (1/dt) * c_old * (u · ∇φ_i)
+                    if (tau_supg > 0.0)
+                    {
+                        const double u_dot_grad_phi_i = U_q * grad_phi_i;
+                        cell_rhs(i) += tau_supg * mass_coeff * c_old_vals[q]
+                                       * u_dot_grad_phi_i * JxW;
+                    }
+                }
 
                 for (unsigned int j = 0; j < dpc; ++j)
                 {
@@ -142,6 +186,16 @@ void PassiveScalarSubsystem<dim>::assemble(
                     }
 
                     cell_matrix(i, j) += (mass + diffusion + conv) * JxW;
+
+                    // SUPG LHS: τ * [(1/dt)φ_j + (u·∇φ_j)] * (u·∇φ_i)
+                    if (tau_supg > 0.0)
+                    {
+                        const double u_dot_grad_phi_i = U_q * grad_phi_i;
+                        const double u_dot_grad_phi_j = U_q * grad_phi_j;
+                        cell_matrix(i, j) += tau_supg
+                            * (mass_coeff * phi_j + u_dot_grad_phi_j)
+                            * u_dot_grad_phi_i * JxW;
+                    }
                 }
             }
         }
