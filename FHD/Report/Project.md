@@ -4,8 +4,10 @@
 
 Reproduce the numerical method of **Nochetto, Salgado & Tomas** (arXiv:1511.04381, 2015) for the ferrohydrodynamics (FHD) equations using deal.II + Trilinos.
 
-**Phase A** (current): Single-phase ferrofluid (Algorithm 42).
-**Phase B** (future): Two-phase extension with Cahn-Hilliard diffuse interface.
+**Phase A** (current): Single-phase ferrofluid (Algorithm 42). Sections 7.1-7.2 validated.
+Section 7.3 stirring shows mesh-dependent velocity (pressure robustness issue, documented).
+**Phase B** (next): Two-phase ferrofluid droplet transport — Cahn-Hilliard + FHD coupling
+in pumping channel. Separate project folder (`Droplet/`). See `FHD_PUMP.md` for full plan.
 
 ## Governing Equations (Phase A)
 
@@ -20,7 +22,9 @@ The Rosensweig model couples four subsystems on a bounded domain with time stepp
 - FE: CG Q2 velocity / DG P1 pressure (Taylor-Hood saddle-point)
 - Kelvin force: mu_0 [(M . grad)H + 1/2(div M) H]
 - Micropolar coupling: 2 nu_r (w, curl v)
+- Kelvin face integral: -Sigma_F int_F (V.n) [[H]].{M} ds (Eq. 38, 2nd line)
 - NS convection b_h(u; u, v) enabled in production (skew-symmetric form)
+- Block-Schur preconditioner available (26x faster than direct at ref 7)
 
 ### Angular Momentum (Eq. 42f) — Angular velocity w
 
@@ -30,7 +34,7 @@ The Rosensweig model couples four subsystems on a bounded domain with time stepp
 - FE: CG Q2
 - Curl coupling from velocity: 2 nu_r (curl u, z)
 - Magnetic torque: mu_0 (m x h, z)
-- Convection: disabled per paper Eq. 42f
+- Convection: j b_h(u; w, z) enabled in production (skew-symmetric form)
 
 ### Magnetization Transport (Eq. 42c) — Magnetization m
 
@@ -41,6 +45,7 @@ The Rosensweig model couples four subsystems on a bounded domain with time stepp
 - DG transport B_h^m: skew-symmetric + upwind flux (Eq. 62)
 - SIP diffusion a_h^m (if sigma > 0)
 - Debye relaxation toward equilibrium magnetization kappa_0 h
+- Spin-magnetization coupling: (M x W, Z) treated explicitly on RHS
 
 ### Poisson (Eq. 42d) — Magnetic potential phi
 
