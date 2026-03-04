@@ -231,6 +231,7 @@ utilities/
   parameters.cc              -- Rosensweig preset + parse_command_line()
   solver_info.h              -- LinearSolverParams, SolverInfo structs
   timestamp.h                -- timestamped_filename()
+  amr.h                      -- Header-only 14-step AMR algorithm (template)
 
 physics/
   material_properties.h      -- Heaviside, chi(theta), nu(theta), F(theta), f(theta)
@@ -297,20 +298,17 @@ mms_tests/
 ### Build Commands
 
 ```bash
-# Navier-Stokes (ninja)
-cd navier_stokes/cmake-build-debug && cmake .. && ninja
+# Top-level build (all drivers + MMS tests)
+cd build && cmake .. -DCMAKE_BUILD_TYPE=Release && make -j8
 
-# Cahn-Hilliard (make)
-cd cahn_hilliard/build && cmake .. && make -j$(nproc)
+# Production run example
+mpirun -np 4 ./drivers/ferrofluid_decoupled --rosensweig -r 4 --vtk_interval 100
 
-# Poisson (make)
-cd poisson/build && cmake .. && make -j$(nproc)
+# With AMR enabled
+mpirun -np 4 ./drivers/ferrofluid_decoupled --rosensweig -r 3 --amr --amr-interval 10
 
-# Magnetization (ninja)
-cd magnetization/cmake-build-debug && cmake .. && ninja
-
-# Coupled MMS test (ninja)
-cd mms_tests/cmake-build-debug && cmake .. && ninja
+# MMS test
+mpirun -np 1 ./mms_tests/test_coupled_system_mms --refs 2 3 4 --steps 1
 ```
 
 ---
@@ -505,6 +503,85 @@ Time step:     dt = 1e-3, max_steps = 1500
 
 ---
 
+## 10. AMR (Adaptive Mesh Refinement) — Session 13, March 2026
+
+### 10.1 Overview
+
+Adaptive mesh refinement for all 4 subsystems on the shared p4est triangulation.
+Refines near the diffuse interface (|theta| < threshold) and coarsens in bulk regions.
+Opt-in via `--amr` CLI flag; default behavior (uniform global refinement) is unchanged.
+
+### 10.2 Algorithm (14 steps)
+
+Located in `utilities/amr.h` (header-only template):
+
+1. Kelly error estimation on theta (interface field)
+2. Mark cells with fixed-fraction (upper 30% / lower 10%)
+3. Enforce level limits (max/min)
+4. Interface protection — never coarsen cells where |theta| < threshold
+5. Prepare triangulation (`prepare_coarsening_and_refinement()`)
+6. Create `SolutionTransfer` for all subsystems (7 DoFHandlers)
+7. Execute mesh refinement (`execute_coarsening_and_refinement()`)
+8. Re-setup all subsystems (rebuilds DoFs, constraints, matrices, vectors)
+9. Interpolate solutions to new mesh
+10. Apply constraints (`distribute()`)
+11. Clamp theta to [-1, 1] (interpolation causes overshoot)
+12. Recompute psi = theta^3 - theta nodally (restore constitutive relation)
+13. Update all ghost vectors (`update_ghosts()` on each subsystem)
+14. Log diagnostics (cells before/after, clamped DoFs, theta bounds)
+
+### 10.3 Physics-Based Activation Gate
+
+AMR stays dormant until |U|_max exceeds a threshold (default 1e-3), then uses
+fixed-interval refinement. This avoids wasting computation on high-DoF meshes
+during the quiescent early phase when the interface hasn't moved.
+
+- Once activated, AMR stays active for the rest of the simulation
+- When NS is disabled (CH-only), activates immediately (no velocity to gate on)
+- `--amr-activation-U 0` for immediate activation (no gate)
+
+### 10.4 CLI Parameters
+
+```
+--amr / --no-amr              Enable/disable (default: OFF)
+--amr-interval N              Refine every N steps (default: 5)
+--amr-max-level N             Max refinement level (default: 0 = no cap)
+--amr-min-level N             Min refinement level (default: 0)
+--amr-upper-fraction V        Top fraction to refine (default: 0.3)
+--amr-lower-fraction V        Bottom fraction to coarsen (default: 0.10)
+--amr-activation-U V          |U| threshold to start AMR (default: 1e-3)
+```
+
+### 10.5 Files Modified
+
+| File | Change |
+|------|--------|
+| `utilities/amr.h` | **NEW** — 14-step AMR algorithm (header-only template) |
+| `utilities/parameters.h` | AMR fields in Mesh struct, amr_activation_U |
+| `utilities/parameters.cc` | AMR CLI parsing, help text |
+| `cahn_hilliard/cahn_hilliard.h` | Mutable DoFHandler accessors |
+| `cahn_hilliard/cahn_hilliard.cc` | ghosts_valid_ = false in setup() |
+| `navier_stokes/navier_stokes.h` | Mutable solution + DoFHandler accessors |
+| `poisson/poisson.h` | Mutable solution + DoFHandler accessor |
+| `magnetization/magnetization.h` | Mutable solution + DoFHandler accessors |
+| `drivers/decoupled_driver.cc` | AMR call in time loop + activation gate + mesh_level VTK |
+
+### 10.6 Test Results
+
+- CH-only: 200+ steps, mesh 960→420, energy decreasing
+- Full 4-system: 370+ steps at r3, mesh 3840→1140 (70% reduction)
+- Uniform Rosensweig + AMR: 100 steps, activation at step 63, mesh 3840→2112→11688
+- Physics gate saves 37% wall time vs fixed-interval AMR
+- Default path (no AMR): unchanged behavior, no regression
+
+### 10.7 Critical Bug Fix: Ghost Validity
+
+After AMR, the CH subsystem's `update_ghosts()` was silently skipping the copy
+because `ghosts_valid_` was not reset by `setup()`. Fixed by adding
+`ghosts_valid_ = false` in `CahnHilliardSubsystem::setup()`.
+
+---
+
 *Generated: February 2025*
-*Updated: February 28, 2026 (Sessions 9-10: Validation suite + nonuniform Rosensweig analysis)*
-*Total source code: ~10,000 lines across 4 subsystems + shared libraries*
+*Updated: March 3, 2026 (Session 13: AMR with physics-based activation gate)*
+*Total source code: ~11,000 lines across 4 subsystems + shared libraries*

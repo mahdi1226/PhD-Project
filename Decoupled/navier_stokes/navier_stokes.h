@@ -134,17 +134,15 @@ public:
         const dealii::TrilinosWrappers::MPI::Vector& My_relevant,
         const dealii::DoFHandler<dim>&               M_dof_handler,
         double current_time,
-        double S2 = 0.0,
         bool include_convection = true);
 
     // ========================================================================
-    // Coupled assembly with algebraic magnetization + SAV stabilization
+    // Coupled assembly with algebraic magnetization
     //
     // Zhang, He & Yang, SIAM J. Sci. Comput. 43(1) (2021)
     //
     // Same as assemble_coupled() but:
     //   - Computes M = chi(theta)(grad phi + h_a) at quadrature points (no M vectors)
-    //   - Adds S2 stabilization: +S2(u^{n+1} - u^n, v) for energy stability
     //   - Kelvin force is fully explicit: mu0(M.grad)H on RHS
     // ========================================================================
     void assemble_coupled_algebraic_M(
@@ -157,7 +155,6 @@ public:
         const dealii::TrilinosWrappers::MPI::Vector& phi_relevant,
         const dealii::DoFHandler<dim>&               phi_dof_handler,
         double current_time,
-        double S2 = 0.0,
         bool include_convection = true);
 
     // ========================================================================
@@ -234,6 +231,23 @@ public:
     // Old velocity (for convection linearization)
     const dealii::TrilinosWrappers::MPI::Vector& get_ux_old_relevant() const;
     const dealii::TrilinosWrappers::MPI::Vector& get_uy_old_relevant() const;
+
+    // ========================================================================
+    // Mutable accessors — for AMR SolutionTransfer
+    //
+    // These allow the AMR module to write interpolated solutions directly
+    // into the subsystem's owned vectors after mesh refinement.
+    // ========================================================================
+    dealii::DoFHandler<dim>& get_ux_dof_handler_mutable();
+    dealii::DoFHandler<dim>& get_uy_dof_handler_mutable();
+    dealii::DoFHandler<dim>& get_p_dof_handler_mutable();
+
+    dealii::TrilinosWrappers::MPI::Vector& get_ux_solution_mutable();
+    dealii::TrilinosWrappers::MPI::Vector& get_uy_solution_mutable();
+    dealii::TrilinosWrappers::MPI::Vector& get_p_solution_mutable();
+
+    dealii::TrilinosWrappers::MPI::Vector& get_ux_old_solution_mutable();
+    dealii::TrilinosWrappers::MPI::Vector& get_uy_old_solution_mutable();
 
     // ========================================================================
     // Ghost management

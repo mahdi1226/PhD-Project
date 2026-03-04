@@ -30,6 +30,7 @@
 #include "navier_stokes/navier_stokes.h"
 #include "utilities/parameters.h"
 #include "utilities/timestamp.h"
+#include "utilities/amr.h"
 #include "physics/material_properties.h"
 #include "physics/applied_field.h"
 
@@ -151,6 +152,7 @@ public:
             ri << "[Physics]\n";
             ri << "  epsilon:   " << params.physics.epsilon << "\n";
             ri << "  lambda:    " << params.physics.lambda << "\n";
+            ri << "  ch_reaction_scale: " << params.physics.ch_reaction_scale << "\n";
             ri << "  mobility:  " << params.physics.mobility << "\n";
             ri << "  chi_0:     " << params.physics.chi_0 << "\n";
             ri << "  tau_M:     " << params.physics.tau_M << "\n";
@@ -178,12 +180,26 @@ public:
                 ri << "  type: dipoles\n";
                 ri << "  count: " << params.dipoles.positions.size() << "\n";
                 ri << "  intensity_max: " << params.dipoles.intensity_max << "\n";
+                ri << "  ramp_slope: " << params.dipoles.ramp_slope << "\n";
                 ri << "  ramp_time: " << params.dipoles.ramp_time << "\n";
                 for (unsigned int i = 0; i < params.dipoles.positions.size(); ++i)
                     ri << "  pos[" << i << "]: (" << params.dipoles.positions[i] << ")\n";
             }
             else
                 ri << "  type: none\n";
+            ri << "\n[AMR]\n";
+            ri << "  use_amr: " << (params.mesh.use_amr ? "ON" : "OFF") << "\n";
+            if (params.mesh.use_amr)
+            {
+                ri << "  amr_interval: " << params.mesh.amr_interval << "\n";
+                ri << "  amr_max_level: " << params.mesh.amr_max_level << "\n";
+                ri << "  amr_min_level: " << params.mesh.amr_min_level << "\n";
+                ri << "  amr_upper_fraction: " << params.mesh.amr_upper_fraction << "\n";
+                ri << "  amr_lower_fraction: " << params.mesh.amr_lower_fraction << "\n";
+                ri << "  interface_threshold: " << params.mesh.interface_coarsen_threshold << "\n";
+                ri << "  activation_U: " << params.mesh.amr_activation_U
+                   << (params.mesh.amr_activation_U > 0.0 ? " (physics gate)" : " (immediate)") << "\n";
+            }
             ri << "\n[Output]\n";
             ri << "  vtk_interval: " << params.output.vtk_interval << "\n";
             ri << "  folder: " << params.output.folder << "\n";
@@ -681,6 +697,19 @@ static void write_combined_vtu(
     data_out.add_data_vector(dg0_dof, H_mag_rel, "H_mag");
     data_out.add_data_vector(dg0_dof, M_mag_rel, "M_mag");
 
+    // Mesh refinement level (useful for visualizing AMR)
+    Vector<float> mesh_level(triangulation.n_active_cells());
+    {
+        unsigned int idx = 0;
+        for (const auto& cell : triangulation.active_cell_iterators())
+        {
+            if (cell->is_locally_owned())
+                mesh_level(idx) = cell->level();
+            ++idx;
+        }
+    }
+    data_out.add_data_vector(mesh_level, "mesh_level");
+
     // Subdomain coloring
     Vector<float> subdomain(triangulation.n_active_cells());
     for (unsigned int i = 0; i < subdomain.size(); ++i)
@@ -736,6 +765,19 @@ static void write_ch_only_vtu(
     data_out.add_data_vector(ch.get_theta_relevant(), "theta");
     data_out.add_data_vector(
         ch.get_psi_dof_handler(), ch.get_psi_relevant(), "psi");
+
+    // Mesh refinement level (useful for visualizing AMR)
+    Vector<float> mesh_level(triangulation.n_active_cells());
+    {
+        unsigned int idx = 0;
+        for (const auto& cell : triangulation.active_cell_iterators())
+        {
+            if (cell->is_locally_owned())
+                mesh_level(idx) = cell->level();
+            ++idx;
+        }
+    }
+    data_out.add_data_vector(mesh_level, "mesh_level");
 
     Vector<float> subdomain(triangulation.n_active_cells());
     for (unsigned int i = 0; i < subdomain.size(); ++i)
@@ -1289,29 +1331,24 @@ int main(int argc, char* argv[])
     double sav_r = 1.0;           // SAV variable r(t)
     double sav_E1_old = 0.0;      // E1(theta^n) cached for SAV update
     double sav_S1 = params.sav.S1;
-    double sav_S2 = params.sav.S2;
-    const bool adaptive_S2 = (params.sav.S2 <= 0.0) && params.enable_magnetic
-                           && params.enable_ns && params.use_sav;
+    constexpr double sav_C0 = 1.0; // SAV positivity constant (standard choice)
 
     if (params.use_sav)
     {
         // Auto-compute S if not set.
-        // Zhang p.B182 uses S = lambda_Phi/(4*epsilon) in Phi-space.
-        // In theta-space: f(theta) = (theta^3 - theta)/4, scaled by lambda_theta/epsilon.
-        // min f'(theta) = -1/4 at theta=0.
-        // Convexity: (lambda/eps)*f'(theta) + S >= 0  =>  S >= lambda/(4*epsilon).
+        // Convexity: (λ·α/ε)*f'(θ) + S >= 0 where α = ch_reaction_scale.
+        // min f'(θ) = -1 at θ=0, so S >= λ·α/ε.
+        // Zhang uses S = λ/(4ε) in Φ-space ≈ λ·α/(4ε) in θ-space.
         if (sav_S1 <= 0.0)
-            sav_S1 = params.physics.lambda / (4.0 * params.physics.epsilon);
+            sav_S1 = params.physics.lambda * params.physics.ch_reaction_scale
+                     / (4.0 * params.physics.epsilon);
 
         // Compute initial bulk energy and SAV variable
         sav_E1_old = ch.compute_bulk_energy(ch.get_theta_relevant());
-        sav_r = std::sqrt(sav_E1_old + params.sav.C0);
+        sav_r = std::sqrt(sav_E1_old + sav_C0);
 
         pcout << "  SAV initialization:\n"
-              << "    S1 = " << sav_S1 << " (CH stabilization)\n"
-              << "    S2 = " << sav_S2 << " (NS stabilization"
-              << (adaptive_S2 ? ", adaptive" : "") << ")\n"
-              << "    C0 = " << params.sav.C0 << "\n"
+              << "    S = " << sav_S1 << " (CH stabilization, Zhang Eq 3.10)\n"
               << "    E1(theta^0) = " << sav_E1_old << "\n"
               << "    r^0 = " << sav_r << "\n\n";
     }
@@ -1322,11 +1359,54 @@ int main(int argc, char* argv[])
     double current_time = 0.0;
     auto wall_start_total = std::chrono::high_resolution_clock::now();
 
+    // AMR activation gate: stays dormant until physics threshold is crossed.
+    // Once activated, remains active for the rest of the simulation.
+    // When NS is disabled, no velocity to gate on — activate immediately.
+    bool amr_activated = (params.mesh.amr_activation_U <= 0.0)
+                         || !params.enable_ns;
+    double prev_U_max = 0.0;
+
     for (unsigned int step = 1; step <= max_steps; ++step)
     {
         current_time += dt;
         if (current_time > t_final + 1e-14 * dt)
             break;
+
+        // ============================================================
+        // AMR — adaptive mesh refinement (opt-in via --amr flag)
+        //
+        // When use_amr = false (default), this block is skipped entirely.
+        // Physics-based activation: AMR stays dormant until |U|_max
+        // exceeds amr_activation_U (flow has developed). Once activated,
+        // refine every amr_interval steps using Kelly error estimation.
+        // ============================================================
+        if (params.mesh.use_amr && step > 1)
+        {
+            // Check activation gate
+            if (!amr_activated && prev_U_max > params.mesh.amr_activation_U)
+            {
+                amr_activated = true;
+                pcout << "[AMR] Activated at step " << step
+                      << " (|U|=" << prev_U_max
+                      << " > threshold=" << params.mesh.amr_activation_U << ")\n";
+            }
+
+            if (amr_activated && step % params.mesh.amr_interval == 0)
+            {
+                perform_amr(triangulation, params, mpi_comm,
+                            ch, ns, poisson, mag,
+                            params.enable_ns, params.enable_magnetic);
+
+                // SAV variable must be recomputed after mesh change
+                if (params.use_sav)
+                {
+                    sav_E1_old = ch.compute_bulk_energy(ch.get_theta_relevant());
+                    sav_r = std::sqrt(sav_E1_old + sav_C0);
+                    pcout << "[AMR] SAV recomputed: E1=" << sav_E1_old
+                          << ", r=" << sav_r << "\n";
+                }
+            }
+        }
 
         auto wall_start = std::chrono::high_resolution_clock::now();
 
@@ -1358,7 +1438,7 @@ int main(int argc, char* argv[])
             {
 
                 // SAV factor: r^n / sqrt(E1(theta^n) + C0)
-                const double denom = std::sqrt(sav_E1_old + params.sav.C0);
+                const double denom = std::sqrt(sav_E1_old + sav_C0);
                 const double sav_factor = (denom > 1e-15) ? sav_r / denom : 1.0;
 
                 ch.assemble_sav(ch.get_theta_relevant(), vel_comps, vel_dof,
@@ -1395,25 +1475,7 @@ int main(int argc, char* argv[])
         //     mag.get_Mx/My_relevant()        = M^{n-1}
         //
         //   Zhang Algorithm 3.1: NS comes BEFORE Poisson/Mag update.
-        //
-        // Adaptive S₂: S₂ ≥ μ₀² C_M² / (4 ν_min) per Zhang Theorem 4.1
-        // Uses φ^{n-1} for H_max estimate (previous step field).
         // ============================================================
-        if (adaptive_S2 && params.enable_magnetic)
-        {
-            // Use φ^{n-1} and h_a(t^{n-1}) for H_max estimate
-            auto poi_diag_quick = poisson.compute_diagnostics(
-                theta_old, ch.get_theta_dof_handler(),
-                current_time - dt);
-            const double H_max_now = poi_diag_quick.H_max;
-            const double mu0  = params.physics.mu_0;
-            const double chi0 = params.physics.chi_0;
-            const double nu_min = std::min(params.physics.nu_water,
-                                           params.physics.nu_ferro);
-            const double C_M = chi0 * H_max_now;
-            sav_S2 = 1.5 * mu0 * mu0 * C_M * C_M / (4.0 * nu_min);
-        }
-
         if (params.enable_ns)
         {
             if (!params.enable_magnetic)
@@ -1440,7 +1502,6 @@ int main(int argc, char* argv[])
                     ch.get_psi_relevant(),           ch.get_psi_dof_handler(),
                     poisson.get_solution_relevant(), poisson.get_dof_handler(),  // φ^{n-1}
                     current_time - dt,               // t^{n-1} for h_a (h̃^{n-1})
-                    sav_S2,
                     /*include_convection=*/true);
             }
             else
@@ -1460,7 +1521,6 @@ int main(int argc, char* argv[])
                     mag.get_My_relevant(),           // M^{n-1}
                     mag.get_dof_handler(),
                     current_time - dt,               // t^{n-1} for h_a (h̃^{n-1})
-                    sav_S2,
                     /*include_convection=*/true);
             }
             ns.solve();
@@ -1639,11 +1699,7 @@ int main(int argc, char* argv[])
                 pcout << "  |H|=" << std::setprecision(2) << poi_diag.H_max;
             }
             if (params.use_sav)
-            {
                 pcout << "  r=" << std::setprecision(4) << sav_r;
-                if (adaptive_S2)
-                    pcout << "  S2=" << std::setprecision(1) << sav_S2;
-            }
             pcout << "  wall=" << std::fixed << std::setprecision(1) << wall_s << "s"
                   << "\n";
         }
@@ -1661,6 +1717,10 @@ int main(int argc, char* argv[])
                 write_ch_only_vtu(output_dir, step, current_time,
                                   ch, triangulation, mpi_comm);
         }
+
+        // Track |U|_max for AMR activation gate (used next step)
+        if (params.mesh.use_amr && params.enable_ns)
+            prev_U_max = ns_diag.U_max;
     }
 
     // ----------------------------------------------------------------

@@ -182,6 +182,41 @@ const dealii::TrilinosWrappers::MPI::Vector&
 NSSubsystem<dim>::get_uy_old_relevant() const { return uy_old_relevant_; }
 
 // ============================================================================
+// Mutable accessors — for AMR SolutionTransfer
+// ============================================================================
+template <int dim>
+dealii::DoFHandler<dim>&
+NSSubsystem<dim>::get_ux_dof_handler_mutable() { return ux_dof_handler_; }
+
+template <int dim>
+dealii::DoFHandler<dim>&
+NSSubsystem<dim>::get_uy_dof_handler_mutable() { return uy_dof_handler_; }
+
+template <int dim>
+dealii::DoFHandler<dim>&
+NSSubsystem<dim>::get_p_dof_handler_mutable() { return p_dof_handler_; }
+
+template <int dim>
+dealii::TrilinosWrappers::MPI::Vector&
+NSSubsystem<dim>::get_ux_solution_mutable() { return ux_solution_; }
+
+template <int dim>
+dealii::TrilinosWrappers::MPI::Vector&
+NSSubsystem<dim>::get_uy_solution_mutable() { return uy_solution_; }
+
+template <int dim>
+dealii::TrilinosWrappers::MPI::Vector&
+NSSubsystem<dim>::get_p_solution_mutable() { return p_solution_; }
+
+template <int dim>
+dealii::TrilinosWrappers::MPI::Vector&
+NSSubsystem<dim>::get_ux_old_solution_mutable() { return ux_old_solution_; }
+
+template <int dim>
+dealii::TrilinosWrappers::MPI::Vector&
+NSSubsystem<dim>::get_uy_old_solution_mutable() { return uy_old_solution_; }
+
+// ============================================================================
 // Ghost management
 // ============================================================================
 template <int dim>

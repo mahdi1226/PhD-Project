@@ -107,6 +107,21 @@ PoissonSubsystem<dim>::get_solution_relevant() const
     return solution_relevant_;
 }
 
+// Mutable accessors — for AMR SolutionTransfer
+template <int dim>
+dealii::DoFHandler<dim>&
+PoissonSubsystem<dim>::get_dof_handler_mutable()
+{
+    return dof_handler_;
+}
+
+template <int dim>
+dealii::TrilinosWrappers::MPI::Vector&
+PoissonSubsystem<dim>::get_solution_mutable()
+{
+    return solution_;
+}
+
 // ============================================================================
 // Ghost management
 // ============================================================================
@@ -308,6 +323,12 @@ template const dealii::TrilinosWrappers::MPI::Vector& PoissonSubsystem<3>::get_s
 
 template const dealii::TrilinosWrappers::MPI::Vector& PoissonSubsystem<2>::get_solution_relevant() const;
 template const dealii::TrilinosWrappers::MPI::Vector& PoissonSubsystem<3>::get_solution_relevant() const;
+
+template dealii::DoFHandler<2>& PoissonSubsystem<2>::get_dof_handler_mutable();
+template dealii::DoFHandler<3>& PoissonSubsystem<3>::get_dof_handler_mutable();
+
+template dealii::TrilinosWrappers::MPI::Vector& PoissonSubsystem<2>::get_solution_mutable();
+template dealii::TrilinosWrappers::MPI::Vector& PoissonSubsystem<3>::get_solution_mutable();
 
 template void PoissonSubsystem<2>::update_ghosts();
 template void PoissonSubsystem<3>::update_ghosts();

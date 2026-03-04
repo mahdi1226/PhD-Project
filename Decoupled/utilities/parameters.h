@@ -114,6 +114,19 @@ struct Parameters
         double mobility = 0.0002;       // γ (Cahn-Hilliard mobility)
         double lambda = 0.05;           // λ (surface tension / capillary coefficient)
 
+        // Φ→θ reaction scaling factor.
+        //
+        // Zhang uses Φ∈{0,1}: F(Φ)=(1/4ε)Φ²(Φ-1)², f(Φ)=F'(Φ).
+        // Our code uses θ∈{-1,+1}: G(θ)=(1/4)(θ²-1)², g(θ)=θ³-θ.
+        // Under θ=2Φ-1: the gradient term scales as 1/4 and the reaction
+        // (double-well) term scales as 1/16. With λ_θ=λ_Φ/4 the gradient
+        // matches, but the reaction is 4× too strong.
+        //
+        // Setting ch_reaction_scale=0.25 corrects this:
+        //   ψ = -λε Δθ + ch_reaction_scale·(λ/ε)·f(θ)
+        // giving the exact Zhang dynamics for both 4th- and 2nd-order terms.
+        double ch_reaction_scale = 1.0;  // 1.0 = standard θ, 0.25 = Zhang Φ-match
+
         // -- Navier-Stokes (Eq. 42e-f, Section 6.2) --
         //
         // Viscosity ν(θ) = ν_w + (ν_f - ν_w) H(θ/ε)      (Eq. 17, p.501)
@@ -148,7 +161,23 @@ struct Parameters
     {
         unsigned int initial_refinement = 5;
 
-        // -- AMR parameters will be added here --
+        // AMR (opt-in, default OFF = uniform global refinement)
+        //
+        // When use_amr = false (default), the mesh is refined globally to
+        // initial_refinement and stays fixed. When use_amr = true (--amr),
+        // the mesh is adaptively refined every amr_interval steps using
+        // Kelly error estimation on theta (interface field).
+        bool use_amr = false;
+        unsigned int amr_interval = 5;            // refine every N steps
+        unsigned int amr_max_level = 0;           // 0 = no cap
+        unsigned int amr_min_level = 0;           // 0 = no floor
+        double amr_upper_fraction = 0.3;          // top 30% cells -> refine
+        double amr_lower_fraction = 0.10;         // bottom 10% cells -> coarsen
+        double interface_coarsen_threshold = 0.9;  // |theta| < this -> protect
+
+        // Physics-based activation: AMR stays dormant until |U|_max exceeds
+        // this threshold (flow has developed). Set to 0 to disable gate.
+        double amr_activation_U = 1e-3;
     } mesh;
 
     // ========================================================================
@@ -318,9 +347,12 @@ struct Parameters
     //   Enables unconditionally energy-stable time stepping by replacing
     //   the nonlinear f(theta)/eps with (r/sqrt(E1+C0)) * f(theta)/eps
     //
-    // ZEC: Zero Energy Contribution property
-    //   -mu0(m.grad h, u) - mu0(u.grad m, h) - mu0(u x m, curl h) = 0
+    // ZEC: Zero Energy Contribution property (b_stab in NS assembly)
     //   Allows explicit Kelvin force treatment while maintaining energy balance
+    //
+    // S: CH stabilization parameter (Zhang Eq 3.10)
+    //   S >= lambda/(4*epsilon) ensures convexity of modified potential
+    //   Auto-computed if set to 0.
     //
     // Algebraic magnetization: m = chi(theta) * h  (no PDE)
     //   Eliminates magnetization subsystem entirely.
@@ -331,9 +363,7 @@ struct Parameters
 
     struct SAV
     {
-        double C0 = 1.0;       // positivity constant: r(t) = sqrt(E1(theta) + C0)
-        double S1 = 0.0;       // CH stabilization: S1 >= 1/eps (auto-computed if 0)
-        double S2 = 0.0;       // NS stabilization: S2 >= mu0^2 C_M^2 / (4 nu_min)
+        double S1 = 0.0;       // CH stabilization S (auto-computed if 0): S >= lambda/(4*eps)
     } sav;
 
     // ========================================================================

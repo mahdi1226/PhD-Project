@@ -730,5 +730,24 @@ This resolves the NS<->Mag coupling within each time step, at the cost of
 
 ---
 
+---
+
+## Updates (Sessions 11-13, March 2026)
+
+### Session 11-12: Paper Audit + Parameter Cleanup
+- Reverted chi/nu to sigmoid interpolation (was wrongly set to linear)
+- Added spin-vorticity term to magnetization equation
+- Removed S2 and C0 (not in Zhang's paper)
+- Paper is sole authority for parameters
+
+### Session 13: AMR Integration
+- AMR added to the production driver (`decoupled_driver.cc`)
+- 14-step algorithm in `utilities/amr.h` (header-only)
+- Physics-based activation gate: AMR dormant until |U| > threshold
+- All validation tests pass with and without AMR
+- See `session_handoff.md` and `SESSION_SUMMARY.md` Section 10 for details
+
+---
+
 *Plan created: February 2025*
-*Updated: February 28, 2026 (Session 10 -- Strategy A failure analysis for strong coupling)*
+*Updated: March 3, 2026 (Session 13 -- AMR integration + parameter audit)*

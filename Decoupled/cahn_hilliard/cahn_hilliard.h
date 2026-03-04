@@ -215,6 +215,10 @@ public:
     const dealii::DoFHandler<dim>& get_theta_dof_handler() const;
     const dealii::DoFHandler<dim>& get_psi_dof_handler() const;
 
+    // Mutable DoFHandler accessors — for AMR SolutionTransfer
+    dealii::DoFHandler<dim>& get_theta_dof_handler_mutable();
+    dealii::DoFHandler<dim>& get_psi_dof_handler_mutable();
+
     /// Locally-owned θ solution (solver output)
     dealii::TrilinosWrappers::MPI::Vector& get_theta_solution();
     const dealii::TrilinosWrappers::MPI::Vector& get_theta_solution() const;

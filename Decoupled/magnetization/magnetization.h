@@ -265,6 +265,13 @@ public:
     const dealii::TrilinosWrappers::MPI::Vector& get_Mx_old_relevant() const;
     const dealii::TrilinosWrappers::MPI::Vector& get_My_old_relevant() const;
 
+    // Mutable accessors — for AMR SolutionTransfer
+    dealii::DoFHandler<dim>& get_dof_handler_mutable();
+    dealii::TrilinosWrappers::MPI::Vector& get_Mx_solution_mutable();
+    dealii::TrilinosWrappers::MPI::Vector& get_My_solution_mutable();
+    dealii::TrilinosWrappers::MPI::Vector& get_Mx_old_relevant_mutable();
+    dealii::TrilinosWrappers::MPI::Vector& get_My_old_relevant_mutable();
+
     /**
      * @brief Save current M as M^{n-1} snapshot for Picard sub-iteration.
      *

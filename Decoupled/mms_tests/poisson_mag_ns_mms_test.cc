@@ -330,7 +330,6 @@ static PoissonMagNSResult run_single_level(
                 mag.get_My_relevant(),
                 mag.get_dof_handler(),
                 current_time,                          // for MMS source
-                0.0,                                   // S2 = 0
                 true);                                 // include convection
 
             ns_ptr->solve();

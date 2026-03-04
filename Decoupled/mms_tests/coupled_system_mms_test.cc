@@ -305,7 +305,6 @@ static CoupledMMSResult run_single_level(
             mag.get_My_relevant(),
             mag.get_dof_handler(),
             current_time,                      // current time for MMS source
-            0.0,                               // S2 = 0 for MMS
             true);                             // include convection
 
         ns.solve();

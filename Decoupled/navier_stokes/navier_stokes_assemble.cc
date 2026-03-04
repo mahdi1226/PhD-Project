@@ -316,17 +316,15 @@ void NSSubsystem<dim>::assemble_stokes(
 // Zhang, He & Yang, SIAM J. Sci. Comput. 43(1) (2021), Eq 3.11:
 //
 // Variable viscosity ν(Φ^n), Kelvin force (three terms), gravity ρ(Φ^n)g,
-// capillary Φ^{n-1}∇W^n, b_stab stabilization, S₂ stabilization.
+// capillary Φ^{n-1}∇W^n, b_stab stabilization.
 //
 // M and φ are passed from the previous time step (m^{n-1}, h̃^{n-1}).
 //
-// LHS: (1/δt + S₂)(ũ^n, v) + ν(Φ^n)(D(ũ^n), D(v)) + b(u^{n-1}; ũ^n, v)
+// LHS: (1/δt)(ũ^n, v) + ν(Φ^n)(D(ũ^n), D(v)) + b(u^{n-1}; ũ^n, v)
 //       + b_stab(m^{n-1}, ũ^n, v) − (p, ∇·v)
-// RHS: (1/δt + S₂)(u^{n-1}, v) + μ₀((m^{n-1}·∇)h̃^{n-1}, v)
+// RHS: (1/δt)(u^{n-1}, v) + μ₀((m^{n-1}·∇)h̃^{n-1}, v)
 //       + μ₀/2(m^{n-1}×h̃^{n-1}, ∇×v) + μ₀(m^{n-1}×∇×h̃^{n-1}, v)
 //       + Φ^{n-1}∇W^n·v + ρ(Φ^n)g·v
-//
-// S₂: Zhang Theorem 4.1 requires S₂ ≥ μ₀²C_M²/(4ν_min)
 // ============================================================================
 #include "physics/material_properties.h"
 #include "physics/kelvin_force.h"
@@ -346,7 +344,6 @@ void NSSubsystem<dim>::assemble_coupled(
     const dealii::TrilinosWrappers::MPI::Vector& My_relevant,
     const dealii::DoFHandler<dim>&               M_dof_handler,
     double current_time,
-    double S2,
     bool include_convection)
 {
     using namespace dealii;
@@ -433,8 +430,6 @@ void NSSubsystem<dim>::assemble_coupled(
                        * params_.physics.gravity_direction[d];
     }
 
-    // S2 stabilization per Zhang Theorem 4.1: S2 >= mu_0^2*C_M^2/(4*nu_min)
-    // Mass coefficient: 1/dt + S2, computed per quadrature point
     // Zhang Eq 3.11: NO density on time derivative
     // Kelvin force uses m^{n-1} and h̃^{n-1} (from previous step, not yet updated)
 
@@ -576,8 +571,8 @@ void NSSubsystem<dim>::assemble_coupled(
                 F_capillary = theta_old_q * grad_psi_q;
             }
 
-            // Mass coefficient: 1/dt + S2  (Zhang Eq 3.11: NO density on time derivative)
-            const double mass_coeff = 1.0 / dt + S2;
+            // Mass coefficient: 1/dt  (Zhang Eq 3.11: NO density on time derivative)
+            const double mass_coeff = 1.0 / dt;
 
             // b_stab precompute: quantities depending on m^{n-1} at this quad point
             // (v·∇)m: for test V=(φ_i, 0): V·∇m_x = φ_i * ∂m_x/∂x, V·∇m_y = φ_i * ∂m_y/∂x
@@ -625,7 +620,7 @@ void NSSubsystem<dim>::assemble_coupled(
                 local_rhs_ux(i) += mu0 * M_cross_curlH[0] * phi_ux_i * JxW;
                 local_rhs_uy(i) += mu0 * M_cross_curlH[1] * phi_uy_i * JxW;
 
-                // RHS: (1/dt + S2) * U^{n-1}
+                // RHS: (1/dt) * U^{n-1}
                 local_rhs_ux(i) += mass_coeff * ux_old_values[q] * phi_ux_i * JxW;
                 local_rhs_uy(i) += mass_coeff * uy_old_values[q] * phi_uy_i * JxW;
 
@@ -661,7 +656,7 @@ void NSSubsystem<dim>::assemble_coupled(
                     auto T_U_x = compute_T_test_ux<dim>(grad_phi_ux_j);
                     auto T_U_y = compute_T_test_uy<dim>(grad_phi_uy_j);
 
-                    // LHS mass: (1/dt + S2)(U^n, V)
+                    // LHS mass: (1/dt)(U^n, V)
                     local_ux_ux(i, j) += mass_coeff * phi_ux_j * phi_ux_i * JxW;
                     local_uy_uy(i, j) += mass_coeff * phi_uy_j * phi_uy_i * JxW;
 
@@ -1007,14 +1002,14 @@ template void NSSubsystem<2>::assemble_coupled(
     const dealii::TrilinosWrappers::MPI::Vector&, const dealii::DoFHandler<2>&,
     const dealii::TrilinosWrappers::MPI::Vector&, const dealii::DoFHandler<2>&,
     const dealii::TrilinosWrappers::MPI::Vector&, const dealii::TrilinosWrappers::MPI::Vector&,
-    const dealii::DoFHandler<2>&, double, double, bool);
+    const dealii::DoFHandler<2>&, double, bool);
 template void NSSubsystem<3>::assemble_coupled(
     double, const dealii::TrilinosWrappers::MPI::Vector&,
     const dealii::TrilinosWrappers::MPI::Vector&, const dealii::DoFHandler<3>&,
     const dealii::TrilinosWrappers::MPI::Vector&, const dealii::DoFHandler<3>&,
     const dealii::TrilinosWrappers::MPI::Vector&, const dealii::DoFHandler<3>&,
     const dealii::TrilinosWrappers::MPI::Vector&, const dealii::TrilinosWrappers::MPI::Vector&,
-    const dealii::DoFHandler<3>&, double, double, bool);
+    const dealii::DoFHandler<3>&, double, bool);
 
 
 // ============================================================================
@@ -1022,13 +1017,12 @@ template void NSSubsystem<3>::assemble_coupled(
 //
 // Zhang, He & Yang (SIAM J. Sci. Comput. 43, 2021), Eq 3.11:
 //   - Algebraic m^{n-1} = chi(Φ^{n-1}) * (∇φ^{n-1} + h_a)
-//   - S2 stabilization: +S2(ũ^n - u^{n-1}, v)
 //   - Three Kelvin RHS terms + b_stab on LHS
 //   - Viscosity ν(Φ^n) uses current theta, M uses old theta + old phi
 //
-// LHS: (1/δt + S2)(ũ^n, v) + ν(Φ^n)(D(ũ^n), D(v))
+// LHS: (1/δt)(ũ^n, v) + ν(Φ^n)(D(ũ^n), D(v))
 //       + b(u^{n-1}, ũ^n, v) + b_stab(m^{n-1}, ũ^n, v) - (p, ∇·v)
-// RHS: (1/δt + S2)(u^{n-1}, v) + μ₀((m^{n-1}·∇)h̃^{n-1}, v)
+// RHS: (1/δt)(u^{n-1}, v) + μ₀((m^{n-1}·∇)h̃^{n-1}, v)
 //       + μ₀/2(m^{n-1}×h̃^{n-1}, ∇×v) + μ₀(m^{n-1}×∇×h̃^{n-1}, v)
 //       + Φ^{n-1}∇W^n·v + ρ(Φ^n)g·v
 // ============================================================================
@@ -1043,7 +1037,6 @@ void NSSubsystem<dim>::assemble_coupled_algebraic_M(
     const dealii::TrilinosWrappers::MPI::Vector& phi_relevant,
     const dealii::DoFHandler<dim>&               phi_dof_handler,
     double current_time,
-    double S2,
     bool include_convection)
 {
     using namespace dealii;
@@ -1261,8 +1254,8 @@ void NSSubsystem<dim>::assemble_coupled_algebraic_M(
                 F_capillary = theta_old_q * grad_psi_q;
             }
 
-            // Mass coefficient: 1/dt + S2 (Zhang Eq 3.11: NO density on time derivative)
-            const double mass_coeff = 1.0 / dt + S2;
+            // Mass coefficient: 1/dt (Zhang Eq 3.11: NO density on time derivative)
+            const double mass_coeff = 1.0 / dt;
 
             for (unsigned int i = 0; i < dofs_per_cell_vel; ++i)
             {
@@ -1298,7 +1291,7 @@ void NSSubsystem<dim>::assemble_coupled_algebraic_M(
                 local_rhs_ux(i) += mu_0 * M_cross_curlH[0] * phi_ux_i * JxW;
                 local_rhs_uy(i) += mu_0 * M_cross_curlH[1] * phi_uy_i * JxW;
 
-                // RHS: (1/dt + S2) * U^{n-1}
+                // RHS: (1/dt) * U^{n-1}
                 local_rhs_ux(i) += mass_coeff * ux_old_values[q] * phi_ux_i * JxW;
                 local_rhs_uy(i) += mass_coeff * uy_old_values[q] * phi_uy_i * JxW;
 
@@ -1329,7 +1322,7 @@ void NSSubsystem<dim>::assemble_coupled_algebraic_M(
                     auto T_U_x = compute_T_test_ux<dim>(grad_phi_ux_j);
                     auto T_U_y = compute_T_test_uy<dim>(grad_phi_uy_j);
 
-                    // LHS mass: (1/dt + S2)(U^n, V)
+                    // LHS mass: (1/dt)(U^n, V)
                     local_ux_ux(i, j) += mass_coeff * phi_ux_j * phi_ux_i * JxW;
                     local_uy_uy(i, j) += mass_coeff * phi_uy_j * phi_uy_i * JxW;
 
@@ -1452,10 +1445,10 @@ template void NSSubsystem<2>::assemble_coupled_algebraic_M(
     const dealii::TrilinosWrappers::MPI::Vector&, const dealii::DoFHandler<2>&,
     const dealii::TrilinosWrappers::MPI::Vector&, const dealii::DoFHandler<2>&,
     const dealii::TrilinosWrappers::MPI::Vector&, const dealii::DoFHandler<2>&,
-    double, double, bool);
+    double, bool);
 template void NSSubsystem<3>::assemble_coupled_algebraic_M(
     double, const dealii::TrilinosWrappers::MPI::Vector&,
     const dealii::TrilinosWrappers::MPI::Vector&, const dealii::DoFHandler<3>&,
     const dealii::TrilinosWrappers::MPI::Vector&, const dealii::DoFHandler<3>&,
     const dealii::TrilinosWrappers::MPI::Vector&, const dealii::DoFHandler<3>&,
-    double, double, bool);
+    double, bool);

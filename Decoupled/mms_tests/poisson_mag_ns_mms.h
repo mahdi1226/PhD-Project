@@ -229,7 +229,7 @@ namespace VelocityHessian
 //   Term 3: ½(M×∇×U, M×∇×V)        → IBP: ½ curl(|M|²·ω_U*)
 //
 // M*, H* evaluated at t_old (production lagging: NS sees φ^{n-1}, M^{n-1}).
-// Capillary = 0 (ψ=0), gravity = 0 (disabled), S2 = 0.
+// Capillary = 0 (ψ=0), gravity = 0 (disabled).
 // ============================================================================
 template <int dim>
 class PoissonMagNSSourceU

@@ -41,6 +41,8 @@ void CahnHilliardSubsystem<dim>::distribute_dofs()
     const unsigned int n_total = 2 * n_theta;
 
     // Owned: shift ψ indices by n_theta
+    // Clear first in case of re-setup (e.g., after AMR)
+    ch_locally_owned_.clear();
     ch_locally_owned_.set_size(n_total);
     ch_locally_owned_.add_indices(theta_locally_owned_);
 
@@ -50,6 +52,7 @@ void CahnHilliardSubsystem<dim>::distribute_dofs()
     ch_locally_owned_.add_indices(psi_owned_shifted);
 
     // Relevant: shift ψ indices by n_theta
+    ch_locally_relevant_.clear();
     ch_locally_relevant_.set_size(n_total);
     ch_locally_relevant_.add_indices(theta_locally_relevant_);
 

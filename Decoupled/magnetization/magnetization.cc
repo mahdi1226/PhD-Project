@@ -207,6 +207,28 @@ MagnetizationSubsystem<dim>::get_My_relevant() const
     return My_relevant_;
 }
 
+// Mutable accessors — for AMR SolutionTransfer
+template <int dim>
+DoFHandler<dim>&
+MagnetizationSubsystem<dim>::get_dof_handler_mutable()
+{
+    return dof_handler_;
+}
+
+template <int dim>
+TrilinosWrappers::MPI::Vector&
+MagnetizationSubsystem<dim>::get_Mx_solution_mutable()
+{
+    return Mx_solution_;
+}
+
+template <int dim>
+TrilinosWrappers::MPI::Vector&
+MagnetizationSubsystem<dim>::get_My_solution_mutable()
+{
+    return My_solution_;
+}
+
 // ============================================================================
 // apply_under_relaxation() — blend M_solve with M^k for Picard stability
 //
@@ -295,6 +317,20 @@ MagnetizationSubsystem<dim>::get_Mx_old_relevant() const
 template <int dim>
 const TrilinosWrappers::MPI::Vector&
 MagnetizationSubsystem<dim>::get_My_old_relevant() const
+{
+    return My_old_relevant_;
+}
+
+template <int dim>
+TrilinosWrappers::MPI::Vector&
+MagnetizationSubsystem<dim>::get_Mx_old_relevant_mutable()
+{
+    return Mx_old_relevant_;
+}
+
+template <int dim>
+TrilinosWrappers::MPI::Vector&
+MagnetizationSubsystem<dim>::get_My_old_relevant_mutable()
 {
     return My_old_relevant_;
 }

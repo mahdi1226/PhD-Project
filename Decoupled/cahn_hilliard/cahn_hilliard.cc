@@ -45,10 +45,11 @@ void CahnHilliardSubsystem<dim>::setup()
            << params_.fe.degree_phase << ")...\n";
 
     distribute_dofs();
-    build_constraints();
-    build_index_maps();
+    build_index_maps();       // Must come before build_constraints() because
+    build_constraints();      // rebuild_coupled_constraints() uses index maps
     build_coupled_sparsity();
     allocate_vectors();
+    ghosts_valid_ = false;    // Ghosted vectors were zeroed by allocate_vectors()
 
     pcout_ << "[CH] Setup complete: "
            << theta_dof_handler_.n_dofs() << " θ DoFs + "
@@ -202,6 +203,20 @@ CahnHilliardSubsystem<dim>::get_psi_dof_handler() const
 }
 
 template <int dim>
+dealii::DoFHandler<dim>&
+CahnHilliardSubsystem<dim>::get_theta_dof_handler_mutable()
+{
+    return theta_dof_handler_;
+}
+
+template <int dim>
+dealii::DoFHandler<dim>&
+CahnHilliardSubsystem<dim>::get_psi_dof_handler_mutable()
+{
+    return psi_dof_handler_;
+}
+
+template <int dim>
 dealii::TrilinosWrappers::MPI::Vector&
 CahnHilliardSubsystem<dim>::get_theta_solution()
 {
@@ -337,9 +352,11 @@ CahnHilliardSubsystem<dim>::compute_diagnostics() const
             local_volume += JxW;
             local_theta_sum += th * JxW;
 
-            // CH energy: E = λ [ε/2 |∇θ|² + (1/ε) F(θ)]
+            // CH energy: E = λ [ε/2 |∇θ|² + α·(1/ε) F(θ)]
+            // α = ch_reaction_scale: corrects Φ→θ double-well scaling
+            const double rs = params_.physics.ch_reaction_scale;
             local_E_grad += lambda * 0.5 * eps * grad_sq * JxW;
-            local_E_bulk += lambda * (1.0 / eps) * double_well_potential(th) * JxW;
+            local_E_bulk += lambda * rs * (1.0 / eps) * double_well_potential(th) * JxW;
 
             local_psi_L2_sq += ps * ps * JxW;
 

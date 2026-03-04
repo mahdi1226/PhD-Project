@@ -49,9 +49,13 @@ void Parameters::setup_rosensweig()
     physics.enable_beta_term = true;
 
     // Physics — Cahn-Hilliard
-    // Zhang Eq 4.4 uses Φ∈{0,1}. Convert: λ_θ = λ_Φ/4, M_θ = 4·M_Φ.
-    physics.lambda = 0.25;        // Zhang λ=1 → θ-space: 1/4
-    physics.mobility = 8e-4;      // Zhang M=2e-4 → θ-space: 4×
+    // Zhang Eq 4.4 uses Φ∈{0,1}. Our code uses θ∈{-1,+1} with θ=2Φ-1.
+    // Gradient term scales as 1/4 (from |∇Φ|²=|∇θ|²/4):  λ_θ = λ_Φ/4.
+    // Reaction term scales as 1/16 (from f(Φ) conversion): needs extra 0.25.
+    // Mobility: γΔψ 4th-order matches with γ_θ = 4·M_Φ.
+    physics.lambda = 0.25;            // Zhang λ=1 → θ-space: λ_Φ/4
+    physics.mobility = 8e-4;          // Zhang M=2e-4 → θ-space: 4×M_Φ
+    physics.ch_reaction_scale = 0.25; // reaction 1/16 vs gradient 1/4 → extra 0.25
 
     // Physics — Navier-Stokes
     physics.nu_water = 1.0;       // Zhang Eq 4.4: ν_w = 1
@@ -95,9 +99,7 @@ void Parameters::setup_rosensweig()
     // Zhang's SAV scheme — use FULL magnetization PDE (not algebraic)
     use_algebraic_magnetization = false;  // Zhang solves mag PDE (Eq 3.15-3.16)
     use_sav = true;
-    sav.C0 = 1.0;
-    sav.S1 = 0.0;   // auto-computed: S1 = lambda_theta/(4*epsilon) = 12.5
-    sav.S2 = 0.0;   // start with 0, increase if needed
+    sav.S1 = 0.0;   // auto-computed: S = lambda_theta/(4*epsilon) = 12.5
 }
 
 // ============================================================================
@@ -303,20 +305,10 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             params.use_sav = true;
         else if (std::strcmp(argv[i], "--no_sav") == 0)
             params.use_sav = false;
-        else if (std::strcmp(argv[i], "--sav_S1") == 0)
+        else if (std::strcmp(argv[i], "--sav_S") == 0 || std::strcmp(argv[i], "--sav_S1") == 0)
         {
-            if (++i >= argc) { std::cerr << "--sav_S1 requires a value\n"; std::exit(1); }
+            if (++i >= argc) { std::cerr << "--sav_S requires a value\n"; std::exit(1); }
             params.sav.S1 = std::stod(argv[i]);
-        }
-        else if (std::strcmp(argv[i], "--sav_S2") == 0)
-        {
-            if (++i >= argc) { std::cerr << "--sav_S2 requires a value\n"; std::exit(1); }
-            params.sav.S2 = std::stod(argv[i]);
-        }
-        else if (std::strcmp(argv[i], "--sav_C0") == 0)
-        {
-            if (++i >= argc) { std::cerr << "--sav_C0 requires a value\n"; std::exit(1); }
-            params.sav.C0 = std::stod(argv[i]);
         }
 
         // ---- Subsystem enables ----
@@ -393,9 +385,7 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
 
                 params.use_algebraic_magnetization = false;
                 params.use_sav = true;
-                params.sav.C0 = 1.0;
-                params.sav.S1 = 0.0;   // auto-computed: S1 = lambda_theta/(4*epsilon) = 1.25
-                params.sav.S2 = 0.0;
+                params.sav.S1 = 0.0;   // auto-computed: S = lambda_theta/(4*epsilon) = 1.25
             }
             else if (params.validation_test == "droplet")
             {
@@ -463,9 +453,7 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
                 // Zhang's SAV scheme — use FULL magnetization PDE
                 params.use_algebraic_magnetization = false;
                 params.use_sav = true;
-                params.sav.C0 = 1.0;
-                params.sav.S1 = 0.0;   // auto-computed: S1 = lambda_theta/(4*epsilon) = 31.25
-                params.sav.S2 = 0.0;
+                params.sav.S1 = 0.0;   // auto-computed: S = lambda_theta/(4*epsilon) = 31.25
             }
             else if (params.validation_test == "droplet_nofield")
             {
@@ -509,9 +497,7 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
 
                 params.use_algebraic_magnetization = true;
                 params.use_sav = true;
-                params.sav.C0 = 1.0;
-                params.sav.S1 = 0.0;   // auto-computed: S1 = lambda_theta/(4*epsilon) = 31.25
-                params.sav.S2 = 0.0;
+                params.sav.S1 = 0.0;   // auto-computed: S = lambda_theta/(4*epsilon) = 31.25
             }
             else
             {
@@ -519,6 +505,42 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
                           << " (use 'square', 'droplet', or 'droplet_nofield')\n";
                 std::exit(1);
             }
+        }
+
+        // ---- AMR ----
+        else if (std::strcmp(argv[i], "--amr") == 0)
+            params.mesh.use_amr = true;
+        else if (std::strcmp(argv[i], "--no-amr") == 0 || std::strcmp(argv[i], "--no_amr") == 0)
+            params.mesh.use_amr = false;
+        else if (std::strcmp(argv[i], "--amr-interval") == 0 || std::strcmp(argv[i], "--amr_interval") == 0)
+        {
+            if (++i >= argc) { std::cerr << "--amr-interval requires a value\n"; std::exit(1); }
+            params.mesh.amr_interval = std::stoul(argv[i]);
+        }
+        else if (std::strcmp(argv[i], "--amr-max-level") == 0 || std::strcmp(argv[i], "--amr_max_level") == 0)
+        {
+            if (++i >= argc) { std::cerr << "--amr-max-level requires a value\n"; std::exit(1); }
+            params.mesh.amr_max_level = std::stoul(argv[i]);
+        }
+        else if (std::strcmp(argv[i], "--amr-min-level") == 0 || std::strcmp(argv[i], "--amr_min_level") == 0)
+        {
+            if (++i >= argc) { std::cerr << "--amr-min-level requires a value\n"; std::exit(1); }
+            params.mesh.amr_min_level = std::stoul(argv[i]);
+        }
+        else if (std::strcmp(argv[i], "--amr-upper-fraction") == 0)
+        {
+            if (++i >= argc) { std::cerr << "--amr-upper-fraction requires a value\n"; std::exit(1); }
+            params.mesh.amr_upper_fraction = std::stod(argv[i]);
+        }
+        else if (std::strcmp(argv[i], "--amr-lower-fraction") == 0)
+        {
+            if (++i >= argc) { std::cerr << "--amr-lower-fraction requires a value\n"; std::exit(1); }
+            params.mesh.amr_lower_fraction = std::stod(argv[i]);
+        }
+        else if (std::strcmp(argv[i], "--amr-activation-U") == 0 || std::strcmp(argv[i], "--amr_activation_U") == 0)
+        {
+            if (++i >= argc) { std::cerr << "--amr-activation-U requires a value\n"; std::exit(1); }
+            params.mesh.amr_activation_U = std::stod(argv[i]);
         }
 
         // ---- Output ----
@@ -547,7 +569,12 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             std::cout << "    --rosensweig-nonuniform  Rosensweig preset (Section 4.4, 42 dipoles)\n";
             std::cout << "    --validation MODE   Validation test (droplet|square)\n\n";
             std::cout << "  Mesh:\n";
-            std::cout << "    --refinement N      Mesh refinement level (2d/3d modes)\n\n";
+            std::cout << "    --refinement N      Mesh refinement level (2d/3d modes)\n";
+            std::cout << "    --amr / --no-amr    Enable/disable adaptive mesh refinement\n";
+            std::cout << "    --amr-interval N    Refine every N steps (default: 5)\n";
+            std::cout << "    --amr-max-level N   Max refinement level (default: 0=no cap)\n";
+            std::cout << "    --amr-min-level N   Min refinement level (default: 0)\n";
+            std::cout << "    --amr-activation-U V  |U| threshold to activate AMR (default: 1e-3, 0=immediate)\n\n";
             std::cout << "  Time stepping:\n";
             std::cout << "    --dt VALUE          Time step size\n";
             std::cout << "    --t_final VALUE     Final simulation time\n\n";
