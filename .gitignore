@@ -19,6 +19,7 @@
 
 # Reference material (papers, etc.)
 **/Reference/
+**/References/*.pdf
 
 # Claude worktrees
 **/.claude/
