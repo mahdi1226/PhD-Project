@@ -22,6 +22,9 @@ deal_ii_initialize_cached_variables()
 set(SRC_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
 include_directories(${SRC_ROOT})
 
+# Absolute path available in all targets for output directories
+add_compile_definitions(SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+
 # ============================================================================
 # Shared utilities (compiled once, linked everywhere)
 # ============================================================================
@@ -97,18 +100,17 @@ target_link_libraries(passive_scalar_lib utilities_lib)
 deal_ii_setup_target(passive_scalar_lib)
 
 # ============================================================================
-# Cahn-Hilliard subsystem library (Phase B — to be implemented)
+# Cahn-Hilliard subsystem library (Phase B)
 # ============================================================================
-# Uncomment when source files are created:
-# add_library(cahn_hilliard_lib STATIC
-#     cahn_hilliard/cahn_hilliard.cc
-#     cahn_hilliard/cahn_hilliard_setup.cc
-#     cahn_hilliard/cahn_hilliard_assemble.cc
-#     cahn_hilliard/cahn_hilliard_solve.cc
-#     cahn_hilliard/cahn_hilliard_output.cc
-# )
-# target_link_libraries(cahn_hilliard_lib utilities_lib)
-# deal_ii_setup_target(cahn_hilliard_lib)
+add_library(cahn_hilliard_lib STATIC
+    cahn_hilliard/cahn_hilliard.cc
+    cahn_hilliard/cahn_hilliard_setup.cc
+    cahn_hilliard/cahn_hilliard_assemble.cc
+    cahn_hilliard/cahn_hilliard_solve.cc
+    cahn_hilliard/cahn_hilliard_output.cc
+)
+target_link_libraries(cahn_hilliard_lib utilities_lib)
+deal_ii_setup_target(cahn_hilliard_lib)
 
 # ============================================================================
 # Subdirectories (MMS tests + drivers)
@@ -117,5 +119,6 @@ add_subdirectory(poisson)
 add_subdirectory(magnetization)
 add_subdirectory(navier_stokes)
 add_subdirectory(angular_momentum)
+add_subdirectory(cahn_hilliard)
 add_subdirectory(mms_tests)
 add_subdirectory(drivers)

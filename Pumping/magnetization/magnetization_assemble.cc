@@ -31,6 +31,7 @@
 
 #include "magnetization/magnetization.h"
 #include "physics/skew_forms.h"
+#include "physics/material_properties.h"
 
 #include <deal.II/base/quadrature_lib.h>
 #include <deal.II/base/timer.h>
@@ -51,7 +52,9 @@ void MagnetizationSubsystem<dim>::assemble(
     double dt,
     double current_time,
     const dealii::TrilinosWrappers::MPI::Vector& w_relevant,
-    const dealii::DoFHandler<dim>* w_dof_handler)
+    const dealii::DoFHandler<dim>* w_dof_handler,
+    const dealii::TrilinosWrappers::MPI::Vector& ch_solution_relevant,
+    const dealii::DoFHandler<dim>* ch_dof_handler)
 {
     dealii::Timer timer;
     timer.start();
@@ -60,14 +63,17 @@ void MagnetizationSubsystem<dim>::assemble(
     const double tau_M = params_.physics.T_relax;
     const double sigma = params_.physics.sigma;
     const double kappa_0 = params_.physics.kappa_0;
+    const double chi_ferro = params_.physics.chi_ferro;
     const double eta = params_.dg.penalty_parameter;
     const double mass_coeff = 1.0 / tau + 1.0 / tau_M;
     const double old_coeff = 1.0 / tau;
-    const double relax_coeff = kappa_0 / tau_M;
+    // Note: relax_coeff = chi/tau_M is now computed per QP (phase-dependent)
 
     const bool has_velocity = (ux_relevant.size() > 0);
     const bool has_phi = (phi_relevant.size() > 0);
     const bool has_w = (w_relevant.size() > 0 && w_dof_handler != nullptr);
+    const bool has_ch = (ch_solution_relevant.size() > 0
+                         && ch_dof_handler != nullptr);
 
     const unsigned int degree = fe_.degree;
     const dealii::QGauss<dim> quadrature(degree + 1);
@@ -130,6 +136,16 @@ void MagnetizationSubsystem<dim>::assemble(
             dealii::update_values);
     }
 
+    // FEValues for Cahn-Hilliard (FESystem: phi=component 0)
+    // Used for phase-dependent susceptibility χ(φ): χ_q = χ₀·(φ+1)/2
+    std::unique_ptr<dealii::FEValues<dim>> fe_values_ch;
+    if (has_ch)
+    {
+        fe_values_ch = std::make_unique<dealii::FEValues<dim>>(
+            ch_dof_handler->get_fe(), quadrature,
+            dealii::update_values);
+    }
+
     // ========================================================================
     // Local storage
     // ========================================================================
@@ -151,6 +167,9 @@ void MagnetizationSubsystem<dim>::assemble(
 
     // Angular velocity buffer
     std::vector<double> w_vals(n_q_points);
+
+    // Phase field buffer (for phase-dependent χ)
+    std::vector<double> ch_theta_vals(n_q_points);
 
     // Face velocity buffers
     std::vector<double> ux_face_vals(n_face_q_points);
@@ -208,6 +227,16 @@ void MagnetizationSubsystem<dim>::assemble(
             fe_values_w->get_function_values(w_relevant, w_vals);
         }
 
+        // Get phase field θ for phase-dependent χ(φ)
+        if (has_ch)
+        {
+            const auto ch_cell = cell->as_dof_handler_iterator(*ch_dof_handler);
+            fe_values_ch->reinit(ch_cell);
+            const dealii::FEValuesExtractors::Scalar ch_phi(0);
+            (*fe_values_ch)[ch_phi].get_function_values(
+                ch_solution_relevant, ch_theta_vals);
+        }
+
         for (unsigned int q = 0; q < n_q_points; ++q)
         {
             const auto& x_q = fe_values_M.quadrature_point(q);
@@ -233,17 +262,25 @@ void MagnetizationSubsystem<dim>::assemble(
             if (has_w)
                 w_q = w_vals[q];
 
+            // Phase-dependent susceptibility: χ(φ) / 𝒯
+            // In carrier (φ=-1): χ=0, relax drives M→0
+            // In ferrofluid (φ=+1): χ=χ_ferro, full response
+            const double chi_q = has_ch
+                ? susceptibility(ch_theta_vals[q], chi_ferro)
+                : kappa_0;
+            const double relax_coeff_q = chi_q / tau_M;
+
             for (unsigned int i = 0; i < dpc; ++i)
             {
                 const double z_i = fe_values_M.shape_value(i, q);
                 const auto& grad_z_i = fe_values_M.shape_grad(i, q);
 
                 // --- RHS ---
-                // (1/τ)(m^{k-1}, z) + (κ₀/𝒯)(h^k, z) + f_mms
+                // (1/τ)(m^{k-1}, z) + (χ(φ)/𝒯)(h^k, z) + f_mms
                 cell_rhs_x(i) += (old_coeff * Mx_old_vals[q] * z_i
-                                   + relax_coeff * H[0] * z_i) * JxW;
+                                   + relax_coeff_q * H[0] * z_i) * JxW;
                 cell_rhs_y(i) += (old_coeff * My_old_vals[q] * z_i
-                                   + relax_coeff * H[1] * z_i) * JxW;
+                                   + relax_coeff_q * H[1] * z_i) * JxW;
 
                 // Spin-magnetization coupling: -(M_old × W, z) on RHS
                 // In 2D: M × W = (w·My, -w·Mx), so -(M×W) = (-w·My, +w·Mx)
@@ -261,7 +298,7 @@ void MagnetizationSubsystem<dim>::assemble(
                     M_old_q[1] = My_old_vals[q];
                     const auto f = mms_source_(x_q, current_time,
                                                current_time - dt,
-                                               tau_M, kappa_0, H, U, div_U,
+                                               tau_M, chi_q, H, U, div_U,
                                                M_old_q, w_q);
                     cell_rhs_x(i) += f[0] * z_i * JxW;
                     cell_rhs_y(i) += f[1] * z_i * JxW;
@@ -463,6 +500,8 @@ template void MagnetizationSubsystem<2>::assemble(
     const dealii::DoFHandler<2>&,
     double, double,
     const dealii::TrilinosWrappers::MPI::Vector&,
+    const dealii::DoFHandler<2>*,
+    const dealii::TrilinosWrappers::MPI::Vector&,
     const dealii::DoFHandler<2>*);
 
 template void MagnetizationSubsystem<3>::assemble(
@@ -474,5 +513,7 @@ template void MagnetizationSubsystem<3>::assemble(
     const dealii::TrilinosWrappers::MPI::Vector&,
     const dealii::DoFHandler<3>&,
     double, double,
+    const dealii::TrilinosWrappers::MPI::Vector&,
+    const dealii::DoFHandler<3>*,
     const dealii::TrilinosWrappers::MPI::Vector&,
     const dealii::DoFHandler<3>*);

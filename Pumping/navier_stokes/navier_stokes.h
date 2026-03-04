@@ -80,7 +80,11 @@ public:
         const dealii::DoFHandler<dim>* M_dof_handler = nullptr,
         const dealii::TrilinosWrappers::MPI::Vector& phi_relevant
             = dealii::TrilinosWrappers::MPI::Vector(),
-        const dealii::DoFHandler<dim>* phi_dof_handler = nullptr);
+        const dealii::DoFHandler<dim>* phi_dof_handler = nullptr,
+        // Phase B: Cahn-Hilliard capillary force σ μ ∇φ
+        const dealii::TrilinosWrappers::MPI::Vector& ch_solution_relevant
+            = dealii::TrilinosWrappers::MPI::Vector(),
+        const dealii::DoFHandler<dim>* ch_dof_handler = nullptr);
 
     // ========================================================================
     // Solve — direct solver for saddle-point system

@@ -297,9 +297,9 @@ int main(int argc, char* argv[])
     // Write CSV
     if (rank == 0)
     {
-        std::system("mkdir -p Results/mms");
+        std::system("mkdir -p " SOURCE_DIR "/Results/mms");
 
-        std::ofstream csv("Results/mms/navier_stokes_mms.csv");
+        std::ofstream csv(SOURCE_DIR "/Results/mms/navier_stokes_mms.csv");
         csv << "refinement,n_dofs,h,U_L2,U_L2_rate,U_H1,U_H1_rate,"
             << "p_L2,p_L2_rate,iterations,walltime\n";
         for (size_t i = 0; i < results.size(); ++i)

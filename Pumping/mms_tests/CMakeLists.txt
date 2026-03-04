@@ -36,3 +36,28 @@ target_link_libraries(test_full_coupled_mms
     utilities_lib
 )
 deal_ii_setup_target(test_full_coupled_mms)
+
+# CH ↔ NS coupled test (capillary force + convection, Phase B)
+add_executable(test_ch_ns_mms
+    ch_ns_mms_test.cc
+)
+target_link_libraries(test_ch_ns_mms
+    navier_stokes_lib
+    cahn_hilliard_lib
+    utilities_lib
+)
+deal_ii_setup_target(test_ch_ns_mms)
+
+# Full 6-subsystem coupled test (FHD + CH with chi(phi), nu(phi))
+add_executable(test_full_ch_fhd_mms
+    full_ch_fhd_mms_test.cc
+)
+target_link_libraries(test_full_ch_fhd_mms
+    navier_stokes_lib
+    angular_momentum_lib
+    poisson_lib
+    magnetization_lib
+    cahn_hilliard_lib
+    utilities_lib
+)
+deal_ii_setup_target(test_full_ch_fhd_mms)

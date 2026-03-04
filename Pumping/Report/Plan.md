@@ -2,65 +2,84 @@
 
 ## Overview
 
-Four-phase implementation: standalone CH, CH benchmarks, passive CH in pumping,
-full two-way coupling. See `FHD_PUMP.md` in project root for detailed research plan.
+Four-phase implementation: standalone CH, CH benchmarks, full coupling, pumping application.
+See `FHD_PUMP.md` in project root for detailed research plan.
+See `References/comparison_study.md` for numerical scheme decision analysis.
 
-## Phase 1: Standalone Cahn-Hilliard
+## Completed Phases
 
-Build and verify CH subsystem independently with MMS convergence tests.
+### Phase 1: Standalone Cahn-Hilliard (DONE)
+- CH subsystem: Split formulation, CG Q2 for both phi and mu
+- Backward Euler, convex-concave (Eyre) splitting, energy stability
+- MMS verified: L2>=3, H1>=2
 
-1. CH subsystem: Split formulation, CG Q2 for both phi and mu
-   - Backward Euler time stepping
-   - Convex-concave (Eyre) splitting for energy stability
-   - Convection term: u . grad(phi) (velocity from external source)
-   - BCs: natural (no-flux) for both phi and mu
-2. MMS test: Manufactured smooth solution, verify L2/H1 convergence
-3. Solver: CG + AMG (system is symmetric if no convection)
+### Phase 2: CH Benchmarks (PARTIAL)
+- CH+NS coupled MMS verified
+- `ch_benchmark` driver working
+- Remaining: Young-Laplace pressure jump, square relaxation quantitative
 
-**Expected rates**: L2 >= 3, H1 >= 2 for CG Q2
+### Phase 3: Phase-Dependent Properties (DONE - Steps 3a-3e)
+- chi(phi) in magnetization assembler
+- nu(phi) in NS assembler
+- Full coupled driver `fhd_ch_driver.cc` (6 subsystems)
+- Full coupled MMS test (all rates pass)
+- Unified VTK output
 
-## Phase 2: CH Benchmarks
+## Current Phase: Benchmarks + Scheme Decision
 
-Verify physics without magnetics.
+### Rosensweig Instability (Step 3f, IN PROGRESS)
+Spikes not forming with current scheme. Two possible causes:
+1. **Parameter mismatch**: our eps/nu/H may differ from Zhang's
+2. **Numerical scheme**: fully coupled treatment may over-damp instability
 
-1. Circular droplet equilibrium — pressure jump = sigma/R (Young-Laplace)
-2. Square relaxation — square relaxes to circle, conserving area
-3. Advected droplet — prescribed velocity, mass conservation
+**Action plan**:
+1. Read Zhang Section 4.3 for exact parameters
+2. If parameter issue: adjust and re-run
+3. If scheme issue: implement hybrid decoupling (Path C)
 
-## Phase 3: Passive CH in Pumping Flow
+### Hybrid Decoupling (Path C, if needed)
+Minimal changes to existing code:
+1. CH solved first with old velocity (explicit convection)
+2. Mag+Poisson Picard loop with old phi (explicit chi(phi))
+3. NS+AngMom with old M,H and new phi
+4. No IEQ/SAV -- keep Eyre splitting for CH
+This is essentially what our driver already does; may need to tune explicit vs implicit treatment.
 
-One-way coupling proof of concept.
+### Droplet Deformation (Step 3g)
+- Circular droplet under uniform applied field
+- Compare aspect ratio vs magnetic Bond number
+- Validates coupling without requiring spike formation
 
-1. Copy FHD pumping setup (Section 7.2: 64 dipoles, traveling wave)
-2. Replace passive scalar with CH equation
-3. One-way: FHD velocity advects CH, phase doesn't affect flow
-4. IC: ferrofluid droplet (phi=+1) in carrier (phi=-1) in channel
-5. Observe droplet transport, deformation under magnetic pumping
+## Future Phases
 
-## Phase 4: Two-Way Coupling
+### Pumping Application (PhD Primary Contribution)
+1. Traveling-wave magnetic field + ferrofluid droplet in channel
+2. Phase-dependent Kelvin force transports droplet selectively
+3. Parametric studies: size, frequency, intensity, surface tension, viscosity
+4. Novel: no prior simulation of diffuse-interface droplet transport under traveling wave
 
-Full coupled system — phase affects magnetic response and flow.
-
-1. Phase-dependent chi(phi): chi = 0 in carrier, chi = kappa_0 in ferrofluid
-2. Capillary force: sigma * mu_CH * grad(phi) in NS RHS
-3. Phase-dependent viscosity: nu(phi) interpolation
-4. Modified Picard iteration with CH solve in loop
-5. MMS verification of full coupled system
-6. Production runs: droplet transport in pumping channel
+### BDF2 + Full Micropolar (Methods Paper Potential)
+1. Upgrade BDF1 -> BDF2 time integration
+2. Add SAV variable for double-well energy
+3. Add ZEC terms for coupling decoupling
+4. Pressure-correction projection for NS
+5. Prove energy stability for 6-field system
+6. First BDF2 energy-stable decoupled scheme with angular momentum
+7. Novelty: no existing paper combines BDF2 + decoupled + micropolar + CH
 
 ## Architecture
 
 Each subsystem follows the established pattern:
-- `subsystem.h` — public facade (class definition)
-- `subsystem_setup.cc` — DoF distribution, constraints, sparsity
-- `subsystem_assemble.cc` — weak form assembly (matrix + RHS)
-- `subsystem_solve.cc` — linear system solve
-- `subsystem_output.cc` — VTK output
-- `tests/subsystem_mms.h` — MMS exact solutions, sources, error computation
-- `tests/subsystem_mms_test.cc` — convergence study driver
+- `subsystem.h` -- public facade (class definition)
+- `subsystem_setup.cc` -- DoF distribution, constraints, sparsity
+- `subsystem_assemble.cc` -- weak form assembly (matrix + RHS)
+- `subsystem_solve.cc` -- linear system solve
+- `subsystem_output.cc` -- VTK output
+- `tests/subsystem_mms.h` -- MMS exact solutions, sources, error computation
+- `tests/subsystem_mms_test.cc` -- convergence study driver
 
 ## Build System
 
-    cd Pumping && mkdir build && cd build
-    cmake .. -DDEAL_II_DIR=/path/to/dealii
+    cd Pumping && mkdir cmake-build-release && cd cmake-build-release
+    cmake .. -DCMAKE_BUILD_TYPE=Release -DDEAL_II_DIR=/path/to/dealii
     make -j$(nproc)

@@ -24,6 +24,7 @@
 #include "navier_stokes/navier_stokes.h"
 #include "physics/skew_forms.h"
 #include "physics/kelvin_force.h"
+#include "physics/material_properties.h"
 
 #include <deal.II/base/quadrature_lib.h>
 #include <deal.II/base/symmetric_tensor.h>
@@ -72,13 +73,17 @@ void NavierStokesSubsystem<dim>::assemble(
     const dealii::TrilinosWrappers::MPI::Vector& My_relevant,
     const dealii::DoFHandler<dim>* M_dof_handler,
     const dealii::TrilinosWrappers::MPI::Vector& phi_relevant,
-    const dealii::DoFHandler<dim>* phi_dof_handler)
+    const dealii::DoFHandler<dim>* phi_dof_handler,
+    const dealii::TrilinosWrappers::MPI::Vector& ch_solution_relevant,
+    const dealii::DoFHandler<dim>* ch_dof_handler)
 {
     dealii::Timer timer;
     timer.start();
 
-    const double nu_eff = params_.physics.nu + params_.physics.nu_r;
+    const double nu_const = params_.physics.nu + params_.physics.nu_r;  // constant fallback
     const double nu_r = params_.physics.nu_r;
+    const double nu_carrier = params_.physics.nu_carrier;
+    const double nu_ferro = params_.physics.nu_ferro;
     const double mu_0 = params_.physics.mu_0;
     const double mass_coeff = 1.0 / dt;
 
@@ -89,6 +94,9 @@ void NavierStokesSubsystem<dim>::assemble(
                              && M_dof_handler != nullptr
                              && phi_relevant.size() > 0
                              && phi_dof_handler != nullptr);
+    const bool has_capillary = (ch_solution_relevant.size() > 0
+                                && ch_dof_handler != nullptr);
+    const double ch_sigma = params_.cahn_hilliard_params.sigma;
 
     const unsigned int vel_degree = fe_velocity_.degree;
     const dealii::QGauss<dim> quadrature(vel_degree + 1);
@@ -159,6 +167,21 @@ void NavierStokesSubsystem<dim>::assemble(
             M_dof_handler->get_fe(), face_quadrature,
             dealii::update_values);
     }
+
+    // FEValues for Cahn-Hilliard (FESystem: phi=component 0, mu=component 1)
+    // Used for capillary force: σ μ ∇φ
+    std::unique_ptr<dealii::FEValues<dim>> fe_values_ch;
+    if (has_capillary)
+    {
+        fe_values_ch = std::make_unique<dealii::FEValues<dim>>(
+            ch_dof_handler->get_fe(), quadrature,
+            dealii::update_values | dealii::update_gradients);
+    }
+
+    // Capillary force + phase-dependent viscosity buffers
+    std::vector<double> ch_mu_vals(n_q);
+    std::vector<double> ch_theta_vals(n_q);
+    std::vector<dealii::Tensor<1, dim>> ch_grad_phi_vals(n_q);
 
     // Local matrices (block structure)
     dealii::FullMatrix<double> local_ux_ux(ux_dpc, ux_dpc);
@@ -277,6 +300,23 @@ void NavierStokesSubsystem<dim>::assemble(
             fe_values_phi->get_function_hessians(phi_relevant, phi_hess_vals);
         }
 
+        // Get CH solution for capillary force + phase-dependent viscosity
+        if (has_capillary)
+        {
+            const auto ch_cell = ux_cell->as_dof_handler_iterator(
+                *ch_dof_handler);
+            fe_values_ch->reinit(ch_cell);
+
+            const dealii::FEValuesExtractors::Scalar ch_phi(0);
+            const dealii::FEValuesExtractors::Scalar ch_mu(1);
+            (*fe_values_ch)[ch_phi].get_function_values(
+                ch_solution_relevant, ch_theta_vals);
+            (*fe_values_ch)[ch_mu].get_function_values(
+                ch_solution_relevant, ch_mu_vals);
+            (*fe_values_ch)[ch_phi].get_function_gradients(
+                ch_solution_relevant, ch_grad_phi_vals);
+        }
+
         // Zero local matrices
         local_ux_ux = 0.0;  local_ux_uy = 0.0;
         local_uy_ux = 0.0;  local_uy_uy = 0.0;
@@ -301,6 +341,13 @@ void NavierStokesSubsystem<dim>::assemble(
                 div_U_old = grad_ux_old[q][0] + grad_uy_old[q][1];
             }
 
+            // Phase-dependent viscosity: ν(φ) + ν_r
+            // In carrier (φ=-1): ν = ν_carrier + ν_r
+            // In ferrofluid (φ=+1): ν = ν_ferro + ν_r
+            const double nu_eff_q = has_capillary
+                ? viscosity(ch_theta_vals[q], nu_carrier, nu_ferro) + nu_r
+                : nu_const;
+
             // MMS source
             dealii::Tensor<1, dim> f_mms;
             if (params_.enable_mms && mms_source_)
@@ -312,7 +359,7 @@ void NavierStokesSubsystem<dim>::assemble(
                     U_old_disc[1] = uy_old_vals[q];
                 }
                 f_mms = mms_source_(x_q, current_time,
-                                     current_time - dt, nu_eff,
+                                     current_time - dt, nu_eff_q,
                                      U_old_disc, div_U_old,
                                      include_convection);
             }
@@ -397,6 +444,18 @@ void NavierStokesSubsystem<dim>::assemble(
                     local_rhs_uy(i) += mu_0 * kelvin_uy * JxW;
                 }
 
+                // Capillary force (Phase B): σ μ ∇φ · v
+                // from Cahn-Hilliard coupling
+                if (has_capillary)
+                {
+                    local_rhs_ux(i) += ch_sigma * ch_mu_vals[q]
+                                       * ch_grad_phi_vals[q][0]
+                                       * phi_ux_i * JxW;
+                    local_rhs_uy(i) += ch_sigma * ch_mu_vals[q]
+                                       * ch_grad_phi_vals[q][1]
+                                       * phi_ux_i * JxW;
+                }
+
                 for (unsigned int j = 0; j < ux_dpc; ++j)
                 {
                     const double phi_ux_j = fe_values_vel.shape_value(j, q);
@@ -410,10 +469,10 @@ void NavierStokesSubsystem<dim>::assemble(
                         mass = mass_coeff * phi_ux_j * phi_ux_i;
 
                     // Viscous: (ν_eff)(D(u), D(v)) = (ν_eff/4)(T(u):T(v))
-                    const double visc_ux_ux = (nu_eff / 4.0) * (T_Ux_j * T_Vx_i);
-                    const double visc_uy_ux = (nu_eff / 4.0) * (T_Uy_j * T_Vx_i);
-                    const double visc_ux_uy = (nu_eff / 4.0) * (T_Ux_j * T_Vy_i);
-                    const double visc_uy_uy = (nu_eff / 4.0) * (T_Uy_j * T_Vy_i);
+                    const double visc_ux_ux = (nu_eff_q / 4.0) * (T_Ux_j * T_Vx_i);
+                    const double visc_uy_ux = (nu_eff_q / 4.0) * (T_Uy_j * T_Vx_i);
+                    const double visc_ux_uy = (nu_eff_q / 4.0) * (T_Ux_j * T_Vy_i);
+                    const double visc_uy_uy = (nu_eff_q / 4.0) * (T_Uy_j * T_Vy_i);
 
                     // Convection: b_h(u_old; u, v) — scalar Temam form
                     double conv_ux = 0.0, conv_uy = 0.0;
@@ -682,6 +741,8 @@ template void NavierStokesSubsystem<2>::assemble(
     const dealii::TrilinosWrappers::MPI::Vector&,
     const dealii::DoFHandler<2>*,
     const dealii::TrilinosWrappers::MPI::Vector&,
+    const dealii::DoFHandler<2>*,
+    const dealii::TrilinosWrappers::MPI::Vector&,
     const dealii::DoFHandler<2>*);
 template void NavierStokesSubsystem<3>::assemble(
     const dealii::TrilinosWrappers::MPI::Vector&,
@@ -690,6 +751,8 @@ template void NavierStokesSubsystem<3>::assemble(
     const dealii::TrilinosWrappers::MPI::Vector&,
     const dealii::DoFHandler<3>&,
     const dealii::TrilinosWrappers::MPI::Vector&,
+    const dealii::TrilinosWrappers::MPI::Vector&,
+    const dealii::DoFHandler<3>*,
     const dealii::TrilinosWrappers::MPI::Vector&,
     const dealii::DoFHandler<3>*,
     const dealii::TrilinosWrappers::MPI::Vector&,

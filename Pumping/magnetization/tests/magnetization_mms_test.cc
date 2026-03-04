@@ -350,9 +350,9 @@ int main(int argc, char* argv[])
     // ================================================================
     if (rank == 0)
     {
-        std::system("mkdir -p Results/mms");
+        std::system("mkdir -p " SOURCE_DIR "/Results/mms");
 
-        std::ofstream csv("Results/mms/magnetization_mms.csv");
+        std::ofstream csv(SOURCE_DIR "/Results/mms/magnetization_mms.csv");
         csv << "refinement,n_dofs,h,M_L2,M_L2_rate,Mx_L2,Mx_L2_rate,"
             << "My_L2,My_L2_rate,Linf,Linf_rate,iterations,walltime\n";
         for (size_t i = 0; i < results.size(); ++i)

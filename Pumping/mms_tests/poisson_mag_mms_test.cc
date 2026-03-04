@@ -543,9 +543,9 @@ int main(int argc, char* argv[])
     // ================================================================
     if (rank == 0)
     {
-        std::system("mkdir -p Results/mms");
+        std::system("mkdir -p " SOURCE_DIR "/Results/mms");
 
-        std::ofstream csv("Results/mms/poisson_mag_coupled_mms.csv");
+        std::ofstream csv(SOURCE_DIR "/Results/mms/poisson_mag_coupled_mms.csv");
         csv << "refinement,n_dofs,h,"
             << "phi_L2,phi_L2_rate,phi_H1,phi_H1_rate,"
             << "M_L2,M_L2_rate,Mx_L2,My_L2,M_Linf,"

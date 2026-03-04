@@ -314,9 +314,9 @@ int main(int argc, char* argv[])
     // ================================================================
     if (rank == 0)
     {
-        std::system("mkdir -p Results/mms");
+        std::system("mkdir -p " SOURCE_DIR "/Results/mms");
 
-        std::ofstream csv("Results/mms/poisson_mms.csv");
+        std::ofstream csv(SOURCE_DIR "/Results/mms/poisson_mms.csv");
         csv << "refinement,n_dofs,h,L2_error,L2_rate,H1_error,H1_rate,"
             << "Linf_error,Linf_rate,iterations,walltime\n";
         for (size_t i = 0; i < results.size(); ++i)

@@ -312,9 +312,9 @@ int main(int argc, char* argv[])
     // Write CSV
     if (rank == 0)
     {
-        std::system("mkdir -p Results/mms");
+        std::system("mkdir -p " SOURCE_DIR "/Results/mms");
 
-        std::ofstream csv("Results/mms/angular_momentum_mms.csv");
+        std::ofstream csv(SOURCE_DIR "/Results/mms/angular_momentum_mms.csv");
         csv << "refinement,n_dofs,h,w_L2,w_L2_rate,w_H1,w_H1_rate,"
             << "w_Linf,iterations,walltime\n";
         for (size_t i = 0; i < results.size(); ++i)

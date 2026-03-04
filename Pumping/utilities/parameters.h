@@ -154,6 +154,7 @@ struct Parameters
         unsigned int degree_magnetization = 2;   // M: DG [Q2]^d
         unsigned int degree_potential = 2;        // φ: CG Q2 (∇X ⊂ M)
         unsigned int degree_scalar = 2;          // c: CG Q2 (passive scalar)
+        unsigned int degree_cahn_hilliard = 2;   // phi, mu: CG Q2 (Phase B)
     } fe;
 
     // ========================================================================
@@ -248,6 +249,19 @@ struct Parameters
             /*fallback_to_direct=*/true,
             /*verbose=*/false
         };
+        LinearSolverParams cahn_hilliard = {
+            LinearSolverParams::Type::GMRES,
+            LinearSolverParams::Preconditioner::ILU,
+            /*rel_tolerance=*/1e-8,
+            /*abs_tolerance=*/1e-12,
+            /*max_iterations=*/2000,
+            /*gmres_restart=*/100,
+            /*ssor_omega=*/1.2,
+            /*ilu_strengthen=*/1.0,
+            /*use_iterative=*/true,
+            /*fallback_to_direct=*/true,
+            /*verbose=*/false
+        };
     } solvers;
 
     // ========================================================================
@@ -278,7 +292,13 @@ struct Parameters
     double dipole_y_override = -0.1;
     bool has_dipole_y_override = false;
 
-    // Phase B
+    // Phase B: Cahn-Hilliard parameters
+    struct CahnHilliard
+    {
+        double epsilon = 0.02;    // interface thickness (~ 2-4 * h_min)
+        double gamma   = 1.0;    // mobility coefficient
+        double sigma   = 1.0;    // surface tension (for capillary force, Phase 4)
+    } cahn_hilliard_params;
     bool enable_cahn_hilliard = false;  // master switch for two-phase
 
     // ========================================================================

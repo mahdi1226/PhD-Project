@@ -95,7 +95,11 @@ public:
         double current_time,
         const dealii::TrilinosWrappers::MPI::Vector& w_relevant
             = dealii::TrilinosWrappers::MPI::Vector(),
-        const dealii::DoFHandler<dim>* w_dof_handler = nullptr);
+        const dealii::DoFHandler<dim>* w_dof_handler = nullptr,
+        // Phase B: Cahn-Hilliard for phase-dependent χ(φ)
+        const dealii::TrilinosWrappers::MPI::Vector& ch_solution_relevant
+            = dealii::TrilinosWrappers::MPI::Vector(),
+        const dealii::DoFHandler<dim>* ch_dof_handler = nullptr);
 
     // ========================================================================
     // Solve — call after assemble
