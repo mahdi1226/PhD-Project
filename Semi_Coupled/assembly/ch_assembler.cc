@@ -4,13 +4,13 @@
 // Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
 // Equations 42a-42b (discrete scheme), p.505
 //
-// Paper's discrete scheme:
-//   Eq 42a: (δθ^k/τ, Λ) - (U^k θ^{k-1}, ∇Λ) + γ(∇ψ^k, ∇Λ) = 0
+// Paper's discrete scheme (Eq. 42a-42b, code ψ convention = standard μ):
+//   Eq 42a: (δθ^k/τ, Λ) - (U^{k-1} θ^{k-1}, ∇Λ) + γ(∇ψ^k, ∇Λ) = 0
 //   Eq 42b: (ψ^k, Υ) - ε(∇θ^k, ∇Υ) - (1/ε)(f(θ^{k-1}), Υ) - (1/η)(δθ^k, Υ) = 0
 //
-// MODIFICATION: Convection made implicit in θ to remove CFL constraint:
-//   Eq 42a: (δθ^k/τ, Λ) - (U^k θ^k, ∇Λ) + γ(∇ψ^k, ∇Λ) = 0
-// This makes the CH matrix non-symmetric but MUMPS handles it.
+// Convection is EXPLICIT: θ^{k-1} on RHS with velocity U^{k-1}
+// (Block-GS: CH solved first, so only U^{k-1} is available).
+// The +γ sign (vs paper's -γ) is due to ψ_code = -ψ_paper.
 //
 // where η = ε (stabilization parameter)
 //
@@ -175,11 +175,10 @@ void assemble_ch_system(
                     const unsigned int j_theta = j;
                     const unsigned int j_psi = dofs_per_cell + j;
 
-                    // Eq 42a LHS: (θ^k/τ, Λ) - (U^k θ^k, ∇Λ) + γ(∇ψ^k, ∇Λ)
-                    // Convection implicit in θ: removes CFL constraint
+                    // Eq 42a LHS: (θ^k/τ, Λ) + γ(∇ψ^k, ∇Λ)
+                    // Convection explicit: (U^{k-1} θ^{k-1}, ∇Λ) on RHS below
                     local_matrix(i_theta, j_theta) += (1.0 / dt) * theta_j * Lambda_i * JxW;
-                    local_matrix(i_theta, j_theta) -= theta_j * (U * grad_Lambda_i) * JxW;
-                    local_matrix(i_theta, j_psi) += gamma * (grad_psi_j * grad_Lambda_i) * JxW; // FIX: +gamma
+                    local_matrix(i_theta, j_psi) += gamma * (grad_psi_j * grad_Lambda_i) * JxW;
 
                     // Eq 42b LHS: (ψ^k, Υ) - ε(∇θ^k, ∇Υ) - (1/η)(θ^k, Υ)
                     // Note: Paper has -1/η (θ^k - θ^{k-1}).
@@ -189,9 +188,11 @@ void assemble_ch_system(
                     local_matrix(i_psi, j_theta) -= (1.0 / eta) * theta_j * Upsilon_i * JxW;     // FIX: -1/eta
                 }
 
-                // Eq 42a RHS: (θ^{k-1}/τ, Λ)
-                // Note: convection now implicit (on LHS), no θ_old convection on RHS
+                // Eq 42a RHS: (θ^{k-1}/τ, Λ) + (U^{k-1} θ^{k-1}, ∇Λ)
+                // Explicit convection: U^{k-1} and θ^{k-1} both at old time
                 local_rhs(i_theta) += (1.0 / dt) * theta_old_q * Lambda_i * JxW;
+                if (use_velocity_convection)
+                    local_rhs(i_theta) += theta_old_q * (U * grad_Lambda_i) * JxW;
 
                 // Eq 42b RHS: (1/ε)(f(θ^{k-1}), Υ) - (1/η)(θ^{k-1}, Υ)
                 // Paper: -1/ε f - 1/η (θ^k - θ^{k-1}) = 0

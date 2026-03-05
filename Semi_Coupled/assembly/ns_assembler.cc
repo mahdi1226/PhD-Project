@@ -872,8 +872,11 @@ static void assemble_capillary_force(
     std::vector<double> theta_values(n_q_points);
     std::vector<dealii::Tensor<1, dim>> psi_gradients(n_q_points);
 
-    // Capillary coefficient: λ/ε
-    const double capillary_coeff = lambda / epsilon;
+    // Capillary coefficient: -(λ/ε)
+    // SIGN: Code defines ψ = -εΔθ + (1/ε)f (standard chemical potential μ),
+    // but paper defines ψ_paper = εΔθ - (1/ε)f = -μ. The capillary force
+    // f_c = (λ/ε)θ∇ψ_paper = (λ/ε)θ∇(-ψ_code) = -(λ/ε)θ∇ψ_code.
+    const double capillary_coeff = -lambda / epsilon;
 
     // Cell loop
     auto ux_cell = ux_dof_handler.begin_active();
