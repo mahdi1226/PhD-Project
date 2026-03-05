@@ -629,55 +629,71 @@ the magnetic response (onset, height) while lambda controls the geometric patter
 
 ---
 
-## 0.3 Design of Experiments
+## 0.3 Baseline Parameters (Zhang Section 4.3)
 
-### Baseline: Zhang Section 4.3 parameters
-- chi_0 = 0.5, alpha_max = 8000, lambda = 1, y_interface = 0.2
-- epsilon = 5e-3, nu_f = 2, nu_w = 1, r = 0.1, g = 6e4
-- Domain [0,1] x [0,0.6], 5 dipoles at y=-15, flat arrangement
-- Refinement r=4, dt = 1e-3
+    chi_0 = 0.5, alpha_max = 8000, lambda = 1, y_interface = 0.2
+    epsilon = 5e-3, nu_f = 2, nu_w = 1, r = 0.1, g = 6e4
+    Domain [0,1] x [0,0.6], 5 dipoles at y=-15, flat arrangement
+    Refinement r=4, dt = 1e-3, max_steps = 2000
 
-### Phase 0a: Screening (one-at-a-time sweeps)
+---
 
-Vary each parameter individually while holding others at baseline. Identifies
-which parameters have the strongest effect on instability onset and morphology.
+## 0.4 Tier 1 — Single-Parameter Screening (33 runs)
 
-**Physical parameters:**
+**Goal:** Vary one parameter at a time, all others at baseline. Identify which
+parameters most strongly affect onset, spike count, and spike height. Results
+from Tier 1 inform which parameter pairs to cross in Tier 2.
 
-| Parameter      | Symbol       | Baseline | Levels                         | Runs |
-|----------------|--------------|----------|--------------------------------|------|
-| Susceptibility | chi_0        | 0.5      | 0.1, 0.25, 0.5, 1.0, 2.0, 5.0 | 6   |
-| Field strength | alpha_max    | 8000     | 2000, 4000, 8000, 16000, 32000 | 5   |
-| Surface tension| lambda (Phi) | 1.0      | 0.1, 0.5, 1.0, 5.0, 10.0      | 5   |
-| Pool depth     | y_interface  | 0.2      | 0.05, 0.1, 0.2, 0.4           | 4   |
-| Interface width| epsilon      | 5e-3     | 2e-3, 5e-3, 1e-2              | 3   |
+### 1A. Physical parameters
 
-**Geometric parameters:**
+| ID   | Parameter       | Symbol    | Baseline | Values                                          | Runs |
+|------|-----------------|-----------|----------|-------------------------------------------------|------|
+| 1A-1 | Susceptibility  | chi_0     | 0.5      | 0.1, 0.25, **0.5**, 0.75, 1.0, 1.5, 2.0       | 7    |
+| 1A-2 | Field strength  | alpha_max | 8000     | 5000, 7000, **8000**, 9000, 10000               | 5    |
+| 1A-3 | Surface tension | lambda    | 1.0      | 0.5, 0.75, 0.9, **1.0**, 1.1, 1.25, 1.5, 2.0  | 8    |
+| 1A-4 | Pool depth      | y_interface| 0.2     | 0.05, 0.1, **0.2**, 0.4                        | 4    |
+| 1A-5 | Interface width | epsilon   | 5e-3     | 3e-3, **5e-3**, 7e-3, 1e-2                     | 4    |
 
-| Parameter      | Symbol       | Baseline | Levels                     | Runs |
-|----------------|--------------|----------|----------------------------|------|
-| Domain width   | L_x          | 1.0      | 0.5, 0.75, 1.0, 1.5, 2.0  | 5    |
-| Domain height  | L_y          | 0.6      | 0.4, 0.6, 1.0             | 3    |
+### 1B. Geometric parameters
 
-**Demagnetizing field comparison:**
+| ID   | Parameter       | Symbol    | Baseline | Values                       | Runs |
+|------|-----------------|-----------|----------|------------------------------|------|
+| 1B-1 | Domain width    | L_x       | 1.0      | 0.5, 0.75, **1.0**, 1.5, 2.0| 5    |
+| 1B-2 | Domain height   | L_y       | 0.6      | 0.4, **0.6**, 1.0            | 3    |
 
-| Parameter             | Symbol               | Baseline | Levels       | Runs |
-|-----------------------|----------------------|----------|--------------|------|
-| Field model           | use_reduced_field    | false    | false, true  | 2    |
+### 1C. Demagnetizing field comparison
+
+| ID   | Parameter       | Symbol             | Baseline | Values       | Runs |
+|------|-----------------|--------------------|----------|--------------|------|
+| 1C-1 | Field model     | use_reduced_field  | false    | false, true  | 2    |
 
 h = h_a + h_d (full, default) vs h = h_a (reduced, Nochetto approach). Tests
-the effect of the demagnetizing field correction on spike formation. Expected:
-reduced field over-predicts spike height (no self-demagnetization to oppose growth).
+the demagnetizing field correction on spike formation. Expected: reduced field
+over-predicts spike height (no self-demagnetization to oppose growth).
 
-**Total screening: ~33 runs x 4 hrs = 132 core-hours**
-On HPC (33 runs simultaneously on 4 cores each = 132 cores): **~4 hours wall time**
+### Tier 1 summary
 
-### Phase 0b: Interaction Matrices (2D parameter sweeps)
+**31 runs** (baseline counted once; subtract duplicates) x 4 core-hours = **124 core-hours**
+On HPC (31 runs x 4 cores): ~4 hours wall time.
 
-**Matrix A: chi_0 x alpha (susceptibility vs field strength)**
+**CLI needed:** `--chi0`, `--alpha_max`, `--lambda`, `--y_interface`, `--epsilon`,
+`--Lx`, `--Ly`, `--reduced_field`
 
-The most important sweep. Maps the **onset boundary** — for each chi_0, what is
-the critical field strength for spike formation?
+**Exit criterion:** Tier 1 analysis done. Identify top-3 most influential
+parameters, confirm analytical predictions (Section 0.2), proceed to Tier 2.
+
+---
+
+## 0.5 Tier 2 — 2D Interaction Matrices (91 runs)
+
+**Goal:** Cross the most influential parameters pairwise. Maps onset boundaries,
+reveals parameter interactions not visible from one-at-a-time sweeps.
+
+**Prerequisite:** Tier 1 complete and analyzed.
+
+### Matrix A: chi_0 x alpha (susceptibility vs field strength) — 30 runs
+
+The most important sweep. Maps the **onset boundary** for each chi_0.
 
                   alpha = 2000   4000   8000   16000   32000
     chi_0 = 0.1     .       .       .       .       .
@@ -687,12 +703,11 @@ the critical field strength for spike formation?
     chi_0 = 2.0     .       .       .       .       .
     chi_0 = 5.0     .       .       .       .       .
 
-**30 runs — maps uncharted territory for chi_0 > 1**
+**Maps uncharted territory for chi_0 > 1.**
 
-**Matrix B: lambda x alpha (surface tension vs field)**
+### Matrix B: lambda x alpha (surface tension vs field) — 20 runs
 
-How does surface tension modify the instability? Does higher lambda suppress
-spikes or just change their wavelength?
+Does higher lambda suppress spikes or just change their wavelength?
 
                   alpha = 2000   4000   8000   16000
     lambda = 0.1     .       .       .       .
@@ -701,11 +716,9 @@ spikes or just change their wavelength?
     lambda = 5.0     .       .       .       .
     lambda = 10.0    .       .       .       .
 
-**20 runs**
+### Matrix C: chi_0 x pool_depth (susceptibility vs finite-depth) — 20 runs
 
-**Matrix C: chi_0 x pool_depth (susceptibility vs finite-depth effects)**
-
-Tests whether finite pool depth changes the instability threshold at high chi_0.
+Does finite pool depth change the instability threshold at high chi_0?
 
                   y_if = 0.05   0.1    0.2    0.4
     chi_0 = 0.1     .       .       .       .
@@ -714,12 +727,9 @@ Tests whether finite pool depth changes the instability threshold at high chi_0.
     chi_0 = 2.0     .       .       .       .
     chi_0 = 5.0     .       .       .       .
 
-**20 runs**
+### Matrix D: curvature x chi_0 (dipole geometry vs susceptibility) — 12 runs
 
-**Matrix D: curvature x chi_0 (dipole geometry vs susceptibility)**
-
-Does higher susceptibility amplify the nonuniformity introduced by curved
-magnet arrangements? (See Phase 0d below for dipole geometry definitions.)
+Does higher susceptibility amplify nonuniformity from curved magnets?
 
                   curvature = concave(5)  flat(inf)  convex(5)
     chi_0 = 0.5        .           (base)       .
@@ -727,90 +737,95 @@ magnet arrangements? (See Phase 0d below for dipole geometry definitions.)
     chi_0 = 2.0        .             .          .
     chi_0 = 5.0        .             .          .
 
-**12 runs**
+### Matrix E: curvature x lambda (dipole geometry vs surface tension) — 9 runs
 
-**Matrix E: curvature x lambda (dipole geometry vs surface tension)**
-
-Does surface tension smooth out the asymmetric spike height envelope
-created by curved magnets?
+Does surface tension smooth out asymmetric spike patterns from curved magnets?
 
                   curvature = concave(5)  flat(inf)  convex(5)
     lambda = 0.1       .            .          .
     lambda = 1.0       .          (base)       .
     lambda = 5.0       .            .          .
 
-**9 runs**
+### Tier 2 summary
 
-### Phase 0c: Three-Way Tensor (optional)
+**91 runs** (subtract overlaps with Tier 1 and baseline) x 4 core-hours = **364 core-hours**
+On HPC (91 runs x 4 cores): ~4 hours wall time.
 
-chi_0 x alpha x lambda at 3 levels each = 27 runs. Reveals three-way interactions:
-does the critical field depend on surface tension differently at high chi_0?
+**CLI needed (additional):** `--dipole_curve concave R` / `--dipole_curve convex R`
+
+**Exit criterion:** Onset boundary mapped for chi_0 x alpha. Interaction effects
+quantified. Scaling laws extracted. Proceed to Tier 3 if three-way interactions
+are suspected from Tier 2 results.
+
+---
+
+## 0.6 Tier 3 — Three-Way Tensor + Dipole Geometry (38 runs)
+
+**Goal:** Resolve three-way parameter interactions and fully characterize the
+novel dipole geometry effect. Only run if Tier 2 suggests interactions exist.
+
+**Prerequisite:** Tier 2 complete and analyzed.
+
+### 3A. Three-way tensor: chi_0 x alpha x lambda — 27 runs
+
+Does the critical field depend on surface tension differently at high chi_0?
 
     chi_0  = {0.5, 2.0, 5.0}
     alpha  = {4000, 8000, 16000}
     lambda = {0.5, 1.0, 5.0}
 
-**27 runs**
+### 3B. Dipole arrangement geometry sweeps — 11 runs
 
-### Phase 0d: Dipole Arrangement Geometry (novel)
-
-Most Rosensweig studies (Cowley & Rosensweig 1967, Nochetto 2016, Zhang 2021)
-use uniform fields or flat dipole arrays. Curved magnet arrangements create
-spatially varying field magnitude AND direction across the interface, breaking
-translational symmetry. This is directly relevant to real applications:
-- MRI contrast agent manipulation (curved magnets around tissue)
-- Ferrofluid seals (concentric magnet arrangements)
-- Lab-on-chip: curved microchannels with magnets underneath
+Curved magnet arrangements break translational symmetry, creating spatially
+varying field across the interface. Relevant to real applications:
+- MRI contrast agent manipulation (curved magnets)
+- Ferrofluid seals (concentric magnets)
+- Lab-on-chip (curved microchannels + magnets)
 
 **Dipole configurations (5 dipoles, varying y-position):**
 
-| Config         | Dipole y-positions                               | Expected result             |
-|----------------|--------------------------------------------------|-----------------------------|
-| Flat (baseline)| y_i = -15 for all i                             | 5 equal-height spikes       |
-| Concave (U)    | y_i = -15 + R - sqrt(R^2 - (x_i - 0.5)^2)      | Central spikes taller       |
-| Convex (cap)   | y_i = -15 - R + sqrt(R^2 - (x_i - 0.5)^2)      | Edge spikes taller/uniform  |
-| Deep-V         | y_i = -15 + slope * |x_i - 0.5|                  | Single dominant central spike|
+| Config          | Dipole y-positions                           | Expected result              |
+|-----------------|----------------------------------------------|------------------------------|
+| Flat (baseline) | y_i = -15 for all i                          | 5 equal-height spikes        |
+| Concave (U)     | y_i = -15 + R - sqrt(R^2 - (x_i - 0.5)^2)  | Central spikes taller        |
+| Convex (cap)    | y_i = -15 - R + sqrt(R^2 - (x_i - 0.5)^2)  | Edge spikes taller/uniform   |
+| Deep-V          | y_i = -15 + slope * |x_i - 0.5|              | Single dominant central spike|
 
-The curvature radius R is a continuous parameter:
-- R -> infinity: recovers flat baseline
-- Small R: extreme curvature (large field nonuniformity)
+Curvature radius R is continuous (R -> inf recovers flat):
 
-**Tier 1 sweeps** (single-parameter):
+    Concave: R = {5, 10, 15, 50, inf}     -> 4 new + baseline
+    Convex:  R = {5, 10, 15, 50, inf}     -> 4 new (baseline shared)
+    Deep-V:  slope = {5, 10, 20}          -> 3 new
 
-    Concave: R = {5, 10, 15, 50, inf}     -> 5 runs (4 new + baseline)
-    Convex:  R = {5, 10, 15, 50, inf}     -> 4 runs (baseline shared)
-    Deep-V:  slope = {5, 10, 20}          -> 3 runs
+**Physics:** |H(x)| ~ alpha / |r_dipole(x)|^2. Concave focuses field at center
+(taller central spike). Convex focuses at edges. Deep-V isolates one dominant spike.
 
-**11 new runs**
+**CLI needed (additional):** `--dipole_curve deepv slope`
 
-**Physics:** A concave arrangement focuses the field at the center of the
-domain. The field magnitude at the interface varies as:
+### Tier 3 summary
 
-    |H(x)| ~ alpha / |r_dipole(x)|^2
+**38 runs** x 4 core-hours = **152 core-hours**
+On HPC: ~4 hours wall time.
 
-where r_dipole(x) is the distance from the interface point x to the nearest
-dipole. For concave (U-shape), |r_dipole| is smallest at x = 0.5 (center),
-so the center sees a stronger field -> taller central spike. For convex (cap),
-|r_dipole| is smallest at the edges -> edge-dominated pattern.
+**Exit criterion:** All 160 runs complete. Full parameter space characterized.
+Ready for post-processing and paper write-up.
 
-This nonuniform field profile means the effective supercriticality
-(H(x) - H_c) / H_c varies along the interface, producing a spike-height
-envelope that mirrors the magnet geometry. This is not captured by any
-classical analysis and requires simulation to characterize.
+---
 
-### Phase 0a-0d run summary
+## 0.7 All-Tiers Run Summary
 
-| Phase | Description                      | Runs | Core-hours |
-|-------|----------------------------------|------|------------|
-| 0a    | Screening (physics + geometry)   | 33   | 132        |
-| 0b    | Interaction matrices A-E         | 91   | 364        |
-| 0c    | Three-way tensor                 | 27   | 108        |
-| 0d    | Dipole geometry sweeps           | 11   | 44         |
-| **Total** |                             | **162** | **648** |
+| Tier | Description                          | Runs | Core-hours | Prerequisite |
+|------|--------------------------------------|------|------------|--------------|
+| 1    | Single-parameter screening           | 31   | 124        | CLI flags    |
+| 2    | 2D interaction matrices (A-E)        | 91   | 364        | Tier 1 done  |
+| 3    | 3-way tensor + dipole geometry       | 38   | 152        | Tier 2 done  |
+| **Total** |                               | **160** | **640** |              |
 
-On HPC (all runs simultaneously, 4 cores each): **~4 hours wall time**
+On HPC (all tiers run independently, 4 cores each): **~4 hours wall time per tier**
 
-## 0.3 Measured Quantities
+---
+
+## 0.8 Measured Quantities
 
 For each simulation, extract from diagnostics.csv and VTK output:
 
@@ -824,7 +839,7 @@ For each simulation, extract from diagnostics.csv and VTK output:
 | **Steady state** | Is d(E_CH)/dt < tolerance at t_final? | Equilibrium reached? |
 | **Spike morphology** | Sharp tips vs rounded (curvature at peaks) | Capillary effects |
 
-## 0.4 Post-Processing and Visualization
+## 0.9 Post-Processing and Visualization
 
 Python script to generate:
 1. **Phase diagram** (chi_0 vs alpha): color = spike/no-spike, contour = onset boundary
@@ -841,7 +856,7 @@ Python script to generate:
 9. **Theory vs simulation overlay**: plot measured spike count and H_c against analytical
    predictions (Section 0.2) — quantify regime of validity for linear stability theory
 
-## 0.5 Expected Results and Novelty
+## 0.10 Expected Results and Novelty
 
 1. **Onset boundary for chi_0 > 1**: First numerical mapping of the critical field
    strength in the highly paramagnetic regime. Analytical theory (Cowley & Rosensweig
@@ -873,7 +888,7 @@ Python script to generate:
    This has direct engineering relevance: magnet shape as a design parameter for
    controlled ferrofluid surface patterning.
 
-## 0.6 Implementation
+## 0.11 Implementation
 
 **Minimal code changes needed:**
 - Add CLI overrides for geometric parameters: `--Lx`, `--Ly`, `--dipole_curve`
@@ -890,7 +905,7 @@ Python script to generate:
 **HPC submission**: Each run is independent — embarrassingly parallel. Submit as
 an array job (SLURM/PBS). 4 cores per run, ~4 hrs each.
 
-## 0.7 Timeline
+## 0.12 Timeline
 
 | Phase | Task | Wall time (HPC) | Human time |
 |-------|------|-----------------|------------|
@@ -901,7 +916,7 @@ an array job (SLURM/PBS). 4 cores per run, ~4 hrs each.
 | 0d | Dipole geometry sweeps (11 runs) | 4 hrs | 1-2 days (analyze) |
 | 0e | Post-processing + plots | — | 3-5 days |
 | 0f | Write-up (theory + results) | — | 1-2 weeks |
-| **Total** | **162 runs** | **~16 hrs compute** | **~4-5 weeks** |
+| **Total** | **160 runs** | **~16 hrs compute** | **~4-5 weeks** |
 
 ---
 
@@ -925,7 +940,7 @@ an array job (SLURM/PBS). 4 cores per run, ~4 hrs each.
 **Phase C.0 can start immediately** — the code needs only minor CLI additions
 (dipole geometry flags) and batch scripts. It can run **in parallel** with C.1
 development (parametric runs on HPC while implementing the heat equation locally).
-The 162 runs are embarrassingly parallel and complete in ~4 hours wall time on HPC.
+The 160 runs are embarrassingly parallel and complete in ~4 hours wall time on HPC.
 
 **Total estimated timeline for all of Phase C: 40-65 weeks (~10-15 months)**
 

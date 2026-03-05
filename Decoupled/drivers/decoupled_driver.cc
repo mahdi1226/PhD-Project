@@ -159,11 +159,23 @@ public:
             ri << "  nu_water:  " << params.physics.nu_water << "\n";
             ri << "  nu_ferro:  " << params.physics.nu_ferro << "\n";
             ri << "  r (density ratio): " << params.physics.r << "\n";
-            ri << "  gravity:   " << params.physics.gravity_magnitude << "\n\n";
+            ri << "  gravity:   " << params.physics.gravity_magnitude << "\n";
+            ri << "  mu_0:      " << params.physics.mu_0 << "\n";
+            ri << "  beta:      " << params.physics.beta
+               << " (enabled=" << (params.physics.enable_beta_term ? "yes" : "no") << ")\n";
+            ri << "  y_interface: " << params.flat_interface_y << "\n\n";
             ri << "[Enables]\n";
-            ri << "  magnetic:  " << (params.enable_magnetic ? "ON" : "OFF") << "\n";
-            ri << "  gravity:   " << (params.enable_gravity ? "ON" : "OFF") << "\n";
-            ri << "  NS:        " << (params.enable_ns ? "ON" : "OFF") << "\n\n";
+            ri << "  magnetic:       " << (params.enable_magnetic ? "ON" : "OFF") << "\n";
+            ri << "  reduced_field:  " << (params.use_reduced_magnetic_field ? "ON" : "OFF") << "\n";
+            ri << "  gravity:        " << (params.enable_gravity ? "ON" : "OFF") << "\n";
+            ri << "  NS:             " << (params.enable_ns ? "ON" : "OFF") << "\n\n";
+            ri << "[Coupling]\n";
+            ri << "  picard_iterations: " << params.picard_iterations << "\n";
+            ri << "  picard_relaxation: " << params.picard_relaxation << "\n";
+            ri << "  picard_tolerance:  " << params.picard_tolerance << "\n";
+            ri << "  use_sav:           " << (params.use_sav ? "ON" : "OFF") << "\n";
+            ri << "  sav_S1:            " << params.sav.S1 << "\n";
+            ri << "  algebraic_M:       " << (params.use_algebraic_magnetization ? "ON" : "OFF") << "\n\n";
             ri << "[Validation]\n";
             ri << "  test: " << (params.validation_test.empty() ? "none" : params.validation_test) << "\n\n";
             ri << "[Applied Field]\n";

@@ -582,6 +582,38 @@ because `ghosts_valid_` was not reset by `setup()`. Fixed by adding
 
 ---
 
+## 11. Material Property Fix & Full Shliomis Model (Session 14, March 4, 2026)
+
+### 11.1 Root Cause: Sigmoid χ/ν Breaks Rosensweig
+
+Commit `c8666bf` introduced two changes simultaneously: (1) sigmoid interpolation for χ and ν, (2) spin-vorticity coupling ½(∇×U × M, Z). Both were blamed for Rosensweig instability explosion.
+
+**Isolation test** (this session): Built both 800aa2c (linear χ/ν, no spin-vorticity) and HEAD (linear χ/ν, WITH spin-vorticity re-enabled) in parallel worktrees. Both ran 2000 steps on 4 MPI ranks, stable.
+
+| Configuration | theta range | |U| final | Status |
+|---------------|-------------|-----------|--------|
+| 800aa2c (linear, no spin-vort) | [-1.01, 0.995] | 2.79 | STABLE |
+| HEAD (linear + spin-vort) | [-1.00, 0.996] | 0.52 | STABLE |
+
+**Conclusion**: Sigmoid was the sole culprit. Spin-vorticity is physically correct (damps velocity) and safe.
+
+### 11.2 Production Configuration
+
+**Full Shliomis model** = LINEAR χ/ν + spin-vorticity ON:
+- χ(θ) = χ₀·(θ+1)/2 — linear (Zhang convention)
+- ν(θ) = ν_w·(1-θ)/2 + ν_f·(θ+1)/2 — linear (Zhang convention)
+- ρ(θ) = 1 + r·H(θ/ε) — sigmoid (Zhang Eq 4.2, unchanged)
+- Spin-vorticity: ½(∇×U × M^{n-1}, Z) in magnetization assembly
+
+### 11.3 Files Modified
+
+| File | Change |
+|------|--------|
+| `physics/material_properties.h` | Reverted χ and ν from sigmoid to LINEAR |
+| `magnetization/magnetization_assemble.cc` | Re-enabled spin-vorticity coupling |
+
+---
+
 *Generated: February 2025*
-*Updated: March 3, 2026 (Session 13: AMR with physics-based activation gate)*
+*Updated: March 4, 2026 (Session 14: Material property fix, full Shliomis model confirmed)*
 *Total source code: ~11,000 lines across 4 subsystems + shared libraries*

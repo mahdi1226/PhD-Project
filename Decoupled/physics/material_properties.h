@@ -7,12 +7,12 @@
 // Convention: Code uses θ ∈ {-1, +1}. Zhang uses Φ ∈ {0, 1}.
 //             Mapping: Φ = (θ+1)/2.
 //
-// Material property interpolation uses SIGMOID (smoothed Heaviside):
-//   χ(θ) = χ₀·H(θ/ε)                        (Zhang Eq 2.2, Nochetto Eq 17)
-//   ν(θ) = ν_w + (ν_f - ν_w)·H(θ/ε)         (Zhang Eq 2.2, Nochetto Eq 18)
-//   ρ(θ) = 1 + r·H(θ/ε)                      (Zhang Eq 4.2)
+// Zhang's material property interpolation is LINEAR in Φ:
+//   χ(Φ) = χ₀·Φ           → χ(θ) = χ₀·(θ+1)/2
+//   ν(Φ) = ν_f·Φ + ν_w·(1-Φ) → ν(θ) = ν_w·(1-θ)/2 + ν_f·(θ+1)/2
+//   ρ(Φ) = 1 + r/(1+exp((1-2Φ)/ε))  → ρ(θ) = 1 + r·H(θ/ε)
 //
-// All three use sigmoid interpolation per both papers.
+// Note: Density uses sigmoid (Zhang Eq 4.2), chi and nu use LINEAR.
 //
 // All functions take explicit parameter values — NO GLOBALS.
 //
@@ -21,7 +21,7 @@
 //
 // Includes:
 //   Poisson + Magnetization:
-//     - Susceptibility χ(θ) = χ₀·H(θ/ε)  (sigmoid, Zhang Eq 2.2)
+//     - Susceptibility χ(θ) = χ₀·(θ+1)/2  (linear, Zhang convention)
 //     - Permeability   μ(θ) = 1 + χ(θ)
 //
 //   Cahn-Hilliard:
@@ -37,7 +37,7 @@
 //   Matching:  λ_θ = λ_Φ/4,  F_θ = (θ²-1)²/16
 //
 //   Navier-Stokes:
-//     - Viscosity  ν(θ) = ν_w + (ν_f - ν_w)·H(θ/ε)   (sigmoid, Zhang Eq 2.2)
+//     - Viscosity  ν(θ) = ν_w·(1-θ)/2 + ν_f·(θ+1)/2  (linear, Zhang convention)
 //     - Density    ρ(θ) = 1 + r·H(θ/ε)                (sigmoid, Zhang Eq 4.2)
 // ============================================================================
 #ifndef MATERIAL_PROPERTIES_H
@@ -72,30 +72,38 @@ inline double heaviside_derivative(double x)
 }
 
 // ============================================================================
-// Magnetic Susceptibility (sigmoid interpolation)
+// Magnetic Susceptibility (Zhang convention: LINEAR in Φ)
 //
-//   χ(θ) = χ₀ · H(θ/ε)
+//   Zhang:  χ(Φ) = χ₀ · Φ          (Φ ∈ {0,1})
+//   Code:   χ(θ) = χ₀ · (θ+1)/2    (θ ∈ {-1,+1})
 //
-//   θ = +1 (ferrofluid)    → χ ≈ χ₀   (H ≈ 1)
-//   θ = -1 (non-magnetic)  → χ ≈ 0    (H ≈ 0)
-//   θ =  0 (interface)     → χ = χ₀/2 (H = 0.5)
+//   θ = +1 (ferrofluid)    → χ = χ₀
+//   θ = -1 (non-magnetic)  → χ = 0
+//   θ =  0 (interface)     → χ = χ₀/2
 //
-// Zhang Eq 2.2, Nochetto Eq 17.
+// NOTE: epsilon parameter kept in signature for API compatibility but
+//       is NOT used. Zhang's chi is linear, not sigmoid.
 // ============================================================================
-inline double susceptibility(double theta, double epsilon, double chi_0)
+inline double susceptibility(double theta, double /*epsilon*/, double chi_0)
 {
-    return chi_0 * heaviside(theta / epsilon);
+    // Linear interpolation: Φ = (θ+1)/2, clamp to [0,1] for safety
+    const double phi = 0.5 * (theta + 1.0);
+    const double phi_clamped = (phi < 0.0) ? 0.0 : (phi > 1.0 ? 1.0 : phi);
+    return chi_0 * phi_clamped;
 }
 
 // ============================================================================
 // Susceptibility derivative dχ/dθ
 //
-//   χ(θ) = χ₀ · H(θ/ε)
-//   dχ/dθ = (χ₀/ε) · H'(θ/ε)  where H'(x) = H(x)(1-H(x))
+//   χ(θ) = χ₀ * Φ,  Φ = (θ+1)/2
+//   dχ/dθ = χ₀/2   (when Φ ∈ [0,1], else 0 due to clamping)
 // ============================================================================
-inline double susceptibility_derivative(double theta, double epsilon, double chi_0)
+inline double susceptibility_derivative(double theta, double /*epsilon*/, double chi_0)
 {
-    return (chi_0 / epsilon) * heaviside_derivative(theta / epsilon);
+    const double phi = 0.5 * (theta + 1.0);
+    if (phi < 0.0 || phi > 1.0)
+        return 0.0;  // clamped region
+    return 0.5 * chi_0;
 }
 
 // ============================================================================
@@ -114,35 +122,41 @@ inline double permeability(double theta, double epsilon, double chi_0)
 }
 
 // ============================================================================
-// Viscosity (sigmoid interpolation)
+// Viscosity (Zhang convention: LINEAR in Φ)
 //
-//   ν(θ) = ν_w + (ν_f - ν_w)·H(θ/ε)
+//   Zhang:  ν(Φ) = ν_f·Φ + ν_w·(1-Φ)       (Φ ∈ {0,1})
+//   Code:   ν(θ) = ν_w·(1-θ)/2 + ν_f·(θ+1)/2  (θ ∈ {-1,+1})
 //
 // Interpolates between non-magnetic and ferrofluid phases:
-//   θ = +1 (ferrofluid)    → ν ≈ ν_f   (higher viscosity)
-//   θ = -1 (non-magnetic)  → ν ≈ ν_w   (lower viscosity)
+//   θ = +1 (ferrofluid)    → ν = ν_f   (higher viscosity)
+//   θ = -1 (non-magnetic)  → ν = ν_w   (lower viscosity)
 //
 // Used in NS assembly: (ν(θ) D(U), D(V))
 //
 // CRITICAL: Must use θ^{n-1} (LAGGED) for energy stability.
 //
-// Zhang Eq 2.2, Nochetto Eq 18.
 // Rosensweig (Zhang Eq 4.4): ν_w = 1.0, ν_f = 2.0  →  ν ∈ [1, 2]
+//
+// NOTE: epsilon parameter kept in signature for API compatibility but
+//       is NOT used. Zhang's nu is linear, not sigmoid.
 // ============================================================================
 
 /**
- * @brief Viscosity ν(θ) = ν_w + (ν_f - ν_w)·H(θ/ε)  (sigmoid interpolation)
+ * @brief Viscosity ν(θ) = ν_w·(1-θ)/2 + ν_f·(θ+1)/2  (linear interpolation)
  *
  * @param theta     Phase field value (use θ^{n-1} for energy stability!)
- * @param epsilon   Interface thickness ε
+ * @param epsilon   Interface thickness ε (unused — linear interpolation)
  * @param nu_water  Viscosity of non-magnetic phase ν_w
  * @param nu_ferro  Viscosity of ferrofluid phase ν_f
  * @return Interpolated viscosity
  */
-inline double viscosity(double theta, double epsilon,
+inline double viscosity(double theta, double /*epsilon*/,
                         double nu_water, double nu_ferro)
 {
-    return nu_water + (nu_ferro - nu_water) * heaviside(theta / epsilon);
+    // Linear interpolation: Φ = (θ+1)/2, clamp to [0,1] for safety
+    const double phi = 0.5 * (theta + 1.0);
+    const double phi_clamped = (phi < 0.0) ? 0.0 : (phi > 1.0 ? 1.0 : phi);
+    return nu_water * (1.0 - phi_clamped) + nu_ferro * phi_clamped;
 }
 
 // ============================================================================

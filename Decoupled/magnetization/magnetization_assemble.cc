@@ -288,7 +288,6 @@ const bool mms_active = static_cast<bool>(mms_source_);
             // Computed only during full assembly; cached in spin_vort_rhs_
             // vectors for reuse during Picard RHS-only iterations.
             // ================================================================
-            // Spin-vorticity: +½(∇×U × M^{n-1}, Z)  — Zhang Eq 3.14
             double spin_vort_x = 0.0;
             double spin_vort_y = 0.0;
             if (matrix_and_rhs)

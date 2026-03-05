@@ -10,6 +10,7 @@
 
 #include "utilities/parameters.h"
 
+#include <cmath>
 #include <cstring>
 #include <iostream>
 #include <mpi.h>
@@ -30,11 +31,14 @@
 // ============================================================================
 void Parameters::setup_rosensweig()
 {
-    // Domain
+    // Domain — Zhang Section 4.3: Ω = [0,1] × [0,0.6]
     domain.x_min = 0.0;
     domain.x_max = 1.0;
     domain.y_min = 0.0;
     domain.y_max = 0.6;
+    // Base mesh: r=4 gives h ≈ 1/160 (finer than paper's h=1/100)
+    //   x: 10*16 = 160 cells, h_x = 1/160 = 0.00625
+    //   y: 6*16 = 96  cells, h_y = 0.6/96 = 0.00625
     domain.initial_cells_x = 10;
     domain.initial_cells_y = 6;
 
@@ -50,12 +54,11 @@ void Parameters::setup_rosensweig()
 
     // Physics — Cahn-Hilliard
     // Zhang Eq 4.4 uses Φ∈{0,1}. Our code uses θ∈{-1,+1} with θ=2Φ-1.
-    // Gradient term scales as 1/4 (from |∇Φ|²=|∇θ|²/4):  λ_θ = λ_Φ/4.
-    // Reaction term scales as 1/16 (from f(Φ) conversion): needs extra 0.25.
-    // Mobility: γΔψ 4th-order matches with γ_θ = 4·M_Φ.
+    // double_well F(θ)=(θ²-1)²/16 already has the Φ→θ conversion baked in.
+    // λ_θ = λ_Φ/4, γ_θ = 4·M_Φ, ch_reaction_scale = 1.0 (default).
     physics.lambda = 0.25;            // Zhang λ=1 → θ-space: λ_Φ/4
     physics.mobility = 8e-4;          // Zhang M=2e-4 → θ-space: 4×M_Φ
-    physics.ch_reaction_scale = 0.25; // reaction 1/16 vs gradient 1/4 → extra 0.25
+    // ch_reaction_scale = 1.0 (default) — F'(θ) already includes 1/4 factor
 
     // Physics — Navier-Stokes
     physics.nu_water = 1.0;       // Zhang Eq 4.4: ν_w = 1
@@ -82,8 +85,8 @@ void Parameters::setup_rosensweig()
     time.t_final = 2.0;
     time.max_steps = 2000;
 
-    // Mesh — Zhang Eq 4.4: h = 1e-2
-    // r=4: 10*16=160 cells in x (h_x=1/160≈0.00625), finer than h=0.01
+    // Mesh — Zhang Eq 4.4: h = 1e-2 (paper), we use h ≈ 1/160
+    // r=4: 10*16=160 cells in x (h_x=1/160≈0.006), finer than paper
     mesh.initial_refinement = 4;
 
     // Subsystems
@@ -159,8 +162,8 @@ void Parameters::setup_rosensweig_nonuniform()
     dipoles.intensity_max = 0.0;       // no cap mentioned
 
     // More Picard iterations — nonuniform field is harder to resolve
-    picard_iterations = 10;
-    picard_tolerance = 0.01;
+    picard_iterations = 15;
+    picard_tolerance = 1e-4;
 }
 
 // ============================================================================
@@ -169,6 +172,13 @@ void Parameters::setup_rosensweig_nonuniform()
 Parameters Parameters::parse_command_line(int argc, char* argv[])
 {
     Parameters params;
+
+    // Track which flags were explicitly set (for post-processing)
+    bool got_alpha_max = false;
+    bool got_Lx = false;
+    bool got_Ly = false;
+    double new_Lx = 0.0;
+    double new_Ly = 0.0;
 
     for (int i = 1; i < argc; ++i)
     {
@@ -260,6 +270,43 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
         {
             if (++i >= argc) { std::cerr << "--lambda requires a value\n"; std::exit(1); }
             params.physics.lambda = std::stod(argv[i]);
+        }
+
+        // ---- Susceptibility / field strength ----
+        else if (std::strcmp(argv[i], "--chi0") == 0)
+        {
+            if (++i >= argc) { std::cerr << "--chi0 requires a value\n"; std::exit(1); }
+            params.physics.chi_0 = std::stod(argv[i]);
+        }
+        else if (std::strcmp(argv[i], "--alpha_max") == 0)
+        {
+            if (++i >= argc) { std::cerr << "--alpha_max requires a value\n"; std::exit(1); }
+            params.dipoles.intensity_max = std::stod(argv[i]);
+            got_alpha_max = true;
+        }
+        else if (std::strcmp(argv[i], "--epsilon") == 0)
+        {
+            if (++i >= argc) { std::cerr << "--epsilon requires a value\n"; std::exit(1); }
+            params.physics.epsilon = std::stod(argv[i]);
+        }
+        else if (std::strcmp(argv[i], "--y_interface") == 0)
+        {
+            if (++i >= argc) { std::cerr << "--y_interface requires a value\n"; std::exit(1); }
+            params.flat_interface_y = std::stod(argv[i]);
+        }
+
+        // ---- Domain geometry ----
+        else if (std::strcmp(argv[i], "--Lx") == 0)
+        {
+            if (++i >= argc) { std::cerr << "--Lx requires a value\n"; std::exit(1); }
+            got_Lx = true;
+            new_Lx = std::stod(argv[i]);
+        }
+        else if (std::strcmp(argv[i], "--Ly") == 0)
+        {
+            if (++i >= argc) { std::cerr << "--Ly requires a value\n"; std::exit(1); }
+            got_Ly = true;
+            new_Ly = std::stod(argv[i]);
         }
 
         // ---- Navier-Stokes physics ----
@@ -578,6 +625,13 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             std::cout << "  Time stepping:\n";
             std::cout << "    --dt VALUE          Time step size\n";
             std::cout << "    --t_final VALUE     Final simulation time\n\n";
+            std::cout << "  Physics (parametric study):\n";
+            std::cout << "    --chi0 VALUE        Susceptibility χ₀ (default: 0.5)\n";
+            std::cout << "    --alpha_max VALUE   Max field intensity (default: 8000)\n";
+            std::cout << "    --epsilon VALUE     Interface width ε (default: 5e-3)\n";
+            std::cout << "    --y_interface VALUE  Flat interface y-position (default: 0.2)\n";
+            std::cout << "    --Lx VALUE          Domain width (rescales cells+dipoles)\n";
+            std::cout << "    --Ly VALUE          Domain height (rescales cells)\n\n";
             std::cout << "  Cahn-Hilliard:\n";
             std::cout << "    --mobility VALUE    CH mobility γ (default: 0.0002)\n";
             std::cout << "    --lambda VALUE      Surface tension λ (default: 0.05)\n\n";
@@ -609,6 +663,59 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             std::cerr << "Use --help for usage information.\n";
             std::exit(1);
         }
+    }
+
+    // ================================================================
+    // Post-processing: apply deferred CLI overrides
+    // (Must run after all flags are parsed, since presets set defaults
+    //  and CLI flags override them. Order: preset → flag → post-process)
+    // ================================================================
+
+    // --alpha_max: auto-adjust ramp_slope to keep ramp time = 1.6s
+    if (got_alpha_max && params.dipoles.ramp_slope > 0.0)
+        params.dipoles.ramp_slope = params.dipoles.intensity_max / 1.6;
+
+    // --Lx: rescale domain, initial_cells_x, and dipole x-positions
+    if (got_Lx)
+    {
+        const double old_Lx = params.domain.x_max - params.domain.x_min;
+        params.domain.x_max = params.domain.x_min + new_Lx;
+
+        // Scale initial_cells_x to maintain ~same cell aspect ratio
+        // Rosensweig base: 10 cells for Lx=1.0
+        params.domain.initial_cells_x =
+            static_cast<unsigned int>(std::round(
+                params.domain.initial_cells_x * new_Lx / old_Lx));
+        if (params.domain.initial_cells_x < 1)
+            params.domain.initial_cells_x = 1;
+
+        // Rescale dipole x-positions: maintain same relative overhang
+        // Base: 5 dipoles span [-0.5, 1.5] for domain [0,1] → overhang = 0.5 each side
+        // For new domain [0, Lx]: span [-0.5, Lx+0.5]
+        if (!params.dipoles.positions.empty())
+        {
+            const double x_center_old = (params.domain.x_min + params.domain.x_min + old_Lx) / 2.0;
+            const double x_center_new = (params.domain.x_min + params.domain.x_max) / 2.0;
+            const double scale = new_Lx / old_Lx;
+            for (auto& pos : params.dipoles.positions)
+            {
+                double x_rel = pos[0] - x_center_old;  // relative to old center
+                pos[0] = x_center_new + x_rel * scale;  // scale and shift
+            }
+        }
+    }
+
+    // --Ly: rescale domain height and initial_cells_y
+    if (got_Ly)
+    {
+        const double old_Ly = params.domain.y_max - params.domain.y_min;
+        params.domain.y_max = params.domain.y_min + new_Ly;
+
+        params.domain.initial_cells_y =
+            static_cast<unsigned int>(std::round(
+                params.domain.initial_cells_y * new_Ly / old_Ly));
+        if (params.domain.initial_cells_y < 1)
+            params.domain.initial_cells_y = 1;
     }
 
     // Print config from rank 0

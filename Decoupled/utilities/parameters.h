@@ -219,7 +219,7 @@ struct Parameters
     {
         std::string folder = "/Users/mahdi/Projects/git/PhD-Project/Decoupled/Results";
         bool verbose = false;
-        unsigned int vtk_interval = 20;
+        unsigned int vtk_interval = 50;
     } output;
 
     // ========================================================================

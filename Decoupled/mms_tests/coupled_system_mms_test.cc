@@ -22,6 +22,8 @@
 #include "poisson/poisson.h"
 #include "magnetization/magnetization.h"
 
+#include "utilities/amr.h"
+
 #include "cahn_hilliard/tests/cahn_hilliard_mms.h"
 #include "navier_stokes/tests/navier_stokes_mms.h"
 #include "poisson/tests/poisson_mms.h"
@@ -54,6 +56,7 @@ static CoupledMMSResult run_single_level(
     unsigned int refinement,
     const Parameters& params,
     unsigned int n_time_steps,
+    bool use_amr,
     MPI_Comm mpi_comm)
 {
     using namespace dealii;
@@ -119,6 +122,26 @@ static CoupledMMSResult run_single_level(
     result.n_dofs = total_dofs;
 
     pcout << "  Total DoFs: " << total_dofs << "\n";
+
+    // ----------------------------------------------------------------
+    // 2b. AMR parameters (if enabled)
+    // ----------------------------------------------------------------
+    Parameters amr_params = params;
+    const unsigned int amr_interval = 3;
+    if (use_amr)
+    {
+        amr_params.mesh.use_amr = true;
+        amr_params.mesh.amr_interval = amr_interval;
+        amr_params.mesh.amr_upper_fraction = 0.3;
+        amr_params.mesh.amr_lower_fraction = 0.1;
+        amr_params.mesh.amr_max_level = refinement + 2;
+        amr_params.mesh.amr_min_level = (refinement > 1) ? refinement - 1 : 0;
+        amr_params.mesh.initial_refinement = refinement;
+        amr_params.mesh.interface_coarsen_threshold = 0.9;
+        pcout << "  AMR: interval=" << amr_interval
+              << "  max_level=" << amr_params.mesh.amr_max_level
+              << "  min_level=" << amr_params.mesh.amr_min_level << "\n";
+    }
 
     // ----------------------------------------------------------------
     // 3. MMS source injection
@@ -385,6 +408,43 @@ static CoupledMMSResult run_single_level(
             if (k == max_picard - 1)
                 result.picard_iters = max_picard;
         }
+
+        // ==== AMR (if enabled) ====
+        if (use_amr && (step + 1) % amr_interval == 0 && step + 1 < n_time_steps)
+        {
+            perform_amr(triangulation, amr_params, mpi_comm,
+                        ch, ns, poisson, mag,
+                        /*ns_enabled=*/true, /*mag_enabled=*/true);
+
+            // Recreate workspace vectors with new index sets
+            M_owned    = mag.get_dof_handler().locally_owned_dofs();
+            M_relevant = DoFTools::extract_locally_relevant_dofs(
+                mag.get_dof_handler());
+
+            Mx_old.reinit(M_owned, M_relevant, mpi_comm);
+            My_old.reinit(M_owned, M_relevant, mpi_comm);
+            Mx_relaxed.reinit(M_owned, M_relevant, mpi_comm);
+            My_relaxed.reinit(M_owned, M_relevant, mpi_comm);
+            Mx_relaxed_owned.reinit(M_owned, mpi_comm);
+            My_relaxed_owned.reinit(M_owned, mpi_comm);
+            Mx_prev.reinit(M_owned, mpi_comm);
+            My_prev.reinit(M_owned, mpi_comm);
+
+            // Copy current M state into workspace
+            Mx_relaxed = mag.get_Mx_relevant();
+            My_relaxed = mag.get_My_relevant();
+
+            // Recreate theta_old_relevant with new CH index sets
+            theta_old_relevant.reinit(
+                ch.get_theta_dof_handler().locally_owned_dofs(),
+                DoFTools::extract_locally_relevant_dofs(ch.get_theta_dof_handler()),
+                mpi_comm);
+            theta_old_relevant = ch.get_theta_relevant();
+
+            // Re-apply Dirichlet BCs on new mesh
+            ch.apply_dirichlet_boundary(theta_bc, psi_bc);
+            ch.update_ghosts();
+        }
     }
 
     // ----------------------------------------------------------------
@@ -464,6 +524,7 @@ CoupledMMSConvergenceResult run_coupled_system_mms(
     const std::vector<unsigned int>& refinements,
     const Parameters& params,
     unsigned int n_time_steps,
+    bool use_amr,
     MPI_Comm mpi_comm)
 {
     const unsigned int rank =
@@ -509,7 +570,8 @@ CoupledMMSConvergenceResult run_coupled_system_mms(
     if (rank == 0)
     {
         std::cout << "\n============================================================\n";
-        std::cout << "  Full Coupled System MMS: CH → NS → Poisson/Mag\n";
+        std::cout << "  Full Coupled System MMS: CH → NS → Poisson/Mag"
+                  << (use_amr ? " [AMR]" : "") << "\n";
         std::cout << "============================================================\n";
         std::cout << "  MPI ranks:  "
                   << dealii::Utilities::MPI::n_mpi_processes(mpi_comm) << "\n";
@@ -531,7 +593,7 @@ CoupledMMSConvergenceResult run_coupled_system_mms(
 
     for (unsigned int ref : refinements)
         result.results.push_back(
-            run_single_level(ref, p, n_time_steps, mpi_comm));
+            run_single_level(ref, p, n_time_steps, use_amr, mpi_comm));
 
     result.compute_rates();
     return result;
@@ -551,6 +613,7 @@ int main(int argc, char* argv[])
     // transport/splitting errors at the coarsest pair
     std::vector<unsigned int> refinements = {1, 2, 3};
     unsigned int n_time_steps = 10;
+    bool use_amr = false;
 
     // Parse args
     for (int i = 1; i < argc; ++i)
@@ -566,11 +629,15 @@ int main(int argc, char* argv[])
         {
             n_time_steps = std::stoi(argv[++i]);
         }
+        else if (arg == "--amr")
+        {
+            use_amr = true;
+        }
         else if (arg == "--help" || arg == "-h")
         {
             if (rank == 0)
                 std::cout << "Usage: mpirun -np N " << argv[0]
-                          << " [--refs 2 3 4] [--steps 10]\n";
+                          << " [--refs 2 3 4] [--steps 10] [--amr]\n";
             return 0;
         }
     }
@@ -580,7 +647,7 @@ int main(int argc, char* argv[])
     try
     {
         auto result = run_coupled_system_mms(
-            refinements, params, n_time_steps, MPI_COMM_WORLD);
+            refinements, params, n_time_steps, use_amr, MPI_COMM_WORLD);
 
         if (rank == 0)
         {
