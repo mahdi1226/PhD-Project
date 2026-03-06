@@ -331,16 +331,18 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             params.physics.gravity_magnitude = std::stod(argv[i]);
         }
 
-        // ---- Picard ----
+        // ---- Picard (DEPRECATED: Zhang single-pass scheme, no iteration) ----
         else if (std::strcmp(argv[i], "--picard_iters") == 0)
         {
             if (++i >= argc) { std::cerr << "--picard_iters requires a value\n"; std::exit(1); }
-            params.picard_iterations = std::stoul(argv[i]);
+            // Deprecated: value parsed but ignored (Zhang single-pass)
+            std::cerr << "Warning: --picard_iters deprecated (Zhang single-pass scheme)\n";
         }
         else if (std::strcmp(argv[i], "--picard_omega") == 0)
         {
             if (++i >= argc) { std::cerr << "--picard_omega requires a value\n"; std::exit(1); }
-            params.picard_relaxation = std::stod(argv[i]);
+            // Deprecated: value parsed but ignored (Zhang single-pass)
+            std::cerr << "Warning: --picard_omega deprecated (Zhang single-pass scheme)\n";
         }
 
         // ---- SAV + Algebraic Magnetization ----
@@ -653,8 +655,9 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             std::cout << "    --density_ratio V   Density ratio r (default: 0.1)\n";
             std::cout << "    --gravity VALUE     Gravity magnitude (default: 30000)\n\n";
             std::cout << "  Coupling:\n";
-            std::cout << "    --picard_iters N    Max Picard iterations (default: 7)\n";
-            std::cout << "    --picard_omega V    Picard under-relaxation (default: 0.3)\n\n";
+            std::cout << "    Mag-Poisson: Zhang single-pass (no Picard iteration)\n";
+            std::cout << "    --picard_iters N    [DEPRECATED] ignored\n";
+            std::cout << "    --picard_omega V    [DEPRECATED] ignored\n\n";
             std::cout << "  Subsystems:\n";
             std::cout << "    --mms               MMS verification mode\n";
             std::cout << "    --no_magnetic       Disable applied field\n";
@@ -753,8 +756,7 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
                   << ", |g|=" << params.physics.gravity_magnitude << "\n";
         std::cout << "  dt=" << params.time.dt
                   << ", t_final=" << params.time.t_final << "\n";
-        std::cout << "  Picard: " << params.picard_iterations << " iters, ω="
-                  << params.picard_relaxation << "\n";
+        std::cout << "  Mag-Poisson: Zhang single-pass (no Picard)\n";
         std::cout << "  Magnetic: " << (params.enable_magnetic ? "ON" : "OFF") << "\n";
         std::cout << "  NS: " << (params.enable_ns ? "ON" : "OFF")
                   << ", Gravity: " << (params.enable_gravity ? "ON" : "OFF") << "\n";

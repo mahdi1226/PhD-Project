@@ -10,7 +10,7 @@
 // Other implementation files:
 //   navier_stokes_setup.cc    — setup(): DoFs, constraints, sparsity, vectors
 //   navier_stokes_assemble.cc — assemble(), assemble_stokes()
-//   navier_stokes_solve.cc    — solve(): direct or block-Schur
+//   navier_stokes_solve.cc    — solve(): CG+AMG for velocity and pressure
 // ============================================================================
 
 #include "navier_stokes.h"
@@ -47,19 +47,23 @@ NSSubsystem<dim>::NSSubsystem(
 }
 
 // ============================================================================
-// advance_time() — swap U^{n-1} ← U^n
+// advance_time() — swap U^{n-1} ← U^n, P^{n-1} ← P^n
 //
 // Must be called AFTER solve() and BEFORE the next timestep's assemble().
+// Projection method needs old pressure for both velocity predictor and
+// pressure Poisson RHS.
 // ============================================================================
 template <int dim>
 void NSSubsystem<dim>::advance_time()
 {
     ux_old_solution_ = ux_solution_;
     uy_old_solution_ = uy_solution_;
+    p_old_solution_  = p_solution_;
 
     // Update old ghosted vectors for next step's assembly
     ux_old_relevant_ = ux_old_solution_;
     uy_old_relevant_ = uy_old_solution_;
+    p_old_relevant_  = p_old_solution_;
 }
 
 // ============================================================================
@@ -75,13 +79,14 @@ void NSSubsystem<dim>::initialize_zero()
     uy_solution_     = 0;
     uy_old_solution_ = 0;
     p_solution_      = 0;
-    ns_solution_     = 0;
+    p_old_solution_  = 0;
 
     ux_relevant_     = 0;
     uy_relevant_     = 0;
     p_relevant_      = 0;
     ux_old_relevant_ = 0;
     uy_old_relevant_ = 0;
+    p_old_relevant_  = 0;
 }
 
 // ============================================================================
@@ -124,7 +129,7 @@ void NSSubsystem<dim>::initialize_velocity(
     uy_solution_     = uy_tmp;
     uy_old_solution_ = uy_tmp;
     p_solution_      = 0;
-    ns_solution_     = 0;
+    p_old_solution_  = 0;
 
     // Update ghosts
     ux_relevant_     = ux_solution_;
@@ -132,6 +137,7 @@ void NSSubsystem<dim>::initialize_velocity(
     p_relevant_      = 0;
     ux_old_relevant_ = ux_old_solution_;
     uy_old_relevant_ = uy_old_solution_;
+    p_old_relevant_  = 0;
 }
 
 // ============================================================================
@@ -227,6 +233,7 @@ void NSSubsystem<dim>::update_ghosts()
     p_relevant_      = p_solution_;
     ux_old_relevant_ = ux_old_solution_;
     uy_old_relevant_ = uy_old_solution_;
+    p_old_relevant_  = p_old_solution_;
 }
 
 template <int dim>

@@ -1,6 +1,11 @@
 // ============================================================================
 // navier_stokes/navier_stokes_main.cc — NS Standalone Driver
 //
+// Pressure-correction projection method (Zhang Algorithm 3.1):
+//   Step 2: Velocity predictor (assemble + solve ux, uy separately)
+//   Step 3: Pressure Poisson   (assemble + solve p)
+//   Step 4: Velocity correction (algebraic, consistent mass CG)
+//
 // Modes:
 //   mms       MMS spatial convergence (2D), refs 2-6
 //   2d        Single 2D run with VTK output
@@ -15,7 +20,7 @@
 //   mpirun -np 4 ./navier_stokes_main --ref 2 3 4 5
 //   mpirun -np 4 ./navier_stokes_main --steps 20
 //
-// Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) Eq. 42e-42f
+// Reference: Zhang, He & Yang, SIAM J. Sci. Comput. 43(1), 2021
 // ============================================================================
 
 #include "navier_stokes/navier_stokes.h"
@@ -33,7 +38,6 @@
 
 #include <deal.II/numerics/vector_tools.h>
 #include <deal.II/base/quadrature_lib.h>
-#include <deal.II/lac/read_write_vector.h>
 
 #include <iostream>
 #include <iomanip>
@@ -95,8 +99,8 @@ struct NSMMSConvergenceResult
     void print() const
     {
         std::cout << "\n--- NS MMS Convergence (Q"
-                  << degree_velocity << "/DG-Q" << degree_pressure
-                  << ", Unsteady NS) ---\n";
+                  << degree_velocity << "/Q" << degree_pressure
+                  << ", Projection Method) ---\n";
         std::cout << std::left
                   << std::setw(5)  << "Ref"
                   << std::setw(12) << "h"
@@ -194,392 +198,15 @@ struct NSMMSConvergenceResult
 
 
 // ============================================================================
-// Assembly verification diagnostic
-//
-// Injects the exact MMS solution into the assembled system and computes
-//   r = A * x_exact - b
-// to isolate whether the bug is in assembly vs. error extraction.
-//
-// This is called AFTER assemble_stokes() but BEFORE solve(), so the
-// matrix is in its raw (un-pinned) saddle-point form.
-//
-// Interpretation:
-//   r_ux, r_uy small (< h²): Momentum equation assembled correctly
-//   r_p small (< h²):         Continuity (B block) assembled correctly
-//   All small → bug is in error computation/extraction, not assembly
-//   r_ux, r_uy large → momentum assembly bug (A, B^T, or f)
-//   r_p large → continuity assembly bug (B block)
-// ============================================================================
-template <int dim>
-void assembly_verification_diagnostic(
-    const NSSubsystem<dim>& ns,
-    double current_time,
-    double Ly,
-    unsigned int refinement,
-    MPI_Comm mpi_comm)
-{
-    const int rank = dealii::Utilities::MPI::this_mpi_process(mpi_comm);
-
-    // Accessor aliases
-    const auto& ux_dh = ns.get_ux_dof_handler();
-    const auto& uy_dh = ns.get_uy_dof_handler();
-    const auto& p_dh  = ns.get_p_dof_handler();
-
-    const auto& ux_owned = ns.get_ux_locally_owned();
-    const auto& uy_owned = ns.get_uy_locally_owned();
-    const auto& p_owned  = ns.get_p_locally_owned();
-    const auto& ns_owned = ns.get_ns_locally_owned();
-
-    const auto& ux_map = ns.get_ux_to_ns_map();
-    const auto& uy_map = ns.get_uy_to_ns_map();
-    const auto& p_map  = ns.get_p_to_ns_map();
-
-    const auto& ns_constraints = ns.get_ns_constraints();
-    const auto& ns_matrix      = ns.get_ns_matrix();
-    const auto& ns_rhs         = ns.get_ns_rhs();
-
-    // ========================================================================
-    // 1. Project/interpolate exact solutions onto FE spaces
-    //    Velocity (FE_Q): use interpolate (has support points)
-    //    Pressure (FE_DGP): use project (no support points)
-    // ========================================================================
-    NSMMSInitialUx<dim> ux_exact_func(current_time, Ly);
-    NSMMSInitialUy<dim> uy_exact_func(current_time, Ly);
-    NSMMSExactP<dim>    p_exact_func(current_time, Ly);
-
-    dealii::TrilinosWrappers::MPI::Vector ux_exact(ux_owned, mpi_comm);
-    dealii::TrilinosWrappers::MPI::Vector uy_exact(uy_owned, mpi_comm);
-    dealii::TrilinosWrappers::MPI::Vector p_exact(p_owned, mpi_comm);
-
-    dealii::VectorTools::interpolate(ux_dh, ux_exact_func, ux_exact);
-    dealii::VectorTools::interpolate(uy_dh, uy_exact_func, uy_exact);
-
-    // FE_DGP has no support points — use L2 projection instead
-    {
-        dealii::AffineConstraints<double> empty_constraints;
-        empty_constraints.close();
-        dealii::QGauss<dim> quad(p_dh.get_fe().degree + 2);
-        dealii::VectorTools::project(p_dh, empty_constraints, quad,
-                                     p_exact_func, p_exact);
-    }
-
-    // ========================================================================
-    // 2. Map component vectors into monolithic x_exact
-    // ========================================================================
-    dealii::TrilinosWrappers::MPI::Vector x_exact(ns_owned, mpi_comm);
-    x_exact = 0;
-
-    for (auto it = ux_owned.begin(); it != ux_owned.end(); ++it)
-        x_exact[ux_map[*it]] = ux_exact[*it];
-
-    for (auto it = uy_owned.begin(); it != uy_owned.end(); ++it)
-        x_exact[uy_map[*it]] = uy_exact[*it];
-
-    for (auto it = p_owned.begin(); it != p_owned.end(); ++it)
-        x_exact[p_map[*it]] = p_exact[*it];
-
-    x_exact.compress(dealii::VectorOperation::insert);
-
-    // ========================================================================
-    // 3. Apply constraints to x_exact
-    //    (sets boundary velocity DoFs to 0 = exact BC value)
-    // ========================================================================
-    ns_constraints.distribute(x_exact);
-
-    // ========================================================================
-    // 4. Compute residual: r = A * x_exact - b
-    // ========================================================================
-    dealii::TrilinosWrappers::MPI::Vector residual(ns_owned, mpi_comm);
-    ns_matrix.vmult(residual, x_exact);
-    residual -= ns_rhs;
-
-    // ========================================================================
-    // 5. Extract component residual norms
-    // ========================================================================
-    double loc_r_ux_sq = 0.0, loc_r_uy_sq = 0.0, loc_r_p_sq = 0.0;
-    double loc_r_ux_max = 0.0, loc_r_uy_max = 0.0, loc_r_p_max = 0.0;
-
-    for (auto it = ux_owned.begin(); it != ux_owned.end(); ++it)
-    {
-        const double val = residual[ux_map[*it]];
-        loc_r_ux_sq += val * val;
-        loc_r_ux_max = std::max(loc_r_ux_max, std::abs(val));
-    }
-    for (auto it = uy_owned.begin(); it != uy_owned.end(); ++it)
-    {
-        const double val = residual[uy_map[*it]];
-        loc_r_uy_sq += val * val;
-        loc_r_uy_max = std::max(loc_r_uy_max, std::abs(val));
-    }
-    for (auto it = p_owned.begin(); it != p_owned.end(); ++it)
-    {
-        const double val = residual[p_map[*it]];
-        loc_r_p_sq += val * val;
-        loc_r_p_max = std::max(loc_r_p_max, std::abs(val));
-    }
-
-    // Global reductions
-    double g_r_ux_sq = 0, g_r_uy_sq = 0, g_r_p_sq = 0;
-    double g_r_ux_max = 0, g_r_uy_max = 0, g_r_p_max = 0;
-    MPI_Allreduce(&loc_r_ux_sq,  &g_r_ux_sq,  1, MPI_DOUBLE, MPI_SUM, mpi_comm);
-    MPI_Allreduce(&loc_r_uy_sq,  &g_r_uy_sq,  1, MPI_DOUBLE, MPI_SUM, mpi_comm);
-    MPI_Allreduce(&loc_r_p_sq,   &g_r_p_sq,   1, MPI_DOUBLE, MPI_SUM, mpi_comm);
-    MPI_Allreduce(&loc_r_ux_max, &g_r_ux_max, 1, MPI_DOUBLE, MPI_MAX, mpi_comm);
-    MPI_Allreduce(&loc_r_uy_max, &g_r_uy_max, 1, MPI_DOUBLE, MPI_MAX, mpi_comm);
-    MPI_Allreduce(&loc_r_p_max,  &g_r_p_max,  1, MPI_DOUBLE, MPI_MAX, mpi_comm);
-
-    const double r_ux_l2 = std::sqrt(g_r_ux_sq);
-    const double r_uy_l2 = std::sqrt(g_r_uy_sq);
-    const double r_p_l2  = std::sqrt(g_r_p_sq);
-    const double r_full  = residual.l2_norm();
-
-    // Also report norms of RHS and x_exact for context
-    const double rhs_norm = ns_rhs.l2_norm();
-    const double x_norm   = x_exact.l2_norm();
-
-    // ========================================================================
-    // 6. Report
-    // ========================================================================
-    if (rank == 0)
-    {
-        std::cout << "\n"
-                  << "  ============================================================\n"
-                  << "  ASSEMBLY VERIFICATION DIAGNOSTIC (ref " << refinement << ")\n"
-                  << "  ============================================================\n"
-                  << "  Injecting exact MMS solution at t = " << current_time << "\n"
-                  << "  Computing r = A * x_exact - b (BEFORE pressure pinning)\n"
-                  << "\n"
-                  << "  ||x_exact||_l2  = " << std::scientific << std::setprecision(3) << x_norm << "\n"
-                  << "  ||rhs||_l2      = " << rhs_norm << "\n"
-                  << "  ||r||_l2 (full) = " << r_full << "\n"
-                  << "\n"
-                  << "  Component residuals (l2 / Linf):\n"
-                  << "    r_ux:  " << std::setw(12) << r_ux_l2
-                  << "  /  " << std::setw(12) << g_r_ux_max << "\n"
-                  << "    r_uy:  " << std::setw(12) << r_uy_l2
-                  << "  /  " << std::setw(12) << g_r_uy_max << "\n"
-                  << "    r_p:   " << std::setw(12) << r_p_l2
-                  << "  /  " << std::setw(12) << g_r_p_max << "\n"
-                  << "\n"
-                  << "  Relative residuals (component / full):\n"
-                  << "    r_ux / ||rhs|| = " << (rhs_norm > 1e-14 ? r_ux_l2 / rhs_norm : 0.0) << "\n"
-                  << "    r_uy / ||rhs|| = " << (rhs_norm > 1e-14 ? r_uy_l2 / rhs_norm : 0.0) << "\n"
-                  << "    r_p  / ||rhs|| = " << (rhs_norm > 1e-14 ? r_p_l2 / rhs_norm : 0.0) << "\n"
-                  << "\n"
-                  << "  Interpretation:\n"
-                  << "    Small r_ux, r_uy, r_p → assembly correct, bug in error extraction\n"
-                  << "    Large r_ux or r_uy    → momentum assembly bug (A, B^T, or f)\n"
-                  << "    Large r_p             → continuity assembly bug (B block)\n"
-                  << "  ============================================================\n\n"
-                  << std::defaultfloat;
-    }
-}
-
-
-// ============================================================================
-// Post-solve pressure diagnostic
-//
-// Called AFTER solve() on the last time step.  Three-layer check:
-//   Layer 1: DoF-level comparison (monolithic → extracted → exact)
-//   Layer 2: Independent L2 error via quadrature (bypass compute_ns_mms_errors)
-//   Layer 3: Mean-corrected L2 error via quadrature
-//
-// This isolates whether the bug is in:
-//   - solve/pinning (monolithic values wrong)
-//   - extract_solutions() (extracted ≠ monolithic)
-//   - compute_ns_mms_errors() (L2 norm computation wrong)
-// ============================================================================
-template <int dim>
-void post_solve_pressure_diagnostic(
-    const NSSubsystem<dim>& ns,
-    double current_time,
-    double Ly,
-    unsigned int refinement,
-    MPI_Comm mpi_comm)
-{
-    const int rank = dealii::Utilities::MPI::this_mpi_process(mpi_comm);
-
-    const auto& p_dh     = ns.get_p_dof_handler();
-    const auto& p_owned  = ns.get_p_locally_owned();
-    const auto& p_rel_is = ns.get_p_locally_relevant();
-    const auto& p_map    = ns.get_p_to_ns_map();
-    const auto& ns_owned = ns.get_ns_locally_owned();
-
-    // ========================================================================
-    // Layer 1: DoF-level comparison — monolithic vs extracted vs exact
-    // ========================================================================
-    // Get monolithic solution values at pressure indices
-    const auto& ns_sol = ns.get_ns_solution();  // owned monolithic
-    const auto& p_sol  = ns.get_p_solution();    // owned extracted
-
-    // Project exact pressure (FE_DGP has no support points for interpolate)
-    NSMMSExactP<dim> p_exact_func(current_time, Ly);
-    dealii::TrilinosWrappers::MPI::Vector p_exact(p_owned, mpi_comm);
-    {
-        dealii::AffineConstraints<double> empty_constraints;
-        empty_constraints.close();
-        dealii::QGauss<dim> quad(p_dh.get_fe().degree + 2);
-        dealii::VectorTools::project(p_dh, empty_constraints, quad,
-                                     p_exact_func, p_exact);
-    }
-
-    // Extract monolithic pressure values using ReadWriteVector
-    dealii::IndexSet p_ns_indices(ns_sol.size());
-    for (auto it = p_owned.begin(); it != p_owned.end(); ++it)
-        p_ns_indices.add_index(p_map[*it]);
-    p_ns_indices.compress();
-
-    dealii::LinearAlgebra::ReadWriteVector<double> ns_vals(p_ns_indices);
-    ns_vals.import_elements(ns_sol, dealii::VectorOperation::insert);
-
-    // Print first 20 pressure DoFs on rank 0
-    if (rank == 0)
-    {
-        std::cout << "\n"
-                  << "  ============================================================\n"
-                  << "  POST-SOLVE PRESSURE DIAGNOSTIC (ref " << refinement << ")\n"
-                  << "  ============================================================\n"
-                  << "\n  Layer 1: DoF-level comparison (first 20 pressure DoFs)\n"
-                  << "  " << std::left
-                  << std::setw(8)  << "p_dof"
-                  << std::setw(10) << "ns_idx"
-                  << std::setw(14) << "monolithic"
-                  << std::setw(14) << "extracted"
-                  << std::setw(14) << "exact"
-                  << std::setw(14) << "mono-exact"
-                  << std::setw(14) << "extr-exact"
-                  << std::setw(14) << "mono-extr"
-                  << "\n"
-                  << "  " << std::string(100, '-') << "\n";
-
-        unsigned int count = 0;
-        for (auto it = p_owned.begin(); it != p_owned.end() && count < 20; ++it, ++count)
-        {
-            const auto p_dof  = *it;
-            const auto ns_idx = p_map[p_dof];
-            const double mono = ns_vals[ns_idx];
-            const double extr = p_sol[p_dof];
-            const double exact = p_exact[p_dof];
-
-            std::cout << "  " << std::left
-                      << std::setw(8)  << p_dof
-                      << std::setw(10) << ns_idx
-                      << std::scientific << std::setprecision(4)
-                      << std::setw(14) << mono
-                      << std::setw(14) << extr
-                      << std::setw(14) << exact
-                      << std::setw(14) << (mono - exact)
-                      << std::setw(14) << (extr - exact)
-                      << std::setw(14) << (mono - extr)
-                      << "\n";
-        }
-    }
-
-    // Global stats: max |mono - extr| and max |extr - exact|
-    double loc_max_mono_extr = 0, loc_max_extr_exact = 0, loc_max_mono_exact = 0;
-    for (auto it = p_owned.begin(); it != p_owned.end(); ++it)
-    {
-        const double mono = ns_vals[p_map[*it]];
-        const double extr = p_sol[*it];
-        const double exact = p_exact[*it];
-        loc_max_mono_extr  = std::max(loc_max_mono_extr,  std::abs(mono - extr));
-        loc_max_extr_exact = std::max(loc_max_extr_exact, std::abs(extr - exact));
-        loc_max_mono_exact = std::max(loc_max_mono_exact, std::abs(mono - exact));
-    }
-    double g_max_mono_extr = 0, g_max_extr_exact = 0, g_max_mono_exact = 0;
-    MPI_Allreduce(&loc_max_mono_extr,  &g_max_mono_extr,  1, MPI_DOUBLE, MPI_MAX, mpi_comm);
-    MPI_Allreduce(&loc_max_extr_exact, &g_max_extr_exact, 1, MPI_DOUBLE, MPI_MAX, mpi_comm);
-    MPI_Allreduce(&loc_max_mono_exact, &g_max_mono_exact, 1, MPI_DOUBLE, MPI_MAX, mpi_comm);
-
-    if (rank == 0)
-    {
-        std::cout << "\n  Global max differences (all " << p_owned.n_elements() << " pressure DoFs):\n"
-                  << "    max|monolithic - extracted| = " << std::scientific << std::setprecision(3) << g_max_mono_extr << "\n"
-                  << "    max|extracted  - exact|     = " << g_max_extr_exact << "\n"
-                  << "    max|monolithic - exact|     = " << g_max_mono_exact << "\n";
-
-        if (g_max_mono_extr < 1e-12)
-            std::cout << "    => extract_solutions() is CORRECT (mono == extr)\n";
-        else
-            std::cout << "    => BUG IN extract_solutions()! (mono != extr)\n";
-
-        if (g_max_mono_exact < 1e-2)
-            std::cout << "    => Solver produced correct pressure\n";
-        else
-            std::cout << "    => Solver/pinning produced WRONG pressure (mono != exact)\n";
-    }
-
-    // ========================================================================
-    // Layer 2: Independent L2 error via quadrature (bypass compute_ns_mms_errors)
-    // ========================================================================
-    const auto& p_relevant = ns.get_p_relevant();  // ghosted
-
-    dealii::QGauss<dim> quad(p_dh.get_fe().degree + 2);
-    const unsigned int nq = quad.size();
-    dealii::FEValues<dim> fv_p(p_dh.get_fe(), quad,
-        dealii::update_values | dealii::update_quadrature_points | dealii::update_JxW_values);
-
-    std::vector<double> p_vals(nq);
-
-    // Pass 1: means
-    double loc_p_num = 0, loc_p_exact = 0, loc_vol = 0;
-    for (auto cell = p_dh.begin_active(); cell != p_dh.end(); ++cell)
-    {
-        if (!cell->is_locally_owned()) continue;
-        fv_p.reinit(cell);
-        fv_p.get_function_values(p_relevant, p_vals);
-        for (unsigned int q = 0; q < nq; ++q)
-        {
-            const double w = fv_p.JxW(q);
-            loc_p_num   += p_vals[q] * w;
-            loc_p_exact += NSMMS::p_val<dim>(fv_p.quadrature_point(q), current_time, Ly) * w;
-            loc_vol     += w;
-        }
-    }
-    double g_p_num = 0, g_p_exact = 0, g_vol = 0;
-    MPI_Allreduce(&loc_p_num,   &g_p_num,   1, MPI_DOUBLE, MPI_SUM, mpi_comm);
-    MPI_Allreduce(&loc_p_exact, &g_p_exact, 1, MPI_DOUBLE, MPI_SUM, mpi_comm);
-    MPI_Allreduce(&loc_vol,     &g_vol,     1, MPI_DOUBLE, MPI_SUM, mpi_comm);
-    const double mean_num = g_p_num / g_vol;
-    const double mean_exact = g_p_exact / g_vol;
-
-    // Pass 2: L2 errors (raw and mean-corrected)
-    double loc_raw_sq = 0, loc_corr_sq = 0;
-    for (auto cell = p_dh.begin_active(); cell != p_dh.end(); ++cell)
-    {
-        if (!cell->is_locally_owned()) continue;
-        fv_p.reinit(cell);
-        fv_p.get_function_values(p_relevant, p_vals);
-        for (unsigned int q = 0; q < nq; ++q)
-        {
-            const double w = fv_p.JxW(q);
-            const double pe = NSMMS::p_val<dim>(fv_p.quadrature_point(q), current_time, Ly);
-            const double raw_diff  = p_vals[q] - pe;
-            const double corr_diff = (p_vals[q] - mean_num) - (pe - mean_exact);
-            loc_raw_sq  += raw_diff * raw_diff * w;
-            loc_corr_sq += corr_diff * corr_diff * w;
-        }
-    }
-    double g_raw_sq = 0, g_corr_sq = 0;
-    MPI_Allreduce(&loc_raw_sq,  &g_raw_sq,  1, MPI_DOUBLE, MPI_SUM, mpi_comm);
-    MPI_Allreduce(&loc_corr_sq, &g_corr_sq, 1, MPI_DOUBLE, MPI_SUM, mpi_comm);
-
-    if (rank == 0)
-    {
-        std::cout << "\n  Layer 2: Independent L2 pressure error (quadrature)\n"
-                  << "    mean(p_h)     = " << std::scientific << std::setprecision(6) << mean_num << "\n"
-                  << "    mean(p_exact) = " << mean_exact << "\n"
-                  << "    mean offset   = " << (mean_num - mean_exact) << "\n"
-                  << "    ||p_h - p*||_L2 (raw)            = " << std::sqrt(g_raw_sq) << "\n"
-                  << "    ||p_h - p*||_L2 (mean-corrected) = " << std::sqrt(g_corr_sq) << "\n"
-                  << "  ============================================================\n\n"
-                  << std::defaultfloat;
-    }
-}
-
-
-// ============================================================================
 // Single refinement test
+//
+// Pressure-correction projection method:
+//   1. Assemble velocity predictor (ux, uy matrices + RHS)
+//   2. Solve velocity predictor (CG+AMG for ux, uy)
+//   3. Assemble pressure Poisson
+//   4. Solve pressure Poisson (CG+AMG for p)
+//   5. Velocity correction (algebraic, mass-lumped)
+//   6. Advance time (swap u→u_old, p→p_old)
 // ============================================================================
 template <int dim>
 NSMMSResult run_ns_mms_single(
@@ -644,7 +271,7 @@ NSMMSResult run_ns_mms_single(
     ns.initialize_velocity(ic_ux, ic_uy);
 
     // ========================================================================
-    // Time stepping loop
+    // Time stepping loop — Projection method (Zhang Algorithm 3.1)
     // ========================================================================
     double current_time = t_init;
 
@@ -659,32 +286,22 @@ NSMMSResult run_ns_mms_single(
                 return NSMMS::source_phase_D<dim>(p, t, t_old, nu, Ly);
             };
 
+        // Step 2: Assemble + solve velocity predictor
         ns.assemble_stokes(dt, nu,
                            /*include_time_derivative=*/ true,
                            /*include_convection=*/ true,
                            &body_force,
                            current_time);
+        ns.solve_velocity();
 
-        // ================================================================
-        // Assembly verification diagnostic (last step only)
-        // ================================================================
-        if (step == n_time_steps - 1)
-        {
-            assembly_verification_diagnostic<dim>(
-                ns, current_time, Ly, refinement, mpi_comm);
-        }
+        // Step 3: Assemble + solve pressure Poisson
+        ns.assemble_pressure_poisson(dt);
+        ns.solve_pressure();
 
-        ns.solve();
+        // Step 4: Velocity correction (algebraic, mass-lumped)
+        ns.velocity_correction(dt);
 
-        // ================================================================
-        // Post-solve pressure diagnostic (last step only)
-        // ================================================================
-        if (step == n_time_steps - 1)
-        {
-            post_solve_pressure_diagnostic<dim>(
-                ns, current_time, Ly, refinement, mpi_comm);
-        }
-
+        // Advance time: swap u→u_old, p→p_old
         ns.advance_time();
     }
 
@@ -830,27 +447,38 @@ int main(int argc, char* argv[])
             if (rank == 0)
             {
                 std::cout << "\n============================================================\n";
-                std::cout << "   Navier-Stokes MMS Verification (Unsteady NS)\n";
+                std::cout << "   Navier-Stokes MMS Verification (Projection Method)\n";
                 std::cout << "============================================================\n";
                 std::cout << "  MPI ranks:    "
                           << dealii::Utilities::MPI::n_mpi_processes(mpi_comm) << "\n";
                 std::cout << "  FE degrees:   velocity Q" << params.fe.degree_velocity
-                          << ", pressure DG-Q" << params.fe.degree_pressure << "\n";
+                          << ", pressure Q" << params.fe.degree_pressure << "\n";
                 std::cout << "  nu = " << params.physics.nu_water << "\n";
-                std::cout << "  Time steps:   " << n_time_steps
-                          << ", t in [0.1, 0.2]\n";
+                std::cout << "  Base steps:   " << n_time_steps
+                          << " (×4 per ref), t in [0.1, 0.2]\n";
                 std::cout << "  Refinements:  ";
                 for (auto r : params.run.refs) std::cout << r << " ";
                 std::cout << "\n";
                 std::cout << "============================================================\n\n";
             }
 
+            // Scale dt ∝ h² across refinement levels so that the O(dt)
+            // splitting error from the projection method doesn't dominate
+            // the spatial error.  Steps quadruple per refinement level.
+            const unsigned int ref_base = params.run.refs.front();
+
             for (unsigned int ref : params.run.refs)
             {
-                if (rank == 0)
-                    std::cout << "  Refinement " << ref << "... " << std::flush;
+                // steps = N_base * 4^(ref - ref_base)
+                unsigned int steps_for_ref = n_time_steps;
+                for (unsigned int r = ref_base; r < ref; ++r)
+                    steps_for_ref *= 4;
 
-                NSMMSResult r = run_ns_mms_single<dim>(ref, params, n_time_steps, mpi_comm);
+                if (rank == 0)
+                    std::cout << "  Refinement " << ref
+                              << " (" << steps_for_ref << " steps)... " << std::flush;
+
+                NSMMSResult r = run_ns_mms_single<dim>(ref, params, steps_for_ref, mpi_comm);
                 conv.results.push_back(r);
 
                 if (rank == 0)
@@ -886,6 +514,7 @@ int main(int argc, char* argv[])
                           << "  |  Total wall time: " << std::fixed << std::setprecision(1)
                           << total_wall << "s\n";
                 std::cout << "  (First-order time stepping may limit velocity L2 rate)\n";
+                std::cout << "  (Projection method introduces O(dt) splitting error in pressure)\n";
 
                 if (conv.passes())
                     std::cout << "[PASS] Convergence rates within tolerance!\n";
@@ -934,7 +563,7 @@ int main(int argc, char* argv[])
                 std::cout << "\n============================================================\n";
                 std::cout << "   Navier-Stokes 3D — Not yet implemented\n";
                 std::cout << "============================================================\n";
-                std::cout << "  3D NS requires uz_dof_handler + 4-block saddle-point system.\n";
+                std::cout << "  3D NS requires uz_dof_handler + 3 more CG+AMG solves.\n";
                 std::cout << "  This will be implemented in a future update.\n\n";
             }
             return 0;

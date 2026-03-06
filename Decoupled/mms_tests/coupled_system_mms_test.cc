@@ -330,7 +330,15 @@ static CoupledMMSResult run_single_level(
             current_time,                      // current time for MMS source
             true);                             // include convection
 
-        ns.solve();
+        ns.solve_velocity();
+
+        // Step 3a: Pressure Poisson (projection method)
+        ns.assemble_pressure_poisson(dt);
+        ns.solve_pressure();
+
+        // Step 4: Velocity correction
+        ns.velocity_correction(dt);
+
         ns.advance_time();
         ns.update_ghosts();
 
@@ -591,9 +599,17 @@ CoupledMMSConvergenceResult run_coupled_system_mms(
         std::cout << "\n";
     }
 
+    // Scale dt ∝ h² across refinement levels so the O(dt) projection
+    // method splitting error doesn't dominate the spatial error.
+    const unsigned int ref_base = refinements.front();
     for (unsigned int ref : refinements)
+    {
+        unsigned int steps_for_ref = n_time_steps;
+        for (unsigned int r = ref_base; r < ref; ++r)
+            steps_for_ref *= 4;
         result.results.push_back(
-            run_single_level(ref, p, n_time_steps, use_amr, mpi_comm));
+            run_single_level(ref, p, steps_for_ref, use_amr, mpi_comm));
+    }
 
     result.compute_rates();
     return result;

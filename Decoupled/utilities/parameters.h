@@ -283,16 +283,13 @@ struct Parameters
         //   [A  B^T] [U]   [f]
         //   [B   0 ] [p] = [0]
         //
-        // Direct solver is preferred for refinement levels 3-6
-        // (~1K to ~500K DoFs). For larger problems, Block Schur
-        // complement preconditioner with FGMRES:
-        //   - A block: AMG-preconditioned CG
-        //   - S block: pressure mass matrix scaled by (ν + 1/dt)^{-1}
+        // Projection method: 3 separate CG+AMG solves
+        //   ux, uy velocity predictor + pressure Poisson
+        // No monolithic system — no Block Schur needed.
         //
-        // Falls back through: MUMPS → BlockSchur FGMRES → SuperLU_DIST
         LinearSolverParams ns = {
-            LinearSolverParams::Type::Direct,
-            LinearSolverParams::Preconditioner::BlockSchur,
+            LinearSolverParams::Type::CG,
+            LinearSolverParams::Preconditioner::AMG,
             /*rel_tolerance=*/1e-6,
             /*abs_tolerance=*/1e-10,
             /*max_iterations=*/500,

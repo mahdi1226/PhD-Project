@@ -19,7 +19,7 @@ each with its own FE space, assembly, solver, and VTK output:
 | Poisson        | phi         | CG Q1       | 42d      | CG + AMG       |
 | Magnetization  | Mx, My      | DG Q1       | 42c/56-57| Direct / GMRES+ILU |
 | Cahn-Hilliard  | theta, psi  | CG Q2       | 42a-b    | Direct (MUMPS) |
-| Navier-Stokes  | ux, uy, p   | Q2 / DG-Q1  | 42e-f    | Direct / Block Schur |
+| Navier-Stokes  | ux, uy, p   | Q2 / CG-Q1  | 42e-f    | CG+AMG (projection method) |
 
 ---
 
@@ -71,23 +71,26 @@ each with its own FE space, assembly, solver, and VTK output:
 
 ---
 
-## 3. Coupling Strategy (Semi-coupled / Operator Splitting + Picard)
+## 3. Coupling Strategy (Fully Decoupled, Zhang Algorithm 3.1)
 
 ```
 FOR each timestep n:
   1. Cahn-Hilliard:  solve for theta^n using U^{n-1}
 
-  2. Picard loop (k = 0..max_picard):
-       a. Poisson:        phi^k from M_relaxed     -> H^k = grad(phi)
-       b. Magnetization:  M_raw^k from H^k, U^{n-1}, theta^{n-1}
-       c. Under-relax:    M_relaxed = omega*M_raw + (1-omega)*M_old
-       d. Check:          if ||M_new - M_old|| / ||M_new|| < tol: break
+  2. Poisson-Magnetization (Gauss-Seidel, NO Picard):
+       a. Magnetization Step 5: M_explicit from H^{n-1}, M^{n-1} (mass + relaxation only)
+       b. Poisson:               phi^n from M_explicit           -> H^n = grad(phi)
+       c. Magnetization Step 6:  M^n from H^n, U^{n-1}          (full DG transport, implicit)
 
-  3. Navier-Stokes:  solve for U^n using H^k, M^k, theta^{n-1}
+  3. Navier-Stokes (Pressure-Correction Projection, Zhang Alg 3.1 Steps 2-4):
+       a. Velocity predictor:   solve for u_bar^n (viscous + forces, old pressure)
+       b. Pressure Poisson:     -Laplacian(dp) = -(1/dt) div(u_bar^n)
+       c. Velocity correction:  M * delta_u = dt * grad(dp),  u^n = u_bar^n + delta_u
 ```
 
-**Under-relaxation:** omega = 0.35 (stabilizes M -> phi -> H -> M feedback)
-**Picard iterations:** max 7, tolerance 0.01
+**No Picard iteration** — single forward pass per timestep (unconditionally stable per Zhang).
+**Pressure changed from DG-P1 to CG-Q1** — required for the pressure Poisson Laplacian.
+**3 separate CG+AMG solves** replace the monolithic saddle-point system.
 
 ---
 
@@ -755,6 +758,93 @@ crashes on np>1.
 
 ---
 
+## 15. Zhang Algorithm 3.1: NS Pressure-Correction Projection (Sessions 17-18, March 6, 2026)
+
+### 15.1 Motivation
+
+The nonuniform Rosensweig blow-up (Section 14) was traced to the Picard iteration loop
+creating a Poisson-Magnetization feedback instability. Zhang's Algorithm 3.1 eliminates
+Picard iteration entirely: a single forward pass (CH → Mag Step 5 → Poisson → Mag Step 6 → NS)
+is unconditionally energy-stable.
+
+The NS solver was the main bottleneck: the monolithic saddle-point system (Q2/DG-P1)
+required a direct solver or block-Schur preconditioner. Zhang's scheme replaces this
+with a **pressure-correction projection method** using 3 separate scalar CG+AMG solves.
+
+### 15.2 Stage 1: Remove Picard Iteration
+
+- Removed the Picard iteration loop from `decoupled_driver.cc`
+- Single forward pass: CH → Mag Step 5 → Poisson → Mag Step 6 → NS
+- Picard CLI flags (`--picard-*`) deprecated with runtime warnings
+
+### 15.3 Stage 2: NS Pressure-Correction Projection Method
+
+**Architecture change:** Replaced monolithic NS saddle-point system with 3 separate matrices:
+- `ux_matrix_` (CG Q2): velocity-x predictor
+- `uy_matrix_` (CG Q2): velocity-y predictor
+- `p_matrix_` (CG Q1): pressure Poisson (Laplacian)
+
+**Pressure FE space changed:** DG-P1 → CG-Q1 (required for Laplacian in pressure Poisson step)
+
+**Projection method steps (Zhang Alg 3.1, Steps 2-4):**
+1. **Velocity predictor** (Step 2): Solve separate ux, uy systems with viscous + Kelvin + capillary + gravity terms, using old pressure gradient on RHS
+2. **Pressure Poisson** (Step 3): Solve −Δ(δp) = −(1/dt)∇·ū for pressure correction
+3. **Velocity correction** (Step 4): Solve M·δu = dt·∇(δp) via consistent mass CG, then u = ū + δu
+
+**Key implementation detail:** Velocity correction uses **consistent mass CG solve** (not lumped mass).
+Lumped mass M_L(i) = O(h²) causes O(dt/h) boundary layer error in H1 norm.
+Consistent mass CG solve preserves O(h²) accuracy.
+
+**Symmetric gradient helpers:** `compute_T_test_ux/uy` functions compute the test function
+contributions to the viscous bilinear form (ν/4)(T(U), T(V)) for the component-split assembly.
+
+### 15.4 Files Modified
+
+| File | Change |
+|------|--------|
+| `navier_stokes/navier_stokes.h` | 3 separate matrices (ux, uy, p), vel_mass_matrix_, projection method API |
+| `navier_stokes/navier_stokes_setup.cc` | 3 sparsity patterns, CG-Q1 pressure, CM renumbering on all 3 |
+| `navier_stokes/navier_stokes_assemble.cc` | Component-split viscous assembly, pressure Poisson, velocity correction |
+| `navier_stokes/navier_stokes_solve.cc` | 3 separate CG+AMG solves (solve_velocity, solve_pressure) |
+| `navier_stokes/navier_stokes.cc` | Updated constructor and facade methods |
+| `navier_stokes/navier_stokes_output.cc` | Updated for CG pressure output |
+| `navier_stokes/navier_stokes_main.cc` | dt ∝ h² scaling for MMS (splitting error) |
+| `navier_stokes/tests/navier_stokes_mms_test.cc` | Added projection steps, default phases B,D only |
+| `drivers/decoupled_driver.cc` | Removed Picard loop, added projection method calls |
+| `mms_tests/coupled_system_mms.h` | Updated expected rates to 2.0 (projection method limit) |
+| `mms_tests/coupled_system_mms_test.cc` | Added projection steps + dt ∝ h² scaling |
+| `utilities/parameters.h` | Removed block-Schur config, updated NS solver params |
+| `utilities/parameters.cc` | Deprecated Picard CLI flags |
+
+### 15.5 MMS Convergence Results
+
+**Standalone NS MMS** (refs 2-5, dt ∝ h²):
+All rates exactly **2.00** for ux_L2, ux_H1, uy_L2, uy_H1, p_L2, div_L2. **[PASS]**
+
+**Full coupled 4-system MMS** (refs 1-3, dt ∝ h²):
+
+| Variable | Rate (ref1→2) | Rate (ref2→3) | Status |
+|----------|:--:|:--:|:--:|
+| θ_L2     | 1.70 | 1.93 | PASS |
+| θ_H1     | 1.91 | 1.97 | PASS |
+| ux_L2    | 1.97 | 2.00 | PASS |
+| p_L2     | 2.04 | 2.02 | PASS |
+| φ_L2     | 3.00 | 2.99 | PASS |
+| M_L2     | 2.00 | 2.00 | PASS |
+
+**Note:** Projection method has O(dt) splitting error. With dt ∝ h² scaling, all rates
+are capped at 2.0. Higher-order variables (θ, φ) show rates approaching 2.0 from below
+as the temporal splitting error dominates at finer meshes.
+
+### 15.6 Rosensweig Validation
+
+**Uniform** (r=4, 800+ steps): Completely stable. θ∈[-1.01, 1.01], |U| settling to ~0.03.
+
+**Nonuniform** (r=3, dt=2e-4, 42 dipoles): Running. At step ~5000 (t≈1.0), CFL=0.003,
+all fields bounded. Previously blew up at t≈2.18 with Picard iteration. Test in progress.
+
+---
+
 *Generated: February 2025*
-*Updated: March 5, 2026 (Sessions 15-16: Step5/6, sparsity analysis, parallel fix, blow-up analysis)*
+*Updated: March 6, 2026 (Sessions 17-18: Picard removal, NS projection method, coupled MMS PASS)*
 *Total source code: ~11,500 lines across 4 subsystems + shared libraries*

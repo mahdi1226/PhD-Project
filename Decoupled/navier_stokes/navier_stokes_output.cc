@@ -7,7 +7,7 @@
 //
 // Each field (ux, uy, p) lives on its own DoFHandler with its own FE space:
 //   ux, uy: FE_Q<dim>(2)   — Q2 continuous
-//   p:      FE_DGP<dim>(1) — DG P1 discontinuous
+//   p:      FE_Q<dim>(1)   — Q1 continuous (pressure Poisson)
 //
 // The caller provides a timestamped output directory, e.g.:
 //   navier_stokes_results/vtk/021826_160500_navier_stokes/

@@ -1,37 +1,31 @@
 // ============================================================================
 // navier_stokes/navier_stokes.h - Navier-Stokes Subsystem (Public Facade)
 //
-// PAPER EQUATION 42e-42f (Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531):
+// PRESSURE-CORRECTION PROJECTION METHOD (Zhang Algorithm 3.1, Steps 2-4):
 //
-//   (1/Ï„)(U^n âˆ’ U^{n-1}, V) + Î½(T(U^n), T(V))/2
-//       + B_h(U^{n-1}; U^n, V)
-//       âˆ’ (P^n, âˆ‡Â·V) = (f, V)
+//   Step 2 — Velocity predictor ū^n:
+//     (1/δt)(ū^n − u^{n-1}, v) + ν(D(ū^n), D(v)) + b(u^{n-1}, ū^n, v)
+//         + b_stab(m^{n-1}, ū^n, v) − (p^{n-1}, ∇·v) = (f, v)
 //
-//   (âˆ‡Â·U^n, Q) = 0                            (incompressibility)
+//   Step 3 — Pressure Poisson:
+//     (∇p^n, ∇q) = −(1/δt)(∇·ū^n, q) + (∇p^{n-1}, ∇q)
+//
+//   Step 4 — Velocity correction (algebraic):
+//     u^n = ū^n − δt ∇(p^n − p^{n-1})
 //
 // FE spaces:
-//   - Velocity: FE_Q<dim>(degree_velocity) â€” Q2 continuous (Taylor-Hood)
-//   - Pressure: FE_DGP<dim>(degree_pressure) â€" DG P1 discontinuous
-//     (Paper requirement A1: P_{k-1}^{dc} total-degree polynomials)
+//   - Velocity: FE_Q<dim>(2) — CG Q2 continuous
+//   - Pressure: FE_Q<dim>(1) — CG Q1 continuous (for pressure Poisson)
 //
-// System structure (3 separate scalar DoFHandlers â†’ monolithic saddle-point):
-//   [A_uu   0      B_x^T] [ux^n]   [F_x]
-//   [0      A_vv   B_y^T] [uy^n] = [F_y]
-//   [B_x    B_y    0    ] [p^n ]   [0  ]
+// System structure (3 SEPARATE scalar systems):
+//   [A_ux] [ūx^n] = [F_x]     velocity predictor x
+//   [A_uy] [ūy^n] = [F_y]     velocity predictor y
+//   [L_p ] [p^n ] = [G  ]     pressure Poisson
 //
-// Parallel:
-//   - Trilinos vectors/matrices
-//   - p4est distributed triangulation (passed by reference, not owned)
-//   - MPI-aware assembly, solve, diagnostics
+// The viscous cross-terms (ux-uy coupling from D:D) and b_stab cross-terms
+// are treated explicitly on the RHS using old velocity.
 //
-// Usage:
-//   NSSubsystem<dim> ns(params, mpi_comm, triangulation);
-//   ns.setup();
-//   ns.initialize_zero();
-//   ns.assemble_stokes(dt, nu);
-//   auto info = ns.solve();
-//   ns.advance_time();
-//
+// Reference: Zhang, He & Yang, SIAM J. Sci. Comput. 43(1), 2021
 // ============================================================================
 #ifndef NAVIER_STOKES_H
 #define NAVIER_STOKES_H
@@ -39,7 +33,6 @@
 #include <deal.II/distributed/tria.h>
 #include <deal.II/dofs/dof_handler.h>
 #include <deal.II/fe/fe_q.h>
-#include <deal.II/fe/fe_dgp.h>
 #include <deal.II/lac/affine_constraints.h>
 #include <deal.II/lac/trilinos_sparse_matrix.h>
 #include <deal.II/lac/trilinos_sparsity_pattern.h>
@@ -61,40 +54,30 @@ class NSSubsystem
 public:
     // ========================================================================
     // Construction
-    //
-    // Takes references only â€” does not own triangulation or parameters.
     // ========================================================================
     NSSubsystem(const Parameters& params,
                 MPI_Comm mpi_comm,
                 dealii::parallel::distributed::Triangulation<dim>& triangulation);
 
     // ========================================================================
-    // Setup â€” call once after mesh is ready
+    // Setup — call once after mesh is ready
     //
-    // 1. Distribute DoFs for ux (Q2), uy (Q2), p (DG Q1)
-    // 2. Build velocity constraints (hanging nodes + homogeneous Dirichlet)
-    // 3. Build pressure constraints (pin DoF 0 for uniqueness)
-    // 4. Build coupled saddle-point sparsity + index maps
-    // 5. Allocate matrices and vectors
-    // 6. Assemble pressure mass matrix (for Schur preconditioner)
+    // 1. Distribute DoFs for ux (Q2), uy (Q2), p (Q1)
+    // 2. Build constraints (hanging nodes + Dirichlet for velocity)
+    // 3. Build 3 separate sparsity patterns
+    // 4. Allocate matrices, vectors, lumped mass diagonal
     // ========================================================================
     void setup();
 
     // ========================================================================
-    // Assembly â€” core NS for standalone testing
+    // Assembly — velocity predictor (Zhang Step 2)
     //
-    // Basic NS: (1/Ï„)(U^n âˆ’ U^{n-1}, V) + Î½(T(U^n), T(V)) âˆ’ (P^n, âˆ‡Â·V) = (f, V)
-    //
-    // Constant viscosity.
-    // Uses internally owned U^{n-1}.
-    //
-    // @param dt                     Time step size
-    // @param nu                     Constant kinematic viscosity
-    // @param include_time_derivative Include (1/Ï„)(U^n âˆ’ U^{n-1}, V) mass term
-    // @param include_convection     Add B_h(U^{n-1}; U^n, V) skew term
-    // @param body_force             Optional RHS source f(x, t)
-    // @param body_force_time        Time argument for body_force evaluation
+    // Builds ux_matrix_ and uy_matrix_ separately.
+    // Viscous cross-terms and b_stab cross-terms go to RHS using old velocity.
+    // Old pressure gradient on RHS.
     // ========================================================================
+
+    // Standalone NS (for testing): constant viscosity, no coupling
     void assemble_stokes(
         double dt, double nu,
         bool include_time_derivative = true,
@@ -102,25 +85,7 @@ public:
         const std::function<dealii::Tensor<1, dim>(const dealii::Point<dim>&, double)>* body_force = nullptr,
         double body_force_time = 0.0);
 
-    // ========================================================================
     // Coupled assembly — for production ferrofluid driver
-    //
-    // Variable viscosity ν(θ), Kelvin force μ₀ B_h^m(V, H, M),
-    // gravity ρ(θ)g, and capillary force λψ∇θ.
-    //
-    // @param dt                     Time step size
-    // @param theta_relevant         Phase field θ (ghosted, from CH)
-    // @param theta_dof_handler      CH DoFHandler
-    // @param psi_relevant           Chemical potential ψ (ghosted, from CH)
-    // @param psi_dof_handler        CH ψ DoFHandler
-    // @param phi_relevant           Magnetic potential φ (ghosted, from Poisson)
-    // @param phi_dof_handler        Poisson DoFHandler
-    // @param Mx_relevant            Magnetization Mx (ghosted, from Mag)
-    // @param My_relevant            Magnetization My (ghosted, from Mag)
-    // @param M_dof_handler          Magnetization DoFHandler (DG)
-    // @param current_time           Current simulation time
-    // @param include_convection     Add B_h(U^{n-1}; U^n, V) skew term
-    // ========================================================================
     void assemble_coupled(
         double dt,
         const dealii::TrilinosWrappers::MPI::Vector& theta_relevant,
@@ -136,15 +101,7 @@ public:
         double current_time,
         bool include_convection = true);
 
-    // ========================================================================
     // Coupled assembly with algebraic magnetization
-    //
-    // Zhang, He & Yang, SIAM J. Sci. Comput. 43(1) (2021)
-    //
-    // Same as assemble_coupled() but:
-    //   - Computes M = chi(theta)(grad phi + h_a) at quadrature points (no M vectors)
-    //   - Kelvin force is fully explicit: mu0(M.grad)H on RHS
-    // ========================================================================
     void assemble_coupled_algebraic_M(
         double dt,
         const dealii::TrilinosWrappers::MPI::Vector& theta_relevant,
@@ -158,61 +115,56 @@ public:
         bool include_convection = true);
 
     // ========================================================================
-    // Solve â€" call after assemble
+    // Assembly — pressure Poisson (Zhang Step 3)
     //
-    // Direct solver (Amesos) with pressure pinning.
-    // Block Schur iterative solver will be added separately.
+    // (∇p^n, ∇q) = −(1/δt)(∇·ū^n, q) + (∇p^{n-1}, ∇q)
     // ========================================================================
-    SolverInfo solve();
+    void assemble_pressure_poisson(double dt);
 
     // ========================================================================
-    // Time advancement â€” call AFTER solve()
+    // Velocity correction (Zhang Step 4) — algebraic
     //
-    // Swaps U^{n-1} â† U^n for the next timestep.
-    // Also updates old ghosted vectors.
+    // u^n = ū^n − δt ∇(p^n − p^{n-1})
+    // Applied weakly via lumped mass matrix.
+    // ========================================================================
+    void velocity_correction(double dt);
+
+    // ========================================================================
+    // Solve — call after assembly
+    //
+    // solve_velocity(): CG+AMG for ux_matrix_ and uy_matrix_
+    // solve_pressure(): CG+AMG for p_matrix_
+    // solve():          backward-compat wrapper (velocity only)
+    // ========================================================================
+    SolverInfo solve_velocity();
+    SolverInfo solve_pressure();
+    SolverInfo solve();  // calls solve_velocity() for backward compat
+
+    // ========================================================================
+    // Time advancement — call AFTER solve/correction
+    //
+    // Swaps U^{n-1} ← U^n, P^{n-1} ← P^n for the next timestep.
     // ========================================================================
     void advance_time();
 
     // ========================================================================
-    // VTK Output — write parallel VTU/PVTU files
-    //
-    // Writes ux, uy, p, subdomain to parallel VTU files.
-    // Directory is created if it does not exist.
-    // Ghosts must be up to date (call update_ghosts() first).
-    //
-    // @param output_dir   Timestamped directory for this run's VTU files
-    // @param step         Time step / refinement number (used in filename)
-    // @param time         Physical time (stored in VTU metadata)
+    // VTK Output
     // ========================================================================
     void write_vtu(const std::string& output_dir,
                    unsigned int step,
                    double time) const;
 
     // ========================================================================
-    // Initialize all solutions to zero â€” call after setup()
+    // Initialize solutions
     // ========================================================================
     void initialize_zero();
-
-    // ========================================================================
-    // Initialize velocity from functions â€” for MMS / restart
-    //
-    // Interpolates ux_init, uy_init into both current and old solutions.
-    // Call after setup().
-    // ========================================================================
     void initialize_velocity(const dealii::Function<dim>& ux_init,
                              const dealii::Function<dim>& uy_init);
-
-    // ========================================================================
-    // Set old velocity from exact solution functions â€” for MMS testing
-    //
-    // Interpolates ux_exact, uy_exact onto FE space, stores as U^{n-1},
-    // and updates ghosted copies.
-    // ========================================================================
     void set_old_velocity(const dealii::Function<dim>& ux_exact,
                           const dealii::Function<dim>& uy_exact);
 
     // ========================================================================
-    // Accessors â€” for other subsystems to read results
+    // Accessors — for other subsystems to read results
     // ========================================================================
     const dealii::DoFHandler<dim>& get_ux_dof_handler() const;
     const dealii::DoFHandler<dim>& get_uy_dof_handler() const;
@@ -223,7 +175,7 @@ public:
     const dealii::TrilinosWrappers::MPI::Vector& get_uy_solution() const;
     const dealii::TrilinosWrappers::MPI::Vector& get_p_solution() const;
 
-    // Ghosted vectors (current timestep â€” for cross-DoFHandler evaluation)
+    // Ghosted vectors (current timestep)
     const dealii::TrilinosWrappers::MPI::Vector& get_ux_relevant() const;
     const dealii::TrilinosWrappers::MPI::Vector& get_uy_relevant() const;
     const dealii::TrilinosWrappers::MPI::Vector& get_p_relevant() const;
@@ -234,9 +186,6 @@ public:
 
     // ========================================================================
     // Mutable accessors — for AMR SolutionTransfer
-    //
-    // These allow the AMR module to write interpolated solutions directly
-    // into the subsystem's owned vectors after mesh refinement.
     // ========================================================================
     dealii::DoFHandler<dim>& get_ux_dof_handler_mutable();
     dealii::DoFHandler<dim>& get_uy_dof_handler_mutable();
@@ -251,56 +200,38 @@ public:
 
     // ========================================================================
     // Ghost management
-    //
-    // update_ghosts():     copy owned â†’ ghosted for all component vectors
-    // invalidate_ghosts(): mark ghosted vectors as stale (after solve)
     // ========================================================================
     void update_ghosts();
     void invalidate_ghosts();
 
     // ========================================================================
-    // Diagnostics â€” computed after solve
+    // Diagnostics
     // ========================================================================
     struct Diagnostics
     {
-        // Velocity
         double ux_min = 0, ux_max = 0;
         double uy_min = 0, uy_max = 0;
-        double U_max  = 0;         // max|U|
-        double E_kin  = 0;         // Â½âˆ«|U|Â² dÎ©
-        double CFL    = 0;         // U_max Â· dt / h_min
-
-        // Incompressibility
-        double divU_L2   = 0;      // ||âˆ‡Â·U||_L2
-        double divU_Linf = 0;      // max|âˆ‡Â·U| per element
-
-        // Pressure
+        double U_max  = 0;
+        double E_kin  = 0;
+        double CFL    = 0;
+        double divU_L2   = 0;
+        double divU_Linf = 0;
         double p_min  = 0, p_max = 0;
-        double p_mean = 0;         // âˆ«p dÎ© / |Î©|
-
-        // Vorticity
-        double omega_L2   = 0;     // ||âˆ‡Ã—U||_L2
-        double omega_Linf = 0;     // max|âˆ‡Ã—U|
-        double enstrophy  = 0;     // Â½âˆ«|Ï‰|Â² dÎ©
-
-        // Solver
+        double p_mean = 0;
+        double omega_L2   = 0;
+        double omega_Linf = 0;
+        double enstrophy  = 0;
         int    iterations  = 0;
         double residual    = 0;
         double solve_time  = 0;
         double assemble_time = 0;
-
-        // Non-dimensional
-        double Re_max = 0;         // U_max Â· L / Î½
+        double Re_max = 0;
     };
 
     Diagnostics compute_diagnostics(double dt) const;
 
     // ========================================================================
-    // MMS source injection — for coupled MMS testing
-    //
-    // Callback signature: (point, time) → f(x,t) ∈ ℝ^dim
-    // Added to the RHS in assemble_coupled() alongside physical forces.
-    // Production code never calls this — only MMS tests.
+    // MMS source injection
     // ========================================================================
     using MmsSourceFunction = std::function<
         dealii::Tensor<1, dim>(const dealii::Point<dim>&, double)>;
@@ -315,22 +246,18 @@ public:
     const dealii::IndexSet& get_ux_locally_relevant() const { return ux_locally_relevant_; }
     const dealii::IndexSet& get_uy_locally_relevant() const { return uy_locally_relevant_; }
     const dealii::IndexSet& get_p_locally_relevant() const  { return p_locally_relevant_; }
-    const dealii::IndexSet& get_ns_locally_owned() const   { return ns_locally_owned_; }
-    const dealii::IndexSet& get_ns_locally_relevant() const { return ns_locally_relevant_; }
 
-    const std::vector<dealii::types::global_dof_index>& get_ux_to_ns_map() const { return ux_to_ns_map_; }
-    const std::vector<dealii::types::global_dof_index>& get_uy_to_ns_map() const { return uy_to_ns_map_; }
-    const std::vector<dealii::types::global_dof_index>& get_p_to_ns_map() const  { return p_to_ns_map_; }
+    const dealii::AffineConstraints<double>& get_ux_constraints() const { return ux_constraints_; }
+    const dealii::AffineConstraints<double>& get_uy_constraints() const { return uy_constraints_; }
+    const dealii::AffineConstraints<double>& get_p_constraints() const  { return p_constraints_; }
 
-    const dealii::AffineConstraints<double>& get_ns_constraints() const { return ns_constraints_; }
-    const dealii::TrilinosWrappers::SparseMatrix& get_ns_matrix() const { return ns_matrix_; }
-    const dealii::TrilinosWrappers::MPI::Vector&  get_ns_rhs() const    { return ns_rhs_; }
-    const dealii::TrilinosWrappers::MPI::Vector&  get_ns_solution() const { return ns_solution_; }
-    const dealii::TrilinosWrappers::SparseMatrix& get_pressure_mass_matrix() const { return pressure_mass_matrix_; }
+    const dealii::TrilinosWrappers::SparseMatrix& get_ux_matrix() const { return ux_matrix_; }
+    const dealii::TrilinosWrappers::SparseMatrix& get_uy_matrix() const { return uy_matrix_; }
+    const dealii::TrilinosWrappers::SparseMatrix& get_p_matrix() const  { return p_matrix_; }
 
     const dealii::parallel::distributed::Triangulation<dim>& get_triangulation() const { return triangulation_; }
-    const dealii::FE_Q<dim>&   get_fe_velocity() const { return fe_velocity_; }
-    const dealii::FE_DGP<dim>& get_fe_pressure() const { return fe_pressure_; }
+    const dealii::FE_Q<dim>& get_fe_velocity() const { return fe_velocity_; }
+    const dealii::FE_Q<dim>& get_fe_pressure() const { return fe_pressure_; }
 
 private:
     // ========================================================================
@@ -343,111 +270,94 @@ private:
 
     // ========================================================================
     // Finite elements
-    //   Velocity: Q2 continuous (Taylor-Hood)
-    //   Pressure: DG P1 discontinuous (Paper requirement A1: P_{k-1}^{dc})
+    //   Velocity: Q2 continuous
+    //   Pressure: Q1 continuous (for pressure Poisson in projection method)
     // ========================================================================
-    dealii::FE_Q<dim>   fe_velocity_;
-    dealii::FE_DGP<dim> fe_pressure_;
+    dealii::FE_Q<dim> fe_velocity_;
+    dealii::FE_Q<dim> fe_pressure_;
 
     // ========================================================================
-    // DoF handlers â€” three separate scalar handlers
-    //
-    // Mapped into monolithic saddle-point system via index maps.
-    // This matches the existing ns_setup.h pattern.
+    // DoF handlers — three separate scalar handlers
     // ========================================================================
     dealii::DoFHandler<dim> ux_dof_handler_;
     dealii::DoFHandler<dim> uy_dof_handler_;
     dealii::DoFHandler<dim> p_dof_handler_;
 
     // ========================================================================
-    // Index sets â€” per-component and coupled
+    // Index sets — per-component
     // ========================================================================
     dealii::IndexSet ux_locally_owned_, ux_locally_relevant_;
     dealii::IndexSet uy_locally_owned_, uy_locally_relevant_;
     dealii::IndexSet p_locally_owned_,  p_locally_relevant_;
-    dealii::IndexSet ns_locally_owned_, ns_locally_relevant_;
-
-    // ========================================================================
-    // Index maps (scalar DoF â†’ coupled system DoF)
-    //
-    // Built by setup_ns_coupled_system_parallel() in ns_setup.h.
-    // ========================================================================
-    std::vector<dealii::types::global_dof_index> ux_to_ns_map_;
-    std::vector<dealii::types::global_dof_index> uy_to_ns_map_;
-    std::vector<dealii::types::global_dof_index> p_to_ns_map_;
 
     // ========================================================================
     // Constraints
     //
     // ux, uy: hanging nodes + homogeneous Dirichlet on all boundaries
-    // p:      pin DoF 0 for uniqueness (no hanging nodes for DG)
-    // ns:     coupled constraint set for saddle-point system
+    // p:      hanging nodes + mean value constraint (CG Q1, no Dirichlet)
     // ========================================================================
     dealii::AffineConstraints<double> ux_constraints_;
     dealii::AffineConstraints<double> uy_constraints_;
     dealii::AffineConstraints<double> p_constraints_;
-    dealii::AffineConstraints<double> ns_constraints_;
 
     // ========================================================================
-    // Coupled saddle-point system
+    // 3 separate scalar systems (velocity predictor + pressure Poisson)
     // ========================================================================
-    dealii::TrilinosWrappers::SparseMatrix ns_matrix_;
-    dealii::TrilinosWrappers::MPI::Vector  ns_rhs_;
-    dealii::TrilinosWrappers::MPI::Vector  ns_solution_;
+    dealii::TrilinosWrappers::SparseMatrix ux_matrix_;
+    dealii::TrilinosWrappers::SparseMatrix uy_matrix_;
+    dealii::TrilinosWrappers::SparseMatrix p_matrix_;
+
+    dealii::TrilinosWrappers::MPI::Vector ux_rhs_;
+    dealii::TrilinosWrappers::MPI::Vector uy_rhs_;
+    dealii::TrilinosWrappers::MPI::Vector p_rhs_;
 
     // ========================================================================
-    // Component solutions â€” owned vectors
+    // Component solutions — owned vectors
     // ========================================================================
     dealii::TrilinosWrappers::MPI::Vector ux_solution_;
     dealii::TrilinosWrappers::MPI::Vector ux_old_solution_;   // U_x^{n-1}
     dealii::TrilinosWrappers::MPI::Vector uy_solution_;
     dealii::TrilinosWrappers::MPI::Vector uy_old_solution_;   // U_y^{n-1}
     dealii::TrilinosWrappers::MPI::Vector p_solution_;
+    dealii::TrilinosWrappers::MPI::Vector p_old_solution_;    // P^{n-1} for correction
 
     // ========================================================================
-    // Ghosted vectors â€” for assembly and inter-subsystem reads
+    // Ghosted vectors — for assembly and inter-subsystem reads
     // ========================================================================
     dealii::TrilinosWrappers::MPI::Vector ux_relevant_;
     dealii::TrilinosWrappers::MPI::Vector uy_relevant_;
     dealii::TrilinosWrappers::MPI::Vector p_relevant_;
     dealii::TrilinosWrappers::MPI::Vector ux_old_relevant_;   // ghosted U_x^{n-1}
     dealii::TrilinosWrappers::MPI::Vector uy_old_relevant_;   // ghosted U_y^{n-1}
+    dealii::TrilinosWrappers::MPI::Vector p_old_relevant_;    // ghosted P^{n-1}
 
     // ========================================================================
-    // Pressure mass matrix (for Schur complement preconditioner)
+    // Velocity mass matrix (for velocity correction Step 4)
     //
-    // S â‰ˆ Î± M_p,  Î± = Î½ + 1/Î”t (unsteady) or Î± = Î½ (steady)
-    // Assembled once in setup(), reused every solve.
+    // Consistent mass M(i,j) = ∫ φ_i φ_j dx  — used in CG solve for
+    // accurate L2 projection in the velocity correction step.
+    // Lumped mass M_L kept as Jacobi preconditioner for the CG solve.
     // ========================================================================
-    dealii::TrilinosWrappers::SparseMatrix pressure_mass_matrix_;
+    dealii::TrilinosWrappers::SparseMatrix vel_mass_matrix_;
+    dealii::TrilinosWrappers::MPI::Vector  vel_mass_lumped_;
 
     // ========================================================================
-    // Cached state from last assembly (used for Schur scaling in solve)
+    // Cached state
     // ========================================================================
     double last_assembled_viscosity_ = 0.0;
     double last_assembled_dt_        = -1.0;
-
-    // ========================================================================
-    // Last solver result
-    // ========================================================================
     SolverInfo last_solve_info_;
 
     // ========================================================================
-    // MMS source callback (set via set_mms_source, used by assemble_coupled)
+    // MMS source callback
     // ========================================================================
     MmsSourceFunction mms_source_;
 
     // ========================================================================
-    // Private helpers (implemented in navier_stokes_setup.cc)
+    // Private helpers
     // ========================================================================
-    void build_coupled_system();
-    void assemble_pressure_mass_matrix();
-
-    // ========================================================================
-    // Private helpers (implemented in navier_stokes_solve.cc)
-    // ========================================================================
-    SolverInfo solve_direct(bool verbose);
-    void extract_solutions();
+    void assemble_lumped_mass();
+    void subtract_mean_pressure();
 };
 
 #endif // NAVIER_STOKES_H

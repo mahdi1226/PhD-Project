@@ -174,9 +174,7 @@ public:
             ri << "  gravity:        " << (params.enable_gravity ? "ON" : "OFF") << "\n";
             ri << "  NS:             " << (params.enable_ns ? "ON" : "OFF") << "\n\n";
             ri << "[Coupling]\n";
-            ri << "  picard_iterations: " << params.picard_iterations << "\n";
-            ri << "  picard_relaxation: " << params.picard_relaxation << "\n";
-            ri << "  picard_tolerance:  " << params.picard_tolerance << "\n";
+            ri << "  mag_poisson:       Zhang single-pass (no Picard)\n";
             ri << "  use_sav:           " << (params.use_sav ? "ON" : "OFF") << "\n";
             ri << "  sav_S1:            " << params.sav.S1 << "\n";
             ri << "  algebraic_M:       " << (params.use_algebraic_magnetization ? "ON" : "OFF") << "\n\n";
@@ -1543,7 +1541,17 @@ int main(int argc, char* argv[])
                     current_time - dt,               // t^{n-1} for h_a (h̃^{n-1})
                     /*include_convection=*/true);
             }
-            ns.solve();
+            // Step 2: Solve velocity predictor
+            ns.solve_velocity();
+
+            // Step 3: Pressure Poisson
+            ns.assemble_pressure_poisson(dt);
+            ns.solve_pressure();
+
+            // Step 4: Velocity correction (algebraic)
+            ns.velocity_correction(dt);
+
+            // Advance time: swap u→u_old, p→p_old
             ns.advance_time();
             ns.update_ghosts();
         }
@@ -1570,19 +1578,22 @@ int main(int argc, char* argv[])
             }
             else
             {
+                // ============================================================
                 // PDE-M path: Zhang Algorithm 3.1, Steps 5-6
                 //
-                // STEP 5 (Eq 3.14-3.16): Picard sub-iteration for (m̃^n, φ^n, h̃^n)
-                //   - Explicit transport: mass-only matrix, transport on RHS
-                //   - Uses FULL divergence: -[(U·∇)m^{n-1} + (∇·U)m^{n-1}]
-                //   - Picard iterates to converge H = ∇φ via Poisson ↔ Mag
-                //   - Under-relaxation: M = ω·M_solve + (1-ω)·M_prev
+                // SINGLE FORWARD PASS — NO Picard iteration.
                 //
-                // STEP 6 (Eq 3.17): Final magnetization m^n
-                //   - Implicit transport: full DG bilinear form b_h^m on LHS
-                //   - Uses converged φ^n from Step 5
-                //   - Single solve, no under-relaxation
-                //   - Provides unconditional energy stability (Theorem 3.1)
+                // Zhang's scheme decouples Poisson ↔ Magnetization via the
+                // intermediate variable m̃. The sequence is:
+                //   Step 5a: Mag(h^{n-1}) → m̃     [explicit transport, OLD field]
+                //   Step 5b: Poisson(m̃)  → φ^n    [one solve, no iteration]
+                //   Step 6:  Mag(h^n)     → m^n    [implicit DG transport, NEW field]
+                //
+                // Energy stability (Theorem 3.1) is guaranteed by:
+                //   - b_stab terms in NS (already implemented)
+                //   - m̃ intermediate breaking the nonlinear M↔φ feedback
+                //   - Implicit DG transport in Step 6
+                // ============================================================
 
                 const auto& vel_ux = params.enable_ns
                     ? ns.get_ux_old_relevant() : zero_ux_relevant;  // ũ^n
@@ -1591,114 +1602,54 @@ int main(int argc, char* argv[])
                 const auto& vel_dof = params.enable_ns
                     ? ns.get_ux_dof_handler() : ch.get_theta_dof_handler();
 
-                const unsigned int max_picard = params.picard_iterations;
-                const double picard_tol   = params.picard_tolerance;
-                const double picard_omega = params.picard_relaxation;
-
                 // Save M^{n-1} for the time derivative term (1/dt)*M^{n-1}
                 mag.save_old_solution();
 
                 // ============================================================
-                // Step 5: Picard iteration with EXPLICIT transport (Eq 3.14)
+                // Step 5a: Magnetization m̃ with OLD field h^{n-1} = ∇φ^{n-1}
+                // (Zhang Eq 3.14: explicit transport, mass + relaxation)
                 // ============================================================
+                mag.assemble(
+                    mag.get_Mx_old_relevant(),   // M^{n-1}: time derivative + β
+                    mag.get_My_old_relevant(),
+                    poisson.get_solution_relevant(), poisson.get_dof_handler(),  // φ^{n-1}
+                    ch.get_theta_relevant(),         ch.get_theta_dof_handler(),
+                    vel_ux, vel_uy, vel_dof,         // ũ^n
+                    dt, current_time,
+                    /*explicit_transport=*/true);     // Step 5: mass-only matrix
+                mag.solve();
+                // NO under-relaxation — Zhang single-pass, no damping needed
+                mag.update_ghosts();
 
-                // ---- Iteration k=0: full assembly (matrix + RHS) ----
-                poisson.assemble_rhs(mag.get_Mx_relevant(),
+                // ============================================================
+                // Step 5b: Poisson φ^n using m̃ (intermediate magnetization)
+                // (Zhang Eq 3.15: one Poisson solve, NOT iterated)
+                // ============================================================
+                poisson.assemble_rhs(mag.get_Mx_relevant(),   // m̃ from Step 5a
                                      mag.get_My_relevant(),
                                      mag.get_dof_handler(),
                                      current_time);
                 poisson.solve();
                 poisson.update_ghosts();
 
-                mag.assemble(
-                    mag.get_Mx_old_relevant(),   // M^{n-1}: time derivative + β
-                    mag.get_My_old_relevant(),
-                    poisson.get_solution_relevant(), poisson.get_dof_handler(),
-                    ch.get_theta_relevant(),         ch.get_theta_dof_handler(),
-                    vel_ux, vel_uy, vel_dof,         // ũ^n
-                    dt, current_time,
-                    /*explicit_transport=*/true);     // Step 5: mass-only matrix
-                mag.solve();
-                mag.apply_under_relaxation(picard_omega);
-                mag.update_ghosts();
-
-                // ---- Iterations k=1, ..., max_picard-1 ----
-                unsigned int picard_iters = 1;
-                for (unsigned int k = 1; k < max_picard; ++k)
-                {
-                    const double Mx_k_norm = mag.get_Mx_solution().l2_norm();
-                    const double My_k_norm = mag.get_My_solution().l2_norm();
-                    const double M_k_norm = std::sqrt(Mx_k_norm * Mx_k_norm
-                                                    + My_k_norm * My_k_norm);
-
-                    poisson.assemble_rhs(mag.get_Mx_relevant(),
-                                         mag.get_My_relevant(),
-                                         mag.get_dof_handler(),
-                                         current_time);
-                    poisson.solve();
-                    poisson.update_ghosts();
-
-                    mag.assemble_rhs_only(
-                        poisson.get_solution_relevant(), poisson.get_dof_handler(),
-                        ch.get_theta_relevant(),         ch.get_theta_dof_handler(),
-                        mag.get_Mx_old_relevant(),
-                        mag.get_My_old_relevant(),
-                        dt, current_time,
-                        /*explicit_transport=*/true);    // Step 5: use cached transport
-                    mag.solve();
-                    mag.apply_under_relaxation(picard_omega);
-                    mag.update_ghosts();
-
-                    picard_iters = k + 1;
-
-                    const double Mx_new_norm = mag.get_Mx_solution().l2_norm();
-                    const double My_new_norm = mag.get_My_solution().l2_norm();
-                    const double M_new_norm = std::sqrt(Mx_new_norm * Mx_new_norm
-                                                      + My_new_norm * My_new_norm);
-                    const double rel_change = (M_new_norm > 1e-15)
-                        ? std::abs(M_new_norm - M_k_norm) / M_new_norm
-                        : 0.0;
-
-                    if (step % 100 == 0 || step <= 5)
-                        pcout << "    Picard k=" << k
-                              << ": rel_change=" << rel_change << "\n";
-
-                    if (rel_change < picard_tol)
-                        break;
-                }
-
-                if (step % 100 == 0 || step <= 5)
-                    pcout << "    Picard: " << picard_iters << " iters"
-                          << " (ω=" << picard_omega << ")\n";
-
                 // ============================================================
-                // Step 6: Final magnetization m^n (Zhang Eq 3.17)
+                // Step 6: Final magnetization m^n with NEW field h^n = ∇φ^n
+                // (Zhang Eq 3.17: implicit DG transport, no under-relaxation)
                 //
-                // Re-solve magnetization with IMPLICIT DG transport using
-                // the converged φ^n from the Picard loop above.
-                //
-                // Key differences from Step 5:
-                //   - Full DG bilinear form b_h^m(ũ^n, m^n, Z) on LHS
-                //   - Face integrals included (upwind DG flux)
-                //   - No under-relaxation — clean solve
-                //   - Time derivative uses M^{n-1} (same as Step 5)
-                //   - Uses converged H = ∇φ^n from final Picard iteration
-                //
-                // This step bounds ||m^n|| via energy stability (Theorem 3.1).
-                // Without it, magnetization can grow unbounded under strong
-                // dynamics (e.g., Rosensweig spike formation).
+                // Full DG bilinear form b_h^m(ũ^n, m^n, Z) on LHS with
+                // upwind flux face integrals. This bounds ||m^n|| via the
+                // energy stability estimate (Theorem 3.1).
                 // ============================================================
                 mag.assemble(
                     mag.get_Mx_old_relevant(),   // M^{n-1}: time derivative + β
                     mag.get_My_old_relevant(),
-                    poisson.get_solution_relevant(), poisson.get_dof_handler(),
+                    poisson.get_solution_relevant(), poisson.get_dof_handler(),  // φ^n (NEW)
                     ch.get_theta_relevant(),         ch.get_theta_dof_handler(),
                     vel_ux, vel_uy, vel_dof,         // ũ^n
                     dt, current_time,
                     /*explicit_transport=*/false);    // Step 6: full DG transport
                 mag.solve();
-                // NO under-relaxation for Step 6 — energy stability requires
-                // the exact solution of Eq 3.17
+                // NO under-relaxation — energy stability requires exact solve
                 mag.update_ghosts();
             }
         }
@@ -1808,8 +1759,14 @@ int main(int argc, char* argv[])
                         mag.get_system_matrix(), "magnetization"));
             }
             if (params.enable_ns)
+            {
                 analyses.push_back(analyze_and_export(
-                    ns.get_ns_matrix(), "ns"));
+                    ns.get_ux_matrix(), "ns_ux"));
+                analyses.push_back(analyze_and_export(
+                    ns.get_uy_matrix(), "ns_uy"));
+                analyses.push_back(analyze_and_export(
+                    ns.get_p_matrix(), "ns_p"));
+            }
 
             if (my_rank == 0)
                 write_sparsity_summary(analyses, output_dir,

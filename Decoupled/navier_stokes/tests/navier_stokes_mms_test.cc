@@ -420,8 +420,17 @@ RefinementResult run_phase_B(unsigned int refinement, const Parameters& params,
                     return NSMMS::source_phase_B<dim>(p, t, t_old, nu, Ly);
             };
 
+        // Step 2: Velocity predictor
         ns.assemble_stokes(dt, nu, true, false, &body_force, current_time);
         ns.solve();
+
+        // Step 3: Pressure Poisson
+        ns.assemble_pressure_poisson(dt);
+        ns.solve_pressure();
+
+        // Step 4: Velocity correction
+        ns.velocity_correction(dt);
+
         ns.advance_time();
     }
 
@@ -531,8 +540,17 @@ RefinementResult run_phase_D(unsigned int refinement, const Parameters& params,
                     return NSMMS::source_phase_D<dim>(p, t, t_old, nu, Ly);
             };
 
+        // Step 2: Velocity predictor
         ns.assemble_stokes(dt, nu, true, true, &body_force, current_time);
         ns.solve();
+
+        // Step 3: Pressure Poisson
+        ns.assemble_pressure_poisson(dt);
+        ns.solve_pressure();
+
+        // Step 4: Velocity correction
+        ns.velocity_correction(dt);
+
         ns.advance_time();
     }
 
@@ -594,21 +612,37 @@ PhaseResult run_phase(
         std::cout << "========================================\n";
     }
 
+    // For unsteady phases (B, D): scale dt ∝ h² by quadrupling steps per ref
+    // This ensures the O(dt) splitting error from the projection method
+    // doesn't dominate the spatial error.
+    const unsigned int ref_base = refinements.front();
+
     for (unsigned int ref : refinements)
     {
+        // Scale steps for unsteady phases: steps = N_base * 4^(ref - ref_base)
+        unsigned int steps_for_ref = n_time_steps;
+        if (phase == "B" || phase == "D")
+            for (unsigned int r = ref_base; r < ref; ++r)
+                steps_for_ref *= 4;
+
         if (rank == 0)
-            std::cout << "  Refinement " << ref << "..." << std::flush;
+        {
+            std::cout << "  Refinement " << ref;
+            if (phase == "B" || phase == "D")
+                std::cout << " (" << steps_for_ref << " steps)";
+            std::cout << "..." << std::flush;
+        }
 
         RefinementResult r;
 
         if (phase == "A")
             r = run_phase_A<dim>(ref, params, mpi_comm);
         else if (phase == "B")
-            r = run_phase_B<dim>(ref, params, n_time_steps, mpi_comm);
+            r = run_phase_B<dim>(ref, params, steps_for_ref, mpi_comm);
         else if (phase == "C")
             r = run_phase_C<dim>(ref, params, mpi_comm);
         else
-            r = run_phase_D<dim>(ref, params, n_time_steps, mpi_comm);
+            r = run_phase_D<dim>(ref, params, steps_for_ref, mpi_comm);
 
         pr.results.push_back(r);
 
@@ -1042,7 +1076,7 @@ int main(int argc, char* argv[])
         {
             auto args = get_args_after(argc, argv, "--phase");
             if (args.empty())
-                phases = {"A", "B", "C", "D"};
+                phases = {"B", "D"};  // Projection method: skip steady phases A,C
             else
                 phases = args;
         }

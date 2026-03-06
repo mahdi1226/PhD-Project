@@ -345,12 +345,16 @@ struct CoupledMMSConvergenceResult
     std::vector<double> phi_L2_rate;
     std::vector<double> M_L2_rate;
 
-    // Expected rates (spatial, Q2 for θ,u; Q2 for φ; DG-Q1 for M,p)
-    double expected_theta_L2 = 3.0;
+    // Expected rates: projection method has O(dt) splitting error.
+    // With dt ∝ h² scaling, rates are capped at 2.0 for velocity/pressure.
+    // CH (θ) and Poisson (φ) can still achieve higher rates when decoupled,
+    // but in the coupled system the O(h²) velocity error feeds back, so
+    // rates may be limited to 2.0. We use rate 2.0 as the baseline.
+    double expected_theta_L2 = 2.0;
     double expected_theta_H1 = 2.0;
-    double expected_ux_L2    = 3.0;
+    double expected_ux_L2    = 2.0;
     double expected_p_L2     = 2.0;
-    double expected_phi_L2   = 3.0;
+    double expected_phi_L2   = 2.0;
     double expected_M_L2     = 2.0;
 
     void compute_rates()

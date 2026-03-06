@@ -16,13 +16,10 @@ Build: `cd /Users/mahdi/Projects/git/PhD-Project/Decoupled/build && cmake .. -DC
 
 | Test | Status | Result |
 |------|--------|--------|
-| **Full 4-system MMS** | **PASS** | u_L2=3.0, p_L2=2.1, phi_L2=3.0, M_L2=2.0, theta_L2=3.0 |
-| **Square** (CH-only, r=6) | PASS | 5000 steps, theta in [-0.992, 1.01] |
-| **Droplet WITH field** (r=7) | PASS | 1500 steps, theta in [-1.00, 1.03] |
-| **Droplet WITHOUT field** | PASS | 1500 steps, theta in [-1.00, 1.01], \|U\|=0 |
-| **Rosensweig uniform** (r=4) | PASS | 2000 steps, theta in [-1.00, 1.00] |
-| **Rosensweig uniform + AMR** (r=3) | **RUNNING** | 4 MPI, physics-based activation at step 63 |
-| **Rosensweig nonuniform** (r=3, dt=2e-4) | **RUNNING** | 4 MPI, step ~4300/17500 |
+| **Standalone NS MMS** | **PASS** | All rates 2.00 (projection method, dt∝h²) |
+| **Full 4-system MMS** | **PASS** | θ:1.93, U:2.00, p:2.02, φ:2.99, M:2.00 |
+| **Rosensweig uniform** (r=4) | PASS | 800+ steps, theta in [-1.01, 1.01], stable |
+| **Rosensweig nonuniform** (r=3) | **RUNNING** | Step ~5000/17500, CFL=0.003, stable |
 
 ---
 
@@ -118,7 +115,7 @@ for ParaView AMR visualization.
 - Reverted to LINEAR chi/nu interpolation (Zhang convention)
 - Full Shliomis model: LINEAR chi/nu + spin-vorticity ON = production config
 
-### Sessions 15-16: Magnetization Step 5/6 + Sparsity Analysis (CURRENT, March 5, 2026)
+### Sessions 15-16: Magnetization Step 5/6 + Sparsity Analysis (March 5, 2026)
 
 **Zhang Algorithm 3.1 Step 5/6 (magnetization transport splitting):**
 - Implemented Step 5 (explicit transport in Picard loop) + Step 6 (implicit DG transport after Picard)
@@ -164,26 +161,50 @@ enable AMR. Any existing test/preset works identically without modification.
 - S1 = lambda/(4*epsilon), no S2 or C0 (paper only)
 - S does NOT depend on dropped terms (verified from energy proof Eq 3.41)
 
-### Coupling Strategy
+### Coupling Strategy (Zhang Algorithm 3.1 — No Picard)
 ```
 FOR each timestep:
   1. CH solve (SAV, using U^{n-1})
-  2. Picard loop:
-     a. Poisson -> H
-     b. Magnetization -> M (DG transport + relaxation)
-     c. Under-relax M
-  3. NS solve (Kelvin + capillary + gravity)
+  2. Mag Step 5 (explicit: mass + relaxation, no transport)
+  3. Poisson -> H
+  4. Mag Step 6 (implicit: full DG transport)
+  5. NS projection method:
+     a. Velocity predictor (CG+AMG for ux, uy)
+     b. Pressure Poisson (CG+AMG for dp)
+     c. Velocity correction (consistent mass CG)
 ```
+
+### Sessions 17-18: NS Projection Method + Picard Removal (CURRENT, March 6, 2026)
+
+**Stage 1: Remove Picard iteration**
+- Single forward pass replaces Picard loop (unconditionally stable per Zhang)
+- CLI flags `--picard-*` deprecated with warnings
+
+**Stage 2: NS pressure-correction projection method**
+- Monolithic saddle-point system → 3 separate CG+AMG solves (ux, uy, p)
+- Pressure FE space: DG-P1 → CG-Q1 (needed for pressure Poisson Laplacian)
+- Velocity correction: consistent mass CG solve (not lumped mass — avoids O(dt/h) H1 error)
+- CM renumbering on all 3 DoFHandlers
+
+**MMS results:**
+- Standalone NS: all rates 2.00 (refs 2-5) — PASS
+- Coupled 4-system: θ:1.93, U:2.00, p:2.02, φ:2.99, M:2.00 — PASS
+- Note: projection method splitting error O(dt) limits rates to 2.0 with dt∝h² scaling
+
+**Rosensweig validation:**
+- Uniform (r=4): 800+ steps stable, θ∈[-1.01,1.01]
+- Nonuniform (r=3): running, step ~5000, CFL=0.003, stable past old blow-up initiation zone
 
 ---
 
 ## Currently Running Tests
 
-None.
+**Rosensweig nonuniform** (r=3, dt=2e-4, 42 dipoles): step ~5000/17500, t≈1.0.
+Old blow-up was at t≈2.18. ETA to blow-up zone: ~8 hours.
 
 ---
 
-## Nonuniform Rosensweig Blow-Up Summary (8 runs)
+## Nonuniform Rosensweig Blow-Up Summary (8 runs, pre-projection-method)
 
 | Run | dt | Blow-up time | Strategy | Notes |
 |-----|-----|-------------|----------|-------|
@@ -205,10 +226,10 @@ None.
 
 ## Pending Tasks (Priority Order)
 
-1. **Nonuniform Rosensweig stability** -- diagnose H spike root cause (Picard divergence? chi coefficient singularity?)
+1. **Nonuniform Rosensweig** -- confirm stability past t=2.18 (old blow-up point) with projection method
 2. **Full system MMS with AMR** -- verify convergence rates preserved with mesh adaptation
 3. **Extension study** (Phase C.0+) -- parametric sweeps, see `extension.md`
 
 ---
 
-*Updated: March 5, 2026 (Sessions 15-16 -- Step5/6, sparsity analysis, parallel fix, blow-up analysis)*
+*Updated: March 6, 2026 (Sessions 17-18 -- Picard removal, NS projection method, coupled MMS PASS)*
