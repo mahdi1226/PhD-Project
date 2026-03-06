@@ -60,7 +60,8 @@ Build: `cd /Users/mahdi/Projects/git/PhD-Project/Decoupled/build && cmake .. -DC
 - Removed S2 and C0 (not in Zhang's paper)
 - Paper is sole authority for parameters
 
-### Session 13: AMR Implementation (CURRENT)
+### Session 13: AMR Implementation
+
 
 **Adaptive Mesh Refinement** for all 4 subsystems on shared p4est triangulation.
 
@@ -112,18 +113,32 @@ at zero. Fixed by adding `ghosts_valid_ = false` in `setup()` and belt-and-suspe
 **VTK mesh_level field** added to `write_combined_vtu()` and `write_ch_only_vtu()`
 for ParaView AMR visualization.
 
-**Files modified for AMR:**
-| File | Change |
-|------|--------|
-| `utilities/amr.h` | **NEW** -- 14-step AMR algorithm (header-only template) |
-| `utilities/parameters.h` | AMR fields in Mesh struct, amr_activation_U |
-| `utilities/parameters.cc` | AMR CLI parsing, help text |
-| `cahn_hilliard/cahn_hilliard.h` | Mutable DoFHandler accessors |
-| `cahn_hilliard/cahn_hilliard.cc` | ghosts_valid_ = false in setup() |
-| `navier_stokes/navier_stokes.h` | Mutable solution + DoFHandler accessors |
-| `poisson/poisson.h` | Mutable solution + DoFHandler accessor |
-| `magnetization/magnetization.h` | Mutable solution + DoFHandler accessors |
-| `drivers/decoupled_driver.cc` | AMR call in time loop + activation gate + mesh_level VTK |
+### Session 14: Material Property Fix (March 4, 2026)
+- Isolated sigmoid chi/nu as sole cause of Rosensweig instability (spin-vorticity is safe)
+- Reverted to LINEAR chi/nu interpolation (Zhang convention)
+- Full Shliomis model: LINEAR chi/nu + spin-vorticity ON = production config
+
+### Sessions 15-16: Magnetization Step 5/6 + Sparsity Analysis (CURRENT, March 5, 2026)
+
+**Zhang Algorithm 3.1 Step 5/6 (magnetization transport splitting):**
+- Implemented Step 5 (explicit transport in Picard loop) + Step 6 (implicit DG transport after Picard)
+- Goal: unconditional energy stability per Zhang's scheme
+- New vectors: `Mx/My_transport_solution_`, `Mx/My_transport_rhs_`, `Mx/My_old_ghosted_`
+- Assembly modes: `Step5_Explicit` (mass + relaxation in Picard) + `Step6_Implicit` (full DG transport post-Picard)
+- Result: Rosensweig nonuniform still blows up at t=2.184 (was t=2.290 without Step 6)
+
+**Sparsity Analysis & Cuthill-McKee Renumbering:**
+- Ported from Semi_Coupled solver: `utilities/sparsity_export.h` (SVG + gnuplot + bandwidth CSV)
+- CLI: `--dump-sparsity` (export after step 1), `--renumber-dofs` / `--no-renumber-dofs`
+- CM applied to CG systems only (theta, psi, phi, ux, uy); DG systems skipped (magnetization, pressure)
+- Fixed parallel crash: Epetra native `ExtractMyRowView` API replaces deal.II iterators (non-contiguous CH map)
+- Results (np=1, r=3): Poisson **-77.3%** bandwidth, CH **-11.5%**, Mag unchanged, NS +7.2%
+
+**Rosensweig Nonuniform Blow-Up Analysis (8 runs analyzed):**
+- ALL runs blow up at t=2.18-2.68, same cascade: H spikes → M explodes → U → theta → NaN
+- No AMR involved (all runs use uniform refinement)
+- Halving dt (1e-4) only delays slightly (t=2.362 vs t=2.290)
+- Root cause: Poisson-Magnetization feedback instability at interface peaks
 
 ---
 
@@ -140,10 +155,10 @@ enable AMR. Any existing test/preset works identically without modification.
 ### Phase Field Convention
 - Zhang uses Phi in {0,1}, code uses theta in {-1,+1}
 - Equivalent via Phi = (theta+1)/2
-- Material properties use SIGMOID interpolation (both Zhang and Nochetto):
-  - chi(theta) = chi_0 * H(theta/epsilon)
-  - nu(theta) = nu_w + (nu_f - nu_w) * H(theta/epsilon)
-  - rho(theta) = 1 + r * H(theta/epsilon)
+- Material properties (production config = LINEAR chi/nu):
+  - chi(theta) = chi_0 * (theta+1)/2 -- LINEAR
+  - nu(theta) = nu_w*(1-theta)/2 + nu_f*(theta+1)/2 -- LINEAR
+  - rho(theta) = 1 + r * H(theta/epsilon) -- sigmoid (Zhang Eq 4.2)
 
 ### SAV Stabilization (Zhang Eq 3.5-3.6)
 - S1 = lambda/(4*epsilon), no S2 or C0 (paper only)
@@ -164,32 +179,36 @@ FOR each timestep:
 
 ## Currently Running Tests
 
-1. **Rosensweig nonuniform** (no AMR): 4 MPI, r3, 17500 steps, dt=2e-4
-   - Directory: `Results/030326_181257_rosensweig_nonuniform_r3/`
-   - Progress: step ~4300, t=0.86
+None.
 
-2. **Rosensweig uniform + AMR**: 4 MPI, r3, 2000 steps, dt=1e-3
-   - Directory: `Results/030326_212356_rosensweig_r3/`
-   - AMR activated at step 63 (|U| > 1e-3)
+---
+
+## Nonuniform Rosensweig Blow-Up Summary (8 runs)
+
+| Run | dt | Blow-up time | Strategy | Notes |
+|-----|-----|-------------|----------|-------|
+| Step6 (newest) | 2e-4 | t=2.184 | Step5+6 | Earliest blow-up |
+| 030226_230101 | 2e-4 | t=2.286 | Step5 | |
+| nonuniform.log | 2e-4 | t=2.290 | Step5 | |
+| 030326_050402 | 1e-4 | t=2.362 | unknown | Halved dt, still fails |
+| 022826_222751 | 2e-4 | t=2.674 | Step5 (old) | Oldest code |
+| 030226_050447 | 2e-4 | t=2.678 | Step5 (old) | |
+
+**Cascade (identical in ALL runs):**
+1. H (magnetic field) spikes first (single step: H jumps from ~240 to ~30000)
+2. M (magnetization) follows (Poisson-Mag Picard coupling)
+3. U (velocity) spikes (Kelvin force amplification)
+4. theta (phase field) breaks (convection U.grad(theta))
+5. Full NaN within 1-3 steps
 
 ---
 
 ## Pending Tasks (Priority Order)
 
-1. **Monitor running tests** -- check AMR Rosensweig results and nonuniform completion
-2. **Nonuniform Rosensweig stability** -- blows up at t~2.07 with dt=2e-4
-3. **Full system MMS with AMR** -- verify convergence rates preserved with mesh adaptation
-4. **Extension study** (Phase C.0+) -- parametric sweeps, see `extension.md`
+1. **Nonuniform Rosensweig stability** -- diagnose H spike root cause (Picard divergence? chi coefficient singularity?)
+2. **Full system MMS with AMR** -- verify convergence rates preserved with mesh adaptation
+3. **Extension study** (Phase C.0+) -- parametric sweeps, see `extension.md`
 
 ---
 
-## Git Status
-
-**Uncommitted changes (Sessions 11-13):**
-- AMR implementation (utilities/amr.h, all 4 subsystem headers, driver, parameters)
-- Sigmoid chi/nu revert, spin-vorticity, S2/C0 removal (Sessions 11-12)
-- MMS test updates
-
----
-
-*Updated: March 3, 2026 (Session 13 -- AMR implementation with physics-based activation gate)*
+*Updated: March 5, 2026 (Sessions 15-16 -- Step5/6, sparsity analysis, parallel fix, blow-up analysis)*

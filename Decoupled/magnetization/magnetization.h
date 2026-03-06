@@ -169,7 +169,8 @@ public:
         const dealii::TrilinosWrappers::MPI::Vector& uy_relevant,
         const dealii::DoFHandler<dim>&               u_dof_handler,
         double dt,
-        double current_time);
+        double current_time,
+        bool explicit_transport = false);
 
     /**
      * @brief Assemble RHS only (reuse matrix from previous assemble()).
@@ -194,7 +195,8 @@ public:
         const dealii::TrilinosWrappers::MPI::Vector& Mx_old_relevant,
         const dealii::TrilinosWrappers::MPI::Vector& My_old_relevant,
         double dt,
-        double current_time);
+        double current_time,
+        bool explicit_transport = false);
 
     /**
      * @brief Solve both Mx and My systems using the shared matrix.
@@ -407,7 +409,8 @@ private:
         const dealii::DoFHandler<dim>&               u_dof_handler,
         double dt,
         double current_time,
-        bool matrix_and_rhs);  // true = both, false = RHS only
+        bool matrix_and_rhs,   // true = both, false = RHS only
+        bool explicit_transport = false);  // true = Step 5 mass-only matrix
 
     /** @brief Initialize ILU preconditioner (after matrix assembly). */
     void initialize_preconditioner();
@@ -488,6 +491,21 @@ private:
     // ========================================================================
     dealii::TrilinosWrappers::MPI::Vector  spin_vort_rhs_x_;
     dealii::TrilinosWrappers::MPI::Vector  spin_vort_rhs_y_;
+
+    // ========================================================================
+    // Explicit transport RHS cache (Zhang Eq 3.14, Step 5)
+    //
+    // -[(U·∇)M^{n-1} + (∇·U)M^{n-1}] · Z
+    //
+    // Note: coefficient of ∇·U is 1 (NOT ½ as in skew form). This is the
+    // paper's specific choice for energy stability (Remark 3.2): the extra
+    // consistent term ((∇·u)m, n) plays a key role in the energy proof.
+    //
+    // Computed once per timestep during full assembly (explicit_transport=true),
+    // cached for Picard RHS-only iterations.
+    // ========================================================================
+    dealii::TrilinosWrappers::MPI::Vector  explicit_transport_rhs_x_;
+    dealii::TrilinosWrappers::MPI::Vector  explicit_transport_rhs_y_;
 
     // ========================================================================
     // MMS

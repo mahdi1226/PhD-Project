@@ -217,7 +217,7 @@ struct Parameters
     // ========================================================================
     struct Output
     {
-        std::string folder = "/Users/mahdi/Projects/git/PhD-Project/Decoupled/Results";
+        std::string folder = "./Results";
         bool verbose = false;
         unsigned int vtk_interval = 50;
     } output;
@@ -337,6 +337,21 @@ struct Parameters
     bool disable_bstab = false;                // diagnostic: skip b_stab in NS
     bool disable_kelvin_term2 = false;         // diagnostic: skip μ₀/2(M×H,∇×V)
     bool use_exact_kelvin = false;             // diagnostic: use exact M*,H* in assembly
+
+    // ========================================================================
+    // Sparsity analysis & DoF renumbering
+    //
+    // --renumber-dofs: Apply Cuthill-McKee renumbering to CG DoFHandlers
+    //   Reduces matrix bandwidth → faster direct solves, better cache locality.
+    //   Applied to: θ, ψ (CH), φ (Poisson), ux, uy (NS velocity).
+    //   Skipped for DG systems: M (magnetization), p (pressure).
+    //
+    // --dump-sparsity: Export sparsity patterns after first step
+    //   Creates per-matrix: bandwidth CSV, SVG (if <5000 rows), gnuplot.
+    //   Creates summary: sparsity_summary.csv with all matrices.
+    // ========================================================================
+    bool renumber_dofs = false;
+    bool dump_sparsity = false;
 
     // ========================================================================
     // Zhang's SAV+ZEC energy stabilization framework

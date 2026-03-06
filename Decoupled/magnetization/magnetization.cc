@@ -77,7 +77,8 @@ void MagnetizationSubsystem<dim>::assemble(
     const TrilinosWrappers::MPI::Vector& uy_relevant,
     const DoFHandler<dim>&               u_dof_handler,
     double dt,
-    double current_time)
+    double current_time,
+    bool explicit_transport)
 {
     assemble_system_internal(
         Mx_old_relevant, My_old_relevant,
@@ -85,7 +86,8 @@ void MagnetizationSubsystem<dim>::assemble(
         theta_relevant, theta_dof_handler,
         ux_relevant, uy_relevant, u_dof_handler,
         dt, current_time,
-        /*matrix_and_rhs=*/true);
+        /*matrix_and_rhs=*/true,
+        explicit_transport);
 
     // Matrix changed → need new preconditioner
     initialize_preconditioner();
@@ -106,7 +108,8 @@ void MagnetizationSubsystem<dim>::assemble_rhs_only(
     const TrilinosWrappers::MPI::Vector& Mx_old_relevant,
     const TrilinosWrappers::MPI::Vector& My_old_relevant,
     double dt,
-    double current_time)
+    double current_time,
+    bool explicit_transport)
 {
     // Dummy velocity vectors — not used when matrix_and_rhs=false.
     // The matrix (containing U-dependent terms) was already assembled.
@@ -121,7 +124,8 @@ void MagnetizationSubsystem<dim>::assemble_rhs_only(
         theta_relevant, theta_dof_handler,
         dummy_ux, dummy_uy, phi_dof_handler,  // dummies, not accessed
         dt, current_time,
-        /*matrix_and_rhs=*/false);
+        /*matrix_and_rhs=*/false,
+        explicit_transport);
 
     // Preconditioner stays valid (matrix unchanged)
 }

@@ -219,6 +219,10 @@ public:
     dealii::DoFHandler<dim>& get_theta_dof_handler_mutable();
     dealii::DoFHandler<dim>& get_psi_dof_handler_mutable();
 
+    /// Coupled system matrix (for sparsity analysis)
+    const dealii::TrilinosWrappers::SparseMatrix& get_system_matrix() const
+    { return system_matrix_; }
+
     /// Locally-owned θ solution (solver output)
     dealii::TrilinosWrappers::MPI::Vector& get_theta_solution();
     const dealii::TrilinosWrappers::MPI::Vector& get_theta_solution() const;

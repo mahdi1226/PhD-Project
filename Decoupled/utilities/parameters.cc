@@ -600,6 +600,14 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
                  std::strcmp(argv[i], "-v") == 0)
             params.output.verbose = true;
 
+        // ---- Sparsity / Renumbering ----
+        else if (std::strcmp(argv[i], "--renumber-dofs") == 0)
+            params.renumber_dofs = true;
+        else if (std::strcmp(argv[i], "--no-renumber-dofs") == 0)
+            params.renumber_dofs = false;
+        else if (std::strcmp(argv[i], "--dump-sparsity") == 0)
+            params.dump_sparsity = true;
+
         // ---- Help ----
         else if (std::strcmp(argv[i], "--help") == 0 ||
                  std::strcmp(argv[i], "-h") == 0)
@@ -653,6 +661,10 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             std::cout << "    --reduced_field     H = h_a only (dome setup)\n";
             std::cout << "    --no_ns             Disable Navier-Stokes\n";
             std::cout << "    --no_gravity        Disable gravity body force\n\n";
+            std::cout << "  Sparsity / Renumbering:\n";
+            std::cout << "    --renumber-dofs         Apply Cuthill-McKee DoF renumbering (reduces bandwidth)\n";
+            std::cout << "    --no-renumber-dofs      Disable DoF renumbering (default)\n";
+            std::cout << "    --dump-sparsity         Export sparsity patterns (SVG + gnuplot + bandwidth CSV)\n\n";
             std::cout << "  Output:\n";
             std::cout << "    --verbose           Verbose output\n";
             std::exit(0);

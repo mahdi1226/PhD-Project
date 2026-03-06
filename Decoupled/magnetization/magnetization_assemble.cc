@@ -41,11 +41,21 @@ using namespace dealii;
 // matrix_and_rhs = true:  build matrix + RHS (call once per timestep)
 // matrix_and_rhs = false: build RHS only (Picard iteration, matrix frozen)
 //
+// explicit_transport:
+//   true  = Step 5 (Zhang Eq 3.14): mass-only matrix, explicit transport on RHS.
+//           Transport uses FULL divergence: -[(U·∇)M_old + (∇·U)M_old]·Z
+//           (coefficient 1, not ½ as in DG skew form). No face integrals.
+//           The transport contribution is cached for Picard RHS-only reuse.
+//   false = Step 6 (Zhang Eq 3.17): full DG transport matrix (implicit).
+//           Standard bilinear form b_h^m(U, M, Z) on LHS + face integrals.
+//           This is the default and matches the original code behavior.
+//
 // When RHS-only:
 //   - Skip matrix zeroing and all matrix writes
 //   - Skip face loop (face terms are matrix-only)
 //   - Skip U evaluation (U unchanged within Picard, already in matrix)
 //   - Skip MMS source (MMS tests don't use Picard sub-iterations)
+//   - If explicit_transport: add cached transport RHS at the end
 // ============================================================================
 template <int dim>
 void MagnetizationSubsystem<dim>::assemble_system_internal(
@@ -60,7 +70,8 @@ void MagnetizationSubsystem<dim>::assemble_system_internal(
     const DoFHandler<dim>&               u_dof_handler,
     double dt,
     double current_time,
-    bool matrix_and_rhs)
+    bool matrix_and_rhs,
+    bool explicit_transport)
 {
     Timer timer;
     timer.start();
@@ -96,6 +107,10 @@ void MagnetizationSubsystem<dim>::assemble_system_internal(
     std::vector<double>         theta_vals(n_q_cell);
     std::vector<double>         Mx_old_vals(n_q_cell);
     std::vector<double>         My_old_vals(n_q_cell);
+
+    // Gradients of M^{n-1} — needed for explicit transport (Step 5, Eq 3.14)
+    std::vector<Tensor<1, dim>> grad_Mx_old(n_q_cell);
+    std::vector<Tensor<1, dim>> grad_My_old(n_q_cell);
 
     // Velocity FEValues + scratch (only needed for full assembly)
     std::unique_ptr<FEValues<dim>> fe_values_U_ptr;
@@ -155,6 +170,8 @@ void MagnetizationSubsystem<dim>::assemble_system_internal(
     Vector<double>     local_rhs_y(dofs_per_cell);
     Vector<double>     local_sv_x(dofs_per_cell);  // spin-vorticity cache
     Vector<double>     local_sv_y(dofs_per_cell);
+    Vector<double>     local_et_x(dofs_per_cell);  // explicit transport cache
+    Vector<double>     local_et_y(dofs_per_cell);
     std::vector<types::global_dof_index> local_dofs(dofs_per_cell);
 
     // ========================================================================
@@ -182,6 +199,11 @@ const bool mms_active = static_cast<bool>(mms_source_);
         system_matrix_ = 0;
         spin_vort_rhs_x_ = 0;
         spin_vort_rhs_y_ = 0;
+        if (explicit_transport)
+        {
+            explicit_transport_rhs_x_ = 0;
+            explicit_transport_rhs_y_ = 0;
+        }
     }
     Mx_rhs_ = 0;
     My_rhs_ = 0;
@@ -224,11 +246,23 @@ const bool mms_active = static_cast<bool>(mms_source_);
         fe_values_M.get_function_values(Mx_old_relevant, Mx_old_vals);
         fe_values_M.get_function_values(My_old_relevant, My_old_vals);
 
+        // Evaluate M_old gradients for explicit transport (Step 5)
+        if (explicit_transport && matrix_and_rhs)
+        {
+            fe_values_M.get_function_gradients(Mx_old_relevant, grad_Mx_old);
+            fe_values_M.get_function_gradients(My_old_relevant, grad_My_old);
+        }
+
         if (matrix_and_rhs)
         {
             local_matrix = 0;
             local_sv_x = 0;
             local_sv_y = 0;
+            if (explicit_transport)
+            {
+                local_et_x = 0;
+                local_et_y = 0;
+            }
         }
         local_rhs_x = 0;
         local_rhs_y = 0;
@@ -335,12 +369,31 @@ const bool mms_active = static_cast<bool>(mms_source_);
             // ================================================================
             // Assemble cell contributions
             // ================================================================
+            // ================================================================
+            // Explicit transport: -[(U·∇)M_old + (∇·U)M_old]
+            //
+            // Zhang Eq 3.14: ((ũ·∇)m^{n-1}, n) + ((∇·ũ)m^{n-1}, n) on LHS
+            // Moved to RHS with negative sign.
+            //
+            // Note: coefficient of (∇·U) is 1 (FULL divergence), NOT ½
+            // as in the DG skew bilinear form. This specific form is
+            // required for the energy stability proof (Remark 3.2).
+            // ================================================================
+            double et_x = 0.0, et_y = 0.0;
+            if (explicit_transport && matrix_and_rhs)
+            {
+                // (U·∇)Mx_old + (∇·U)*Mx_old
+                et_x = -(U_q * grad_Mx_old[q] + div_U_q * Mx_old_vals[q]);
+                if constexpr (dim > 1)
+                    et_y = -(U_q * grad_My_old[q] + div_U_q * My_old_vals[q]);
+            }
+
             for (unsigned int i = 0; i < dofs_per_cell; ++i)
             {
                 const double Z_i = fe_values_M.shape_value(i, q);
                 const Tensor<1, dim>& grad_Z_i = fe_values_M.shape_grad(i, q);
 
-                // -- Matrix: mass + DG cell transport --
+                // -- Matrix: mass + optional DG cell transport --
                 if (matrix_and_rhs)
                 {
                     for (unsigned int j = 0; j < dofs_per_cell; ++j)
@@ -350,11 +403,15 @@ const bool mms_active = static_cast<bool>(mms_source_);
                         // Mass: (1/τ + 1/τ_M)(M_j, Z_i)
                         double val = mass_coeff * M_j * Z_i;
 
-                        // Transport cell: -B_h^m cell term
-                        // B_h^m(U, M, Z) = (U·∇M)Z + ½(∇·U)(MZ)
-                        // The negative sign: equation has +B_h^m on LHS
-                        val += -skew_magnetic_cell_value_scalar<dim>(
-                            U_q, div_U_q, Z_i, grad_Z_i, M_j);
+                        // Transport cell: -B_h^m cell term (Step 6 only)
+                        // When explicit_transport=true (Step 5): mass-only matrix,
+                        // transport goes to RHS as explicit term.
+                        if (!explicit_transport)
+                        {
+                            // B_h^m(U, M, Z) = (U·∇M)Z + ½(∇·U)(MZ)
+                            val += -skew_magnetic_cell_value_scalar<dim>(
+                                U_q, div_U_q, Z_i, grad_Z_i, M_j);
+                        }
 
                         local_matrix(i, j) += val * JxW;
                     }
@@ -368,6 +425,19 @@ const bool mms_active = static_cast<bool>(mms_source_);
                     ? relax_coeff * chi_theta * H[1]
                       + old_coeff * My_old_vals[q]
                     : 0.0;
+
+                // Explicit transport: -[(U·∇)M_old + (∇·U)M_old]·Z on RHS
+                // Add to main RHS and also cache for Picard RHS-only reuse
+                if (explicit_transport && matrix_and_rhs)
+                {
+                    rhs_x_val += et_x;
+                    local_et_x(i) += et_x * Z_i * JxW;
+                    if constexpr (dim > 1)
+                    {
+                        rhs_y_val += et_y;
+                        local_et_y(i) += et_y * Z_i * JxW;
+                    }
+                }
 
                 // Spin-vorticity: +½(∇×U × M^{n-1}, Z) on RHS
                 // Add to main RHS and also cache separately for Picard reuse
@@ -417,6 +487,13 @@ const bool mms_active = static_cast<bool>(mms_source_);
                 spin_vort_rhs_x_[local_dofs[i]] += local_sv_x(i);
                 spin_vort_rhs_y_[local_dofs[i]] += local_sv_y(i);
 
+                // Distribute explicit transport cache (Step 5 only)
+                if (explicit_transport)
+                {
+                    explicit_transport_rhs_x_[local_dofs[i]] += local_et_x(i);
+                    explicit_transport_rhs_y_[local_dofs[i]] += local_et_y(i);
+                }
+
                 for (unsigned int j = 0; j < dofs_per_cell; ++j)
                     system_matrix_.add(local_dofs[i], local_dofs[j],
                                        local_matrix(i, j));
@@ -431,8 +508,8 @@ const bool mms_active = static_cast<bool>(mms_source_);
         // Face terms are matrix-only (bilinear in M^k, Z).
         // When RHS-only, the matrix is frozen → skip entirely.
         // ====================================================================
-        if (!matrix_and_rhs)
-            continue;  // skip face loop for RHS-only mode
+        if (!matrix_and_rhs || explicit_transport)
+            continue;  // skip face loop for RHS-only mode or explicit transport (Step 5)
 
         for (unsigned int f = 0; f < cell_M->n_faces(); ++f)
         {
@@ -759,6 +836,11 @@ const bool mms_active = static_cast<bool>(mms_source_);
         system_matrix_.compress(VectorOperation::add);
         spin_vort_rhs_x_.compress(VectorOperation::add);
         spin_vort_rhs_y_.compress(VectorOperation::add);
+        if (explicit_transport)
+        {
+            explicit_transport_rhs_x_.compress(VectorOperation::add);
+            explicit_transport_rhs_y_.compress(VectorOperation::add);
+        }
     }
     Mx_rhs_.compress(VectorOperation::add);
     My_rhs_.compress(VectorOperation::add);
@@ -773,12 +855,18 @@ const bool mms_active = static_cast<bool>(mms_source_);
     {
         Mx_rhs_.add(1.0, spin_vort_rhs_x_);
         My_rhs_.add(1.0, spin_vort_rhs_y_);
+        if (explicit_transport)
+        {
+            Mx_rhs_.add(1.0, explicit_transport_rhs_x_);
+            My_rhs_.add(1.0, explicit_transport_rhs_y_);
+        }
     }
 
     timer.stop();
 
     pcout_ << "[Magnetization] Assembly ("
            << (matrix_and_rhs ? "matrix+RHS" : "RHS-only")
+           << (explicit_transport ? ", Step5-explicit" : ", Step6-implicit")
            << "): " << timer.wall_time() << " s" << std::endl;
 }
 
@@ -814,7 +902,7 @@ template void MagnetizationSubsystem<2>::assemble_system_internal(
     const TrilinosWrappers::MPI::Vector&,
     const TrilinosWrappers::MPI::Vector&,
     const DoFHandler<2>&,
-    double, double, bool);
+    double, double, bool, bool);
 
 template void MagnetizationSubsystem<2>::initialize_preconditioner();
 
@@ -828,6 +916,6 @@ template void MagnetizationSubsystem<3>::assemble_system_internal(
     const TrilinosWrappers::MPI::Vector&,
     const TrilinosWrappers::MPI::Vector&,
     const DoFHandler<3>&,
-    double, double, bool);
+    double, double, bool, bool);
 
 template void MagnetizationSubsystem<3>::initialize_preconditioner();

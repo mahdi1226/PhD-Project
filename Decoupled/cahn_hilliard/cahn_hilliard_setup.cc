@@ -12,6 +12,7 @@
 #include "cahn_hilliard/cahn_hilliard.h"
 
 #include <deal.II/dofs/dof_tools.h>
+#include <deal.II/dofs/dof_renumbering.h>
 #include <deal.II/lac/dynamic_sparsity_pattern.h>
 #include <deal.II/lac/sparsity_tools.h>
 
@@ -23,6 +24,13 @@ void CahnHilliardSubsystem<dim>::distribute_dofs()
 {
     theta_dof_handler_.distribute_dofs(fe_);
     psi_dof_handler_.distribute_dofs(fe_);
+
+    // Cuthill-McKee renumbering (before extracting index sets)
+    if (params_.renumber_dofs)
+    {
+        dealii::DoFRenumbering::Cuthill_McKee(theta_dof_handler_);
+        dealii::DoFRenumbering::Cuthill_McKee(psi_dof_handler_);
+    }
 
     Assert(theta_dof_handler_.n_dofs() == psi_dof_handler_.n_dofs(),
            dealii::ExcMessage("θ and ψ DoF counts must match (same FE, same mesh)"));

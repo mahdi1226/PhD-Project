@@ -11,6 +11,7 @@
 #include "poisson/poisson.h"
 
 #include <deal.II/dofs/dof_tools.h>
+#include <deal.II/dofs/dof_renumbering.h>
 #include <deal.II/lac/sparsity_tools.h>
 #include <deal.II/lac/trilinos_sparsity_pattern.h>
 
@@ -21,6 +22,10 @@ template <int dim>
 void PoissonSubsystem<dim>::distribute_dofs()
 {
     dof_handler_.distribute_dofs(fe_);
+
+    // Cuthill-McKee renumbering (before extracting index sets)
+    if (params_.renumber_dofs)
+        dealii::DoFRenumbering::Cuthill_McKee(dof_handler_);
 
     locally_owned_dofs_ = dof_handler_.locally_owned_dofs();
     locally_relevant_dofs_ =

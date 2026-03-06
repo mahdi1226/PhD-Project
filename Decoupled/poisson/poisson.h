@@ -153,6 +153,10 @@ public:
     const dealii::TrilinosWrappers::MPI::Vector& get_solution() const;
     const dealii::TrilinosWrappers::MPI::Vector& get_solution_relevant() const;
 
+    /// System matrix (for sparsity analysis)
+    const dealii::TrilinosWrappers::SparseMatrix& get_system_matrix() const
+    { return system_matrix_; }
+
     // Mutable accessors — for AMR SolutionTransfer
     dealii::DoFHandler<dim>& get_dof_handler_mutable();
     dealii::TrilinosWrappers::MPI::Vector& get_solution_mutable();

@@ -375,7 +375,7 @@ All tests rerun after DG face fix (Session 8) and nonuniform preset additions (S
 | Square (CH-only, r=6) | 5000 | 1e-3 | [-0.992, 1.01] | 0 | N/A | **PASS** |
 | Droplet w/field (r=7) | 1500 | 1e-3 | [-1.00, 1.03] | ~0.01 | 12 iters | **PASS** |
 | Rosensweig uniform (r=4) | 2000 | 1e-3 | [-1.00, 1.00] | ~0.5 | 10 iters | **PASS** |
-| Rosensweig nonuniform | 17500 | 2e-4 | [-1.06, 1.08] | 30+ | 2 iters | **FAIL** |
+| Rosensweig nonuniform | 17500 | 2e-4 | blows up | 30+ | 2 iters | **FAIL** (all 8 runs, see Sec 14) |
 
 ### Nonuniform Rosensweig Failure Analysis
 
@@ -614,6 +614,147 @@ Commit `c8666bf` introduced two changes simultaneously: (1) sigmoid interpolatio
 
 ---
 
+## 12. Zhang Algorithm 3.1 Step 5/6 — Magnetization Transport Splitting (Session 15, March 5, 2026)
+
+### 12.1 Motivation
+
+Zhang's Algorithm 3.1 splits the magnetization transport into two stages for unconditional
+energy stability. The original implementation only had Step 5 (explicit transport inside the
+Picard loop). Step 6 (implicit DG transport after Picard convergence) was missing.
+
+### 12.2 Implementation
+
+**Step 5 (explicit, inside Picard loop):** Mass + relaxation only (no transport):
+```
+(1/dt + 1/tau_M)(M^k, Z) = (1/tau_M)(chi(theta) H^k, Z) + (1/dt)(M^{n-1}, Z)
+```
+
+**Step 6 (implicit, after Picard converges):** Full DG transport:
+```
+(1/dt)(M^n, Z) - B_h^m(U^{n-1}, Z, M^n) = (1/dt)(M_picard^k, Z)
+```
+
+### 12.3 Files Modified
+
+| File | Change |
+|------|--------|
+| `magnetization/magnetization.h` | New vectors (transport_solution, transport_rhs, old_ghosted), AssemblyMode enum |
+| `magnetization/magnetization_setup.cc` | Allocate new vectors |
+| `magnetization/magnetization_assemble.cc` | Split into Step5_Explicit and Step6_Implicit modes |
+| `magnetization/magnetization.cc` | New `solve_step6_transport()` method |
+| `drivers/decoupled_driver.cc` | Call Step 6 after Picard loop |
+| `utilities/parameters.h` | Note on Step 5/6 strategy |
+
+### 12.4 Result
+
+Nonuniform Rosensweig with Step 5/6 blows up at t=2.184 (was t=2.290 without Step 6).
+Step 6 did not cure the instability — the blow-up is a Poisson-Magnetization feedback
+issue, not a transport stability issue.
+
+---
+
+## 13. Sparsity Analysis & Cuthill-McKee Renumbering (Session 16, March 5, 2026)
+
+### 13.1 Overview
+
+Ported sparsity analysis infrastructure from Semi_Coupled solver. Enables:
+- Bandwidth measurement for all system matrices
+- SVG + gnuplot sparsity pattern visualization (small matrices only)
+- Per-row NNZ distribution CSV
+- Cuthill-McKee DoF renumbering to reduce bandwidth
+
+### 13.2 Implementation
+
+**New file:** `utilities/sparsity_export.h` — self-contained header for sparsity export:
+- `analyze_sparsity()` — compute bandwidth, NNZ stats, density
+- `export_sparsity_pattern()` — write SVG, gnuplot, bandwidth CSV
+- `write_sparsity_summary()` — combined summary CSV for all matrices
+
+**CLI flags:**
+```
+--dump-sparsity         Export sparsity patterns after step 1
+--renumber-dofs         Apply Cuthill-McKee DoF renumbering (reduces bandwidth)
+--no-renumber-dofs      Disable DoF renumbering (default)
+```
+
+**CM applied to CG systems only:**
+- Poisson (phi): CG Q1 — large benefit
+- Cahn-Hilliard (theta, psi): CG Q2 — moderate benefit
+- Navier-Stokes (ux, uy): CG Q2 — slight increase (expected)
+- Magnetization: DG Q1 — **skipped** (no benefit for DG)
+- Pressure: DG Q1 — **skipped**
+
+### 13.3 Parallel Fix (Non-Contiguous Maps)
+
+The CH coupled matrix has non-contiguous row ownership (theta block + psi block with a gap).
+deal.II's `local_range()` and iterators assume contiguous ownership, causing `std::length_error`
+crashes on np>1.
+
+**Fix:** Replaced all deal.II Trilinos iterator usage with Epetra's native API:
+- `ExtractMyRowView(local_row, ...)` for row data access
+- `RowMap().GID(local_i)` for global row indices
+- `ColMap().GID(local_col)` for global column indices
+
+### 13.4 Bandwidth Reduction Results (np=1, r=3)
+
+| Matrix | Without CM | With CM | Reduction |
+|--------|-----------|---------|-----------|
+| Poisson (15617x15617) | 2,727 | 618 | **-77.3%** |
+| CH (31234x31234) | 18,344 | 16,235 | **-11.5%** |
+| Magnetization (15360x15360) | 2,395 | 2,395 | 0% (DG, skipped) |
+| NS (42754x42754) | 33,063 | 35,460 | +7.2% |
+
+### 13.5 Files Modified
+
+| File | Change |
+|------|--------|
+| `utilities/sparsity_export.h` | **NEW** — sparsity analysis + export (Epetra native API) |
+| `utilities/parameters.h` | `renumber_dofs`, `dump_sparsity` flags |
+| `utilities/parameters.cc` | CLI parsing + help text |
+| `poisson/poisson_setup.cc` | CM after distribute_dofs() |
+| `poisson/poisson.h` | `get_system_matrix()` getter |
+| `cahn_hilliard/cahn_hilliard_setup.cc` | CM for theta + psi |
+| `cahn_hilliard/cahn_hilliard.h` | `get_system_matrix()` getter |
+| `navier_stokes/navier_stokes_setup.cc` | CM for ux + uy |
+| `drivers/decoupled_driver.cc` | Sparsity dump after step 1 + banner |
+
+---
+
+## 14. Nonuniform Rosensweig Blow-Up Analysis (March 5, 2026)
+
+### 14.1 Summary of All Runs
+
+8 distinct runs analyzed. ALL blow up in the range t=2.18 to t=2.68.
+
+| Run | dt | Blow-up time | Mag Strategy |
+|-----|-----|-------------|-------------|
+| Step6 (newest) | 2e-4 | t=2.184 | Step5+6 |
+| 030226_230101 | 2e-4 | t=2.286 | Step5 |
+| nonuniform.log | 2e-4 | t=2.290 | Step5 |
+| 030326_050402 | **1e-4** | t=2.362 | unknown |
+| 022826_222751 | 2e-4 | t=2.674 | Step5 (old) |
+| 030226_050447 | 2e-4 | t=2.678 | Step5 (old) |
+
+### 14.2 Blow-Up Cascade (Identical in ALL Runs)
+
+1. **H spikes first**: |H| jumps from ~240 to ~30,000 in a single step
+2. **M follows**: Picard coupling amplifies (|M| from 144 to infinity in 2 steps)
+3. **U blows up**: Kelvin force mu_0*(M.grad)H drives velocity to ~10^5
+4. **theta breaks**: Convection U.grad(theta) destroys phase field bounds
+5. **Full NaN**: 1-3 steps after theta breaks
+
+### 14.3 Key Observations
+
+- **NOT AMR-related**: All runs use uniform refinement (no AMR)
+- **NOT CFL-limited**: Halving dt to 1e-4 only delays by ~0.07s (t=2.362 vs t=2.290)
+- **NOT Step 5/6 related**: Step 6 made it slightly worse (t=2.184 vs t=2.290)
+- **Root cause**: Poisson-Magnetization feedback instability at interface peaks
+  - chi(theta) coefficient creates sharp gradients in phi at interface
+  - H concentrates at spike tips, Picard under-relaxation (omega=0.35) insufficient
+  - Feedback gain > 1 at critical interface curvature → divergence
+
+---
+
 *Generated: February 2025*
-*Updated: March 4, 2026 (Session 14: Material property fix, full Shliomis model confirmed)*
-*Total source code: ~11,000 lines across 4 subsystems + shared libraries*
+*Updated: March 5, 2026 (Sessions 15-16: Step5/6, sparsity analysis, parallel fix, blow-up analysis)*
+*Total source code: ~11,500 lines across 4 subsystems + shared libraries*

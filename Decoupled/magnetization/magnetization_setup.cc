@@ -97,8 +97,13 @@ void MagnetizationSubsystem<dim>::allocate_vectors()
     spin_vort_rhs_x_.reinit(locally_owned_dofs_, mpi_comm_);
     spin_vort_rhs_y_.reinit(locally_owned_dofs_, mpi_comm_);
 
+    // Explicit transport RHS cache (Zhang Eq 3.14 Step 5)
+    // -[(U·∇)M^{n-1} + (∇·U)M^{n-1}] · Z  (full divergence, not half)
+    explicit_transport_rhs_x_.reinit(locally_owned_dofs_, mpi_comm_);
+    explicit_transport_rhs_y_.reinit(locally_owned_dofs_, mpi_comm_);
+
     pcout_ << "[Magnetization Setup] Vectors allocated (Mx+My: "
-           << "2×solution, 2×rhs, 2×ghosted, 2×old_ghosted, 2×spin_vort)" << std::endl;
+           << "2×solution, 2×rhs, 2×ghosted, 2×old_ghosted, 2×spin_vort, 2×transport)" << std::endl;
 }
 
 // ============================================================================

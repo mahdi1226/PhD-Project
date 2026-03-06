@@ -31,6 +31,7 @@
 #include "navier_stokes/navier_stokes.h"
 
 #include <deal.II/dofs/dof_tools.h>
+#include <deal.II/dofs/dof_renumbering.h>
 #include <deal.II/numerics/vector_tools.h>
 #include <deal.II/base/function.h>
 #include <deal.II/base/utilities.h>
@@ -58,6 +59,13 @@ void NSSubsystem<dim>::setup()
     ux_dof_handler_.distribute_dofs(fe_velocity_);
     uy_dof_handler_.distribute_dofs(fe_velocity_);
     p_dof_handler_.distribute_dofs(fe_pressure_);
+
+    // Cuthill-McKee renumbering for velocity (CG Q2 only, skip DG pressure)
+    if (params_.renumber_dofs)
+    {
+        dealii::DoFRenumbering::Cuthill_McKee(ux_dof_handler_);
+        dealii::DoFRenumbering::Cuthill_McKee(uy_dof_handler_);
+    }
 
     // ========================================================================
     // Step 2: Extract per-component index sets
