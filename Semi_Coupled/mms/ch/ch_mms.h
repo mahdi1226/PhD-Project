@@ -516,4 +516,83 @@ private:
     const double L_y_;
 };
 
+// ============================================================================
+// Source term for θ equation WITH IMPLICIT CONVECTION (for coupled CH-NS MMS)
+//
+// Assembler weak form with IMPLICIT convection:
+//
+//   (1/dt)(θ, Λ) - (U θ, ∇Λ) + γ(∇ψ, ∇Λ) = (1/dt)(θ_old, Λ) + (S_θ, Λ)
+//
+// After IBP: -(Uθ,∇Λ) → +(U·∇θ, Λ), and +γ(∇ψ,∇Λ) → -γΔψ
+//
+// Strong form: (θ-θ_old)/dt + U·∇θ - γΔψ = S_θ
+//
+// Key difference from explicit: convection uses ∇θ at CURRENT time t (not t_old),
+// because θ^k is treated implicitly on the LHS. Velocity U is still at t_old
+// (Block-GS: CH solved first with U^{n-1}).
+//
+//   S_θ = (θ*^n - θ*^{n-1})/dt + U*^{n-1} · ∇θ*^n - γ Δψ*^n
+//
+// Compare with explicit source:
+//   S_θ_explicit = (θ*^n - θ*^{n-1})/dt + U*^{n-1} · ∇θ*^{n-1} - γ Δψ*^n
+//                                                     ^^^^^^^^^^^^
+//                                                     old vs new gradient
+// ============================================================================
+template <int dim>
+class CHSourceThetaWithImplicitConvection : public dealii::Function<dim>
+{
+public:
+    CHSourceThetaWithImplicitConvection(const double gamma,
+                                        const double dt,
+                                        const double L_y = 1.0)
+        : dealii::Function<dim>(1), gamma_(gamma), dt_(dt), L_y_(L_y)
+    {
+    }
+
+    double value(const dealii::Point<dim>& p,
+                 const unsigned int /*component*/  = 0) const override
+    {
+        static_assert(dim >= 2, "CHSourceThetaWithImplicitConvection expects dim >= 2.");
+
+        const double t = this->get_time();
+        const double t_old = t - dt_;
+
+        const double x = p[0];
+        const double y = p[1];
+
+        // Discrete time derivative term (using L_y-scaled θ)
+        const double theta_n = CHMMS::theta_exact_value<dim>(p, t, L_y_);
+        const double theta_old = CHMMS::theta_exact_value<dim>(p, t_old, L_y_);
+        const double dtheta_dt = (theta_n - theta_old) / dt_;
+
+        // IMPLICIT convection uses U^{n-1} · ∇θ^n (gradient at CURRENT time t)
+        // This is the KEY difference from explicit: grad at t, not t_old
+        const auto grad_theta_n = CHMMS::theta_exact_grad<dim>(p, t, L_y_);
+
+        // NS MMS velocity model (L_y-scaled) at OLD time t_old:
+        //   ux = t*(π/L_y)*sin²(πx)*sin(2πy/L_y)
+        //   uy = -t*π*sin(2πx)*sin²(πy/L_y)
+        const double sin_px = std::sin(M_PI * x);
+        const double sin_2px = std::sin(2.0 * M_PI * x);
+        const double sin_pyl = std::sin(M_PI * y / L_y_);
+        const double sin_2pyl = std::sin(2.0 * M_PI * y / L_y_);
+
+        // Velocity at t_old (Block-GS: CH solved first with U^{n-1})
+        const double ux = t_old * (M_PI / L_y_) * (sin_px * sin_px) * sin_2pyl;
+        const double uy = -t_old * M_PI * sin_2px * (sin_pyl * sin_pyl);
+
+        const double convection = ux * grad_theta_n[0] + uy * grad_theta_n[1];
+
+        // Laplacian term (using L_y-scaled ψ at current time)
+        const double lap_psi_n = CHMMS::lap_psi_exact<dim>(p, t, L_y_);
+
+        return dtheta_dt + convection - gamma_ * lap_psi_n;
+    }
+
+private:
+    const double gamma_;
+    const double dt_;
+    const double L_y_;
+};
+
 #endif // CH_MMS_H

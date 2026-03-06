@@ -53,17 +53,20 @@ void Parameters::setup_rosensweig()
     // Paper: "initial mesh has 10 elements in x, 6 in y, allow maximum refinement of 4,5,6,7 levels"
     // The -r flag sets amr_max_level (target interface resolution), NOT initial_refinement.
     // Start with coarse uniform mesh, let AMR refine up to target level.
-    mesh.initial_refinement = 3;      // Start coarse (80×48 = 3840 cells)
+    mesh.initial_refinement = 4;      // Paper: 10×6 base + 4 levels → 160×96 = 15360 cells
     mesh.use_amr = true;
     mesh.amr_interval = 5;
-    mesh.amr_min_level = 1;           // Coarsen bulk aggressively (paper Fig. 2)
+    mesh.amr_min_level = 2;           // Coarsen bulk (paper Fig. 2)
     mesh.amr_max_level = 7;           // Target: 7 levels (paper Fig. 3, column 4)
-    mesh.amr_refine_threshold = 1e-3; // Hold back refinement until physics demands it
+    mesh.amr_refine_threshold = 0.0;  // Let fixed_fraction decide (no artificial barrier)
 
     // Subsystems
     enable_magnetic = true;
     enable_ns = true;
     enable_gravity = true;
+
+    // Paper Eq. 42d: algebraic M = χ(θ)∇Φ (L2 projection, NOT transport PDE)
+    use_dg_transport = false;
 
     // Output
     output.frequency = 10;
@@ -140,6 +143,9 @@ void Parameters::setup_hedgehog()
     enable_ns = true;
     enable_gravity = true;
 
+    // Paper Eq. 42d: algebraic M = χ(θ)∇Φ (L2 projection, NOT transport PDE)
+    use_dg_transport = false;
+
     // Output
     output.frequency = 10;
 }
@@ -211,6 +217,9 @@ void Parameters::setup_dome()
     enable_magnetic = true;
     enable_ns = true;
     enable_gravity = true;
+
+    // Paper Eq. 42d: algebraic M = χ(θ)∇Φ (L2 projection, NOT transport PDE)
+    use_dg_transport = false;
 
     // Output
     output.frequency = 10;
@@ -289,8 +298,8 @@ void Parameters::setup_square()
     domain.initial_cells_x = 10;
     domain.initial_cells_y = 10;
 
-    // Initial condition: square droplet (type = 2)
-    ic.type = 2;  // Square droplet
+    // Initial condition: diamond droplet (type = 2)
+    ic.type = 2;  // Diamond droplet
     ic.droplet_center_x = 0.5;
     ic.droplet_center_y = 0.5;
     ic.droplet_radius = 0.25; // Half-width of square
@@ -348,6 +357,9 @@ void Parameters::setup_droplet_uniform_B()
     physics.chi_0 = 0.5;
     physics.tau_M = 1e-6;
 
+    // Paper Eq. 42d: algebraic M = χ(θ)∇Φ
+    use_dg_transport = false;
+
     // Uniform applied field h_a = (0, 1) — vertical, instant (no ramp)
     dipoles.use_uniform_field = true;
     dipoles.uniform_field_value[0] = 0.0;
@@ -370,6 +382,9 @@ void Parameters::setup_droplet_nonuniform_B()
     enable_magnetic = true;
     physics.chi_0 = 0.5;
     physics.tau_M = 1e-6;
+
+    // Paper Eq. 42d: algebraic M = χ(θ)∇Φ
+    use_dg_transport = false;
 
     // Single dipole below domain center
     dipoles.use_uniform_field = false;
@@ -473,6 +488,12 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             params.solvers.ch.use_iterative = false;  // Also use direct for CH
         }
 
+        // CH convection treatment
+        else if (std::strcmp(argv[i], "--explicit_ch_convection") == 0)
+            params.physics.implicit_ch_convection = false;
+        else if (std::strcmp(argv[i], "--implicit_ch_convection") == 0)
+            params.physics.implicit_ch_convection = true;
+
         // Block-Gauss-Seidel global iteration
         else if (std::strcmp(argv[i], "--bgs") == 0)
             params.enable_bgs = true;
@@ -535,6 +556,25 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             params.output.run_name = argv[i];
         }
 
+        // Parallel diagnostics
+        else if (std::strcmp(argv[i], "--parallel-diag") == 0)
+            params.enable_parallel_diagnostics = true;
+        else if (std::strcmp(argv[i], "--parallel-diag-all-ranks") == 0)
+        {
+            params.enable_parallel_diagnostics = true;
+            params.parallel_diag_all_ranks = true;
+        }
+
+        // DoF renumbering (Cuthill-McKee)
+        else if (std::strcmp(argv[i], "--renumber-dofs") == 0)
+            params.renumber_dofs = true;
+        else if (std::strcmp(argv[i], "--no-renumber-dofs") == 0)
+            params.renumber_dofs = false;
+
+        // Sparsity pattern export
+        else if (std::strcmp(argv[i], "--dump-sparsity") == 0)
+            params.dump_sparsity = true;
+
         // Debugging
         else if (std::strcmp(argv[i], "--mms") == 0)
             params.enable_mms = true;
@@ -582,6 +622,8 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             std::cout << "  --no_adaptive_dt      Disable adaptive time stepping (paper default)\n\n";
 
             std::cout << "SOLVER:\n";
+            std::cout << "  --implicit_ch_convection  Implicit CH convection (default, no CFL limit)\n";
+            std::cout << "  --explicit_ch_convection  Explicit CH convection (CFL-limited, original scheme)\n";
             std::cout << "  --direct              Use direct solver (recommended)\n";
             std::cout << "  --bgs / --no_bgs      Enable/disable Block-Gauss-Seidel global iteration\n";
             std::cout << "  --bgs_iters N         Max Block-GS iterations (default: 5)\n";
@@ -600,6 +642,15 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             std::cout << "  --run_name NAME       Custom run name (default: auto-generated)\n";
             std::cout << "                        e.g., rosen-r5-amr, dome-r4, hedge-r5\n";
             std::cout << "  Results saved to: ../Results/<run_name>-<timestamp>/\n\n";
+
+            std::cout << "PARALLEL DIAGNOSTICS:\n";
+            std::cout << "  --parallel-diag           Record assembly/solve timing, sparsity, load balance\n";
+            std::cout << "  --parallel-diag-all-ranks Also write per-rank CSV files\n\n";
+
+            std::cout << "SPARSITY / RENUMBERING:\n";
+            std::cout << "  --renumber-dofs           Apply Cuthill-McKee DoF renumbering (reduces bandwidth)\n";
+            std::cout << "  --no-renumber-dofs        Disable DoF renumbering (default)\n";
+            std::cout << "  --dump-sparsity           Export sparsity patterns (SVG + gnuplot + bandwidth CSV)\n\n";
 
             std::cout << "DEBUGGING:\n";
             std::cout << "  --mms                 MMS verification mode\n";
@@ -642,6 +693,7 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
         std::cout << "  Physics: epsilon=" << params.physics.epsilon
                   << ", lambda=" << params.physics.lambda
                   << ", chi_0=" << params.physics.chi_0 << "\n";
+        std::cout << "  CH convection: " << (params.physics.implicit_ch_convection ? "IMPLICIT" : "EXPLICIT") << "\n";
         std::cout << "  Solver: " << (params.solvers.ns.use_iterative ? "Iterative" : "Direct") << "\n";
         std::cout << "  Block-GS: " << (params.enable_bgs ? "ON" : "OFF");
         if (params.enable_bgs)
@@ -655,6 +707,10 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
                   << (params.enable_ns ? "NS " : "")
                   << (params.enable_gravity ? "Gravity " : "")
                   << (params.enable_mms ? "MMS " : "") << "\n";
+        if (params.renumber_dofs)
+            std::cout << "  DoF renumbering: Cuthill-McKee ON\n";
+        if (params.dump_sparsity)
+            std::cout << "  Sparsity export: ON (SVG + gnuplot + bandwidth)\n";
 
         std::cout << "=====================\n";
     }

@@ -42,7 +42,8 @@ void setup_ns_coupled_system_parallel(
     dealii::AffineConstraints<double>& ns_constraints,
     dealii::TrilinosWrappers::SparsityPattern& ns_sparsity,
     MPI_Comm mpi_comm,
-    dealii::ConditionalOStream& pcout)
+    dealii::ConditionalOStream& pcout,
+    bool interleave_velocity)
 {
     const unsigned int my_rank = dealii::Utilities::MPI::this_mpi_process(mpi_comm);
     const unsigned int n_ranks = dealii::Utilities::MPI::n_mpi_processes(mpi_comm);
@@ -102,14 +103,36 @@ void setup_ns_coupled_system_parallel(
     // Fill in mappings for owned DoFs
     dealii::types::global_dof_index coupled_idx = global_start;
 
-    for (auto it = ux_owned.begin(); it != ux_owned.end(); ++it)
-        ux_to_ns_map[*it] = coupled_idx++;
+    if (interleave_velocity)
+    {
+        // Node-wise interleaving: [ux_0,uy_0, ux_1,uy_1, ..., p_0,p_1,...]
+        // Puts velocity DoFs from the same mesh node adjacent (offset by 1).
+        // Since ux and uy use the same FE on the same mesh, owned DoFs match.
+        auto ux_it = ux_owned.begin();
+        auto uy_it = uy_owned.begin();
+        for (; ux_it != ux_owned.end(); ++ux_it, ++uy_it)
+        {
+            ux_to_ns_map[*ux_it] = coupled_idx++;
+            uy_to_ns_map[*uy_it] = coupled_idx++;
+        }
+        // Pressure DoFs appended after velocity
+        for (auto it = p_owned.begin(); it != p_owned.end(); ++it)
+            p_to_ns_map[*it] = coupled_idx++;
 
-    for (auto it = uy_owned.begin(); it != uy_owned.end(); ++it)
-        uy_to_ns_map[*it] = coupled_idx++;
+        pcout << "[NS Setup] Using node-wise interleaved velocity ordering\n";
+    }
+    else
+    {
+        // Block ordering: [all_ux | all_uy | all_p] (default)
+        for (auto it = ux_owned.begin(); it != ux_owned.end(); ++it)
+            ux_to_ns_map[*it] = coupled_idx++;
 
-    for (auto it = p_owned.begin(); it != p_owned.end(); ++it)
-        p_to_ns_map[*it] = coupled_idx++;
+        for (auto it = uy_owned.begin(); it != uy_owned.end(); ++it)
+            uy_to_ns_map[*it] = coupled_idx++;
+
+        for (auto it = p_owned.begin(); it != p_owned.end(); ++it)
+            p_to_ns_map[*it] = coupled_idx++;
+    }
 
     // ========================================================================
     // Step 2c: Exchange mappings for ghost DoFs
@@ -378,7 +401,8 @@ template void setup_ns_coupled_system_parallel<2>(
     dealii::AffineConstraints<double>&,
     dealii::TrilinosWrappers::SparsityPattern&,
     MPI_Comm,
-    dealii::ConditionalOStream&);
+    dealii::ConditionalOStream&,
+    bool);
 
 template void setup_ns_velocity_constraints_parallel<2>(
     const dealii::DoFHandler<2>&,

@@ -71,7 +71,7 @@ struct Parameters
 
     struct IC
     {
-        int type = 0;              // 0 = flat pool, 1 = circular droplet, 2 = square droplet
+        int type = 0;              // 0 = flat pool, 1 = circular droplet, 2 = diamond droplet
         double pool_depth = 0.2;
         double perturbation = 0.0;
         int perturbation_modes = 0;
@@ -122,6 +122,11 @@ struct Parameters
         double r = 0.1;             // density ratio
         double gravity = 30000.0;   // non-dimensionalized gravity
         double grad_div_stabilization = 0.0;  // Optional stabilization
+
+        // Convection treatment in Cahn-Hilliard equation
+        // true  = implicit: θ^k on LHS (unconditionally stable, no CFL limit)
+        // false = explicit: θ^{k-1} on RHS (CFL-limited, original Nochetto scheme)
+        bool implicit_ch_convection = true;
     } physics;
 
     // ========================================================================
@@ -141,7 +146,7 @@ struct Parameters
     // ========================================================================
     struct Output
     {
-        std::string folder = "../Results";
+        std::string folder = "./Results";
         std::string run_name = "";   // Auto-generated if empty: preset-rN[-amr]
         unsigned int frequency = 10;
         bool verbose = false;
@@ -159,7 +164,7 @@ struct Parameters
     bool enable_ns = true;
     bool enable_gravity = true;
     bool enable_mms = false;
-    bool use_dg_transport = true;
+    bool use_dg_transport = false;  // Paper Eq. 42d: algebraic M = χ(θ)∇Φ (default)
 
     // MMS
     double mms_t_init = 0.0;
@@ -232,6 +237,25 @@ struct Parameters
     bool use_reduced_magnetic_field = false;        // Dome set-up h = h_a only
     bool skip_kelvin_face_terms = true;             // Skip Kelvin face term (CG φ → [[∇φ]] ≈ 0)
     bool use_gradient_kelvin_force = false;         // Use CG gradient form: (μ₀/2)|H|²∇χ(θ)
+
+    // ========================================================================
+    // Parallel diagnostics (--parallel-diag)
+    // Records assembly/solve timing breakdown, sparsity, load balance
+    // ========================================================================
+    bool enable_parallel_diagnostics = false;       // Write parallel_diagnostics.csv
+    bool parallel_diag_all_ranks = false;           // Also write per-rank CSV files
+
+    // ========================================================================
+    // DoF renumbering (--renumber-dofs)
+    // Cuthill-McKee reduces matrix bandwidth → faster direct solvers
+    // ========================================================================
+    bool renumber_dofs = false;                     // Apply Cuthill-McKee to CG DoFHandlers
+
+    // ========================================================================
+    // Sparsity pattern export (--dump-sparsity)
+    // Exports SVG/gnuplot of sparsity patterns + bandwidth + per-row nnz
+    // ========================================================================
+    bool dump_sparsity = false;                     // Export sparsity patterns at step 0
 
     // ========================================================================
     // Build run_name from preset + refinement + amr (call after parsing)

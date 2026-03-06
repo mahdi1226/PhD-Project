@@ -25,6 +25,7 @@
 #include <deal.II/grid/grid_generator.h>
 #include <deal.II/grid/grid_tools.h>
 #include <deal.II/dofs/dof_tools.h>
+#include <deal.II/dofs/dof_renumbering.h>
 #include <deal.II/numerics/vector_tools.h>
 #include <deal.II/lac/affine_constraints.h>
 
@@ -121,6 +122,15 @@ void PhaseFieldProblem<dim>::setup_dof_handlers()
     theta_dof_handler_.distribute_dofs(fe_Q2_);
     psi_dof_handler_.distribute_dofs(fe_Q2_);
 
+    // Cuthill-McKee renumbering for CG DoFHandlers (reduces matrix bandwidth)
+    // Only applied to CG handlers; DG (M, p) has cell-local support → CM has no benefit
+    if (params_.renumber_dofs)
+    {
+        dealii::DoFRenumbering::Cuthill_McKee(theta_dof_handler_);
+        dealii::DoFRenumbering::Cuthill_McKee(psi_dof_handler_);
+        pcout_ << "[Setup] Cuthill-McKee renumbering applied to θ, ψ\n";
+    }
+
     theta_locally_owned_ = theta_dof_handler_.locally_owned_dofs();
     theta_locally_relevant_ = dealii::DoFTools::extract_locally_relevant_dofs(theta_dof_handler_);
     psi_locally_owned_ = psi_dof_handler_.locally_owned_dofs();
@@ -130,12 +140,20 @@ void PhaseFieldProblem<dim>::setup_dof_handlers()
     if (params_.enable_magnetic)
     {
         phi_dof_handler_.distribute_dofs(fe_Q2_);
+        if (params_.renumber_dofs)
+        {
+            dealii::DoFRenumbering::Cuthill_McKee(phi_dof_handler_);
+            pcout_ << "[Setup] Cuthill-McKee renumbering applied to φ\n";
+        }
         phi_locally_owned_ = phi_dof_handler_.locally_owned_dofs();
         phi_locally_relevant_ = dealii::DoFTools::extract_locally_relevant_dofs(phi_dof_handler_);
     }
 
     // Magnetization (M) - single DoFHandler for DG
-    if (params_.enable_magnetic && params_.use_dg_transport)
+    // Always set up when magnetic is enabled: needed for Kelvin force B_h^m
+    // and L2 projection M = χ(θ)∇Φ (Paper Eq. 42d)
+    // NOTE: DG DoFHandlers skip CM renumbering (cell-local, no inter-element coupling)
+    if (params_.enable_magnetic)
     {
         M_dof_handler_.distribute_dofs(fe_DG_);
         M_locally_owned_ = M_dof_handler_.locally_owned_dofs();
@@ -152,6 +170,10 @@ void PhaseFieldProblem<dim>::setup_dof_handlers()
         // Also satisfies M_h = [P_h]^d (A2) since magnetization uses same fe_DG_
         p_dof_handler_.distribute_dofs(fe_DG_);
 
+        // NOTE: Do NOT apply CM to individual ux/uy handlers.
+        // The monolithic NS system uses node-wise interleaving instead,
+        // which is far more effective (see setup_ns_coupled_system_parallel).
+
         ux_locally_owned_ = ux_dof_handler_.locally_owned_dofs();
         ux_locally_relevant_ = dealii::DoFTools::extract_locally_relevant_dofs(ux_dof_handler_);
         uy_locally_owned_ = uy_dof_handler_.locally_owned_dofs();
@@ -163,7 +185,7 @@ void PhaseFieldProblem<dim>::setup_dof_handlers()
     pcout_ << "[Setup] DoFs: θ=" << theta_dof_handler_.n_dofs();
     if (params_.enable_magnetic)
         pcout_ << ", φ=" << phi_dof_handler_.n_dofs();
-    if (params_.enable_magnetic && params_.use_dg_transport)
+    if (params_.enable_magnetic)
         pcout_ << ", M=" << M_dof_handler_.n_dofs();
     if (params_.enable_ns)
         pcout_ << ", ux=" << ux_dof_handler_.n_dofs()
@@ -361,7 +383,8 @@ void PhaseFieldProblem<dim>::setup_ns_system()
         ux_to_ns_map_, uy_to_ns_map_, p_to_ns_map_,
         ns_locally_owned_, ns_locally_relevant_,
         ns_constraints_, ns_sparsity,
-        mpi_communicator_, pcout_);
+        mpi_communicator_, pcout_,
+        params_.renumber_dofs);
 
     ns_matrix_.reinit(ns_sparsity);
     ns_rhs_.reinit(ns_locally_owned_, mpi_communicator_);
@@ -421,22 +444,20 @@ void PhaseFieldProblem<dim>::initialize_solutions()
         }
     };
 
-    // IC Type 2: Square Droplet
-    class SquareDropletIC : public dealii::Function<dim>
+    // IC Type 2: Diamond Droplet (L1-norm → 45° rotated square)
+    class DiamondDropletIC : public dealii::Function<dim>
     {
     public:
         double cx_, cy_, r_, eps_;
-        SquareDropletIC(double cx, double cy, double r, double e)
+        DiamondDropletIC(double cx, double cy, double r, double e)
             : dealii::Function<dim>(1), cx_(cx), cy_(cy), r_(r), eps_(e) {}
         double value(const dealii::Point<dim>& p, unsigned int = 0) const override
         {
-            // Max norm distance for square shape
-            const double dist_x = std::abs(p[0] - cx_);
-            const double dist_y = std::abs(p[1] - cy_);
-            const double dist = std::max(dist_x, dist_y);
+            // L1 norm distance for diamond shape
+            const double dist = std::abs(p[0] - cx_) + std::abs(p[1] - cy_);
 
-            // Inside square (dist < r) -> theta = +1
-            // Outside square (dist > r) -> theta = -1
+            // Inside diamond (dist < r) -> theta = +1
+            // Outside diamond (dist > r) -> theta = -1
             return -std::tanh((dist - r_) / (std::sqrt(2.0) * eps_));
         }
     };
@@ -453,13 +474,13 @@ void PhaseFieldProblem<dim>::initialize_solutions()
     }
     else if (params_.ic.type == 2)
     {
-        SquareDropletIC ic_func(params_.ic.droplet_center_x,
-                                params_.ic.droplet_center_y,
-                                params_.ic.droplet_radius,
-                                eps);
+        DiamondDropletIC ic_func(params_.ic.droplet_center_x,
+                                 params_.ic.droplet_center_y,
+                                 params_.ic.droplet_radius,
+                                 eps);
         dealii::VectorTools::interpolate(theta_dof_handler_, ic_func, theta_solution_);
-        pcout_ << "[Setup] IC: Square droplet at (" << params_.ic.droplet_center_x
-               << "," << params_.ic.droplet_center_y << ") width=" << 2.0*params_.ic.droplet_radius << "\n";
+        pcout_ << "[Setup] IC: Diamond droplet at (" << params_.ic.droplet_center_x
+               << "," << params_.ic.droplet_center_y << ") radius=" << params_.ic.droplet_radius << "\n";
     }
     else
     {
@@ -485,7 +506,7 @@ void PhaseFieldProblem<dim>::initialize_solutions()
         uy_relevant_ = 0;
     }
 
-    if (params_.enable_magnetic && params_.use_dg_transport)
+    if (params_.enable_magnetic)
     {
         Mx_solution_ = 0;
         My_solution_ = 0;

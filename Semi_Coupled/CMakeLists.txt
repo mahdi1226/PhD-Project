@@ -74,6 +74,7 @@ set(MMS_TEST_SOURCES
         mms/mms_core/test_mms.cc
         mms/mms_core/mms_verification.cc
         mms/mms_core/temporal_convergence.cc
+        mms/mms_core/long_duration_mms.cc
 
         # Standalone subsystem tests
         mms/ch/ch_mms_test.cc

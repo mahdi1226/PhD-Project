@@ -105,6 +105,54 @@ void PhaseFieldProblem<dim>::refine_mesh()
     }
 
     // =========================================================================
+    // Step 2c: Force bulk coarsening — override Kelly estimator for pure bulk
+    //   Cells where ALL DoF values satisfy |θ| > 0.95 are deep in the bulk
+    //   (far from interface). Force coarsening to amr_min_level to prevent
+    //   the coarsen→interpolation noise→re-refine oscillation cycle.
+    // =========================================================================
+    {
+        const double bulk_threshold = 0.95;
+        unsigned int force_coarsened = 0;
+
+        std::vector<dealii::types::global_dof_index> bulk_dof_indices(
+            theta_dof_handler_.get_fe().n_dofs_per_cell());
+
+        for (const auto& cell : theta_dof_handler_.active_cell_iterators())
+        {
+            if (!cell->is_locally_owned())
+                continue;
+
+            if (cell->level() <= static_cast<int>(params_.mesh.amr_min_level))
+                continue;
+
+            cell->get_dof_indices(bulk_dof_indices);
+
+            bool is_bulk = true;
+            for (const auto idx : bulk_dof_indices)
+            {
+                if (std::abs(theta_relevant_[idx]) <= bulk_threshold)
+                {
+                    is_bulk = false;
+                    break;
+                }
+            }
+
+            if (is_bulk)
+            {
+                cell->clear_refine_flag();
+                cell->set_coarsen_flag();
+                ++force_coarsened;
+            }
+        }
+
+        unsigned int global_force_coarsened =
+            dealii::Utilities::MPI::sum(force_coarsened, mpi_communicator_);
+        if (global_force_coarsened > 0)
+            pcout_ << "[AMR] Force-coarsened " << global_force_coarsened
+                   << " bulk cells (|theta| > " << bulk_threshold << ")\n";
+    }
+
+    // =========================================================================
     // Step 3: Enforce min/max refinement levels
     // =========================================================================
     if (params_.mesh.amr_max_level > 0)
@@ -195,12 +243,12 @@ void PhaseFieldProblem<dim>::refine_mesh()
         phi_trans->prepare_for_coarsening_and_refinement(phi_relevant_);
     }
 
-    // --- Magnetization Mx, My, Mx_old, My_old on M_dof_handler_ (if DG) ---
+    // --- Magnetization Mx, My, Mx_old, My_old on M_dof_handler_ ---
     std::unique_ptr<dealii::parallel::distributed::SolutionTransfer<
         dim, dealii::TrilinosWrappers::MPI::Vector>>
         M_trans;
     dealii::TrilinosWrappers::MPI::Vector Mx_old_ghost, My_old_ghost;
-    if (params_.enable_magnetic && params_.use_dg_transport)
+    if (params_.enable_magnetic)
     {
         M_trans = std::make_unique<dealii::parallel::distributed::SolutionTransfer<
             dim, dealii::TrilinosWrappers::MPI::Vector>>(M_dof_handler_);
@@ -265,8 +313,7 @@ void PhaseFieldProblem<dim>::refine_mesh()
     if (params_.enable_magnetic)
     {
         setup_poisson_system();
-        if (params_.use_dg_transport)
-            setup_magnetization_system();
+        setup_magnetization_system();
     }
 
     if (params_.enable_ns)
@@ -294,7 +341,7 @@ void PhaseFieldProblem<dim>::refine_mesh()
         phi_trans->interpolate(phi_solution_);
 
     // --- Mx, My, Mx_old, My_old ---
-    if (params_.enable_magnetic && params_.use_dg_transport)
+    if (params_.enable_magnetic)
     {
         std::vector<dealii::TrilinosWrappers::MPI::Vector*> M_post = {
             &Mx_solution_, &My_solution_, &Mx_old_solution_, &My_old_solution_};
@@ -418,7 +465,7 @@ void PhaseFieldProblem<dim>::refine_mesh()
     if (params_.enable_magnetic)
         phi_relevant_ = phi_solution_;
 
-    if (params_.enable_magnetic && params_.use_dg_transport)
+    if (params_.enable_magnetic)
     {
         Mx_relevant_ = Mx_solution_;
         My_relevant_ = My_solution_;

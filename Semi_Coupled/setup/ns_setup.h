@@ -60,7 +60,8 @@ void setup_ns_coupled_system_parallel(
     dealii::AffineConstraints<double>& ns_constraints,
     dealii::TrilinosWrappers::SparsityPattern& ns_sparsity,
     MPI_Comm mpi_comm,
-    dealii::ConditionalOStream& pcout);
+    dealii::ConditionalOStream& pcout,
+    bool interleave_velocity = false);
 
 /**
  * @brief Setup velocity constraints (hanging nodes + homogeneous Dirichlet on all boundaries)

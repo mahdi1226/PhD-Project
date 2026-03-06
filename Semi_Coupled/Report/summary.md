@@ -205,7 +205,15 @@ from explicit CH convection (L6 at t=0.335, L7 at t=0.072).
 **With implicit CH convection (Session 17):** CFL crash eliminated. But r3 (h=1/80)
 under-resolves interface (epsilon=0.01). Spurious spikes at t=0.066.
 
-**Current status:** Need r4 (h=1/160 < epsilon) or AMR with implicit convection.
+**Session 18 — CFL instability onset characterized:** Comprehensive diagnostic analysis
+of 4 runs revealed that the CFL jump at instability onset is caused by a **100x velocity
+jump** over ~25 time steps, not by mesh changes. This is the physical Rosensweig instability
+eigenmode growing exponentially when the magnetic field reaches ~30% of maximum.
+See `Report/CFL_INSTABILITY_ONSET_REPORT.md` for full analysis.
+
+**Current run (March 6):** r4 with AMR + implicit CH convection in progress.
+Step 819 (t=0.41), CFL=7.1e-4, all diagnostics healthy. Approaching the critical onset
+region (t~0.5).
 
 ### 5.3 AMR Implementation
 
@@ -213,7 +221,8 @@ AMR implemented for parallel distributed mesh (Session 16):
 - Kelly error estimator, SolutionTransfer for all fields
 - Start coarse (r3), refine up to target level
 - Interface protection, level enforcement, post-AMR clamping
-- Working but untested with implicit CH convection at adequate resolution
+- **Bulk coarsening fix (Session 18):** Force-coarsen cells where |theta|>0.95 to prevent
+  oscillation cycle. Reduces cell count by ~70%.
 
 ### 5.4 Known Working Reference
 

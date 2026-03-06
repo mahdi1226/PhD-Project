@@ -1,7 +1,7 @@
 # Verification & Validation Progress Report
 
 ## Project: Ferrofluid Phase-Field Model (Nochetto et al.)
-## Last Updated: March 3, 2026
+## Last Updated: March 6, 2026
 
 ---
 
@@ -268,6 +268,58 @@ Next: test at r4 (h=1/160 < epsilon=0.01) or with AMR.
 
 ---
 
+## Phase 7: CFL Instability Onset Investigation (Session 18) -- March 6, 2026
+
+### Discovery: CFL Jump at Rosensweig Instability Onset
+
+A comprehensive analysis of failed and successful Rosensweig runs revealed a **sudden CFL jump
+of 2 orders of magnitude** at a specific magnetic field strength (~20-38% of maximum, depending
+on mesh resolution). This is the signature of the physical Rosensweig instability onset.
+
+**Key finding: The CFL jump is velocity-driven, NOT mesh-driven.**
+- h_min stays constant during the jump
+- U_max increases by 100x in ~25 time steps
+- This is the physical instability eigenmode growing exponentially
+
+### Diagnostics Created
+
+- `Results/plot_cfl_diagnostics.py` -- Main diagnostic plots (16 figures)
+- `Results/plot_cfl_jump_investigation.py` -- Jump investigation plots (6 figures)
+- `Report/CFL_INSTABILITY_ONSET_REPORT.md` -- Full analysis report
+- `Report/CFL_INSTABILITY_ONSET_REPORT.pdf` -- PDF with embedded figures (23 pages)
+- `Report/figures/cfl_diagnostics/` -- All 16 diagnostic figures
+
+### AMR Bulk Coarsening Fix
+
+Fixed oscillation cycle where AMR kept refining/coarsening bulk cells:
+- Force-coarsen cells where |theta| > 0.95 (pure bulk)
+- Prevents interpolation noise from coarsening from triggering re-refinement
+- Cells reduced from 15,360 to ~4,600 (70% reduction)
+
+### Implicit CH Convection
+
+Moved CH advection U.grad(theta) from RHS (explicit) to LHS (implicit):
+- Removes CFL stability constraint entirely
+- Matrix becomes non-symmetric; GMRES+AMG handles it
+- MMS tests all pass with optimal convergence rates
+- New MMS source class: `CHSourceThetaWithImplicitConvection`
+
+### Long-Duration MMS Framework (Prepared, Not Run)
+
+- `mms/mms_core/long_duration_mms.h/.cc` -- Per-step error tracking over many time steps
+- Distinguishes linear growth (normal) from exponential growth (instability)
+- CH_LONG fully implemented; CH_NS_LONG and FULL_LONG stubbed
+
+### Current Rosensweig Run (In Progress)
+
+Run `20260306_085853_rosen_r4_direct_amr`:
+- ref=4, AMR, implicit CH convection, dt=5e-4
+- At step 819 (t=0.41): CFL=7.1e-4, theta in [-1.000, 1.000], mass conserved
+- Approaching critical region (t~0.5 where explicit runs jumped)
+- Estimated completion: ~10 hours total
+
+---
+
 ## Current MMS Test Results (All Passing, np=4, March 1 2026)
 
 ### Standalone Tests
@@ -310,6 +362,7 @@ Next: test at r4 (h=1/160 < epsilon=0.01) or with AMR.
 | 10 | **Viscous term factor of 2** | ns_assembler.cc, ns_mms.h | **2x effective viscosity** | 15 |
 | 11 | **CH convection explicit->implicit** | ch_assembler.cc | **CFL blowup during instability** | 17 |
 | 12 | DG face loop missing is_active() | magnetization_assembler.cc | Crash after AMR | 16 |
+| 13 | **AMR bulk coarsening oscillation** | phase_field_amr.cc | **Cells oscillate 5K<->15K** | 18 |
 
 ---
 

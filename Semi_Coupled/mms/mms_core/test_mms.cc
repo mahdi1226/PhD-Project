@@ -21,6 +21,7 @@
 #include "mms/coupled/coupled_mms_test.h"
 #include "mms/magnetization/magnetization_mms_test.h"
 #include "temporal_convergence.h"
+#include "long_duration_mms.h"
 #include "utilities/parameters.h"
 
 
@@ -58,7 +59,11 @@ enum class TestType
     CH_TEMPORAL,
     NS_TEMPORAL,
     MAG_TEMPORAL,
-    FULL_TEMPORAL
+    FULL_TEMPORAL,
+    // Long-duration stability
+    CH_LONG,
+    CH_NS_LONG,
+    FULL_LONG
 };
 
 static std::string test_type_to_string(TestType type)
@@ -80,6 +85,9 @@ static std::string test_type_to_string(TestType type)
     case TestType::NS_TEMPORAL: return "NS_TEMPORAL";
     case TestType::MAG_TEMPORAL: return "MAG_TEMPORAL";
     case TestType::FULL_TEMPORAL: return "FULL_TEMPORAL";
+    case TestType::CH_LONG: return "CH_LONG";
+    case TestType::CH_NS_LONG: return "CH_NS_LONG";
+    case TestType::FULL_LONG: return "FULL_LONG";
     default: return "UNKNOWN";
     }
 }
@@ -90,6 +98,13 @@ static bool is_temporal_test(TestType type)
            type == TestType::NS_TEMPORAL ||
            type == TestType::MAG_TEMPORAL ||
            type == TestType::FULL_TEMPORAL;
+}
+
+static bool is_long_duration_test(TestType type)
+{
+    return type == TestType::CH_LONG ||
+           type == TestType::CH_NS_LONG ||
+           type == TestType::FULL_LONG;
 }
 
 // ============================================================================
@@ -155,6 +170,11 @@ void print_usage(const char* program_name)
         << "    NS_TEMPORAL             - NS temporal O(tau)\n"
         << "    MAG_TEMPORAL            - Magnetization temporal O(tau)\n"
         << "    FULL_TEMPORAL           - Full system temporal O(tau)\n"
+        << "\n"
+        << "  Long-duration stability tests (fix mesh+dt, many steps, track error growth):\n"
+        << "    CH_LONG                 - CH standalone, 500 steps, error per step\n"
+        << "    CH_NS_LONG              - CH + NS coupled (TODO)\n"
+        << "    FULL_LONG               - Full system coupled (TODO)\n"
         << "\n"
         << "  --refs <r1> <r2> ...  Refinement levels (default: 3 4 5)\n"
         << "  --steps <n>           Number of time steps (default: 10)\n"
@@ -237,6 +257,14 @@ int main(int argc, char* argv[])
             else if (level_str == "FULL_TEMPORAL")
                 test_type = TestType::FULL_TEMPORAL;
 
+                // Long-duration stability tests
+            else if (level_str == "CH_LONG")
+                test_type = TestType::CH_LONG;
+            else if (level_str == "CH_NS_LONG")
+                test_type = TestType::CH_NS_LONG;
+            else if (level_str == "FULL_LONG")
+                test_type = TestType::FULL_LONG;
+
             else
             {
                 if (this_rank == 0)
@@ -293,6 +321,13 @@ int main(int argc, char* argv[])
             std::cout << "Time step counts:";
             for (auto n : temporal_steps) std::cout << " " << n;
             std::cout << "\n";
+        }
+        else if (is_long_duration_test(test_type))
+        {
+            std::cout << "Mode: LONG-DURATION STABILITY\n";
+            std::cout << "Fixed refinement: " << temporal_ref << "\n";
+            std::cout << "Time steps: " << n_time_steps << "\n";
+            std::cout << "Time interval: [0.1, 0.6]\n";
         }
         else
         {
@@ -480,6 +515,35 @@ int main(int argc, char* argv[])
                     result.write_csv(csv_name);
                 }
                 passed = result.passes();
+                break;
+            }
+
+        // ====== LONG-DURATION STABILITY TESTS ======
+        case TestType::CH_LONG:
+        case TestType::CH_NS_LONG:
+        case TestType::FULL_LONG:
+            {
+                LongDurationLevel long_level;
+                if (test_type == TestType::CH_LONG)
+                    long_level = LongDurationLevel::CH_LONG;
+                else if (test_type == TestType::CH_NS_LONG)
+                    long_level = LongDurationLevel::CH_NS_LONG;
+                else
+                    long_level = LongDurationLevel::FULL_LONG;
+
+                // Use temporal-ref for the fixed refinement,
+                // n_time_steps for number of steps (default 10, override with --steps)
+                unsigned int long_steps = (n_time_steps == 10) ? 500 : n_time_steps;
+
+                LongDurationResult result = run_long_duration_mms_test(
+                    long_level, temporal_ref, params, long_steps, 1, MPI_COMM_WORLD);
+
+                if (this_rank == 0)
+                {
+                    result.print_summary();
+                    result.write_csv(csv_name);
+                }
+                passed = !result.is_exponential_growth;
                 break;
             }
         }

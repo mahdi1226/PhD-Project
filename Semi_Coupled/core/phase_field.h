@@ -103,6 +103,12 @@ private:
     unsigned int solve_poisson_magnetization_picard(double dt);
 
     // ========================================================================
+    // L2 projection: M = χ(θ)∇Φ  (Paper Eq. 42d)
+    // Cell-local since DG mass matrix is block-diagonal
+    // ========================================================================
+    void project_equilibrium_magnetization();
+
+    // ========================================================================
     // Output
     // ========================================================================
     void output_results(const std::string& output_dir);
@@ -283,6 +289,17 @@ private:
     // Block-Gauss-Seidel diagnostics
     unsigned int last_bgs_iterations_;
     double last_bgs_residual_;
+
+    // ========================================================================
+    // Parallel diagnostics: assembly vs solve timing (set inside solve methods)
+    // ========================================================================
+    double last_ch_assemble_time_ = 0.0;
+    double last_ch_solve_time_ = 0.0;
+    double last_poisson_assemble_time_ = 0.0;
+    double last_poisson_solve_time_ = 0.0;
+    double last_mag_time_ = 0.0;
+    double last_ns_assemble_time_ = 0.0;
+    double last_ns_solve_time_ = 0.0;
 };
 
 #endif // PHASE_FIELD_H

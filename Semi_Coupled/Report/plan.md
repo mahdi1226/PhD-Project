@@ -1,7 +1,7 @@
 # Implementation Plan: Next Steps
 
 ## Project: Ferrofluid Phase-Field Model (Nochetto et al.)
-## Last Updated: March 3, 2026
+## Last Updated: March 6, 2026
 
 ---
 
@@ -13,44 +13,31 @@
 - Block-Gauss-Seidel global iteration implemented and working
 - AMR implemented for parallel distributed mesh (start coarse, refine up)
 - **CH convection made implicit** in theta (removes CFL constraint)
-- **BLOCKING ISSUE:** Rosensweig instability not yet reproduced — needs adequate
-  resolution (h < epsilon) with implicit convection. r3 (h=1/80) insufficient for
-  epsilon=0.01; need r4 (h=1/160) or AMR
+- **AMR bulk coarsening fix** prevents oscillation cycle (cells 15K -> 4.6K)
+- **CFL instability onset characterized** -- velocity-driven jump at ~30% of max field (see Report)
+- **Rosensweig run in progress** (r4, AMR, implicit CH, step 819/4000, t=0.41)
+- Long-duration MMS framework prepared (not yet run)
 
 ---
 
-## PRIORITY 1: Rosensweig Instability with Adequate Resolution (BLOCKING)
+## PRIORITY 1: Rosensweig Instability Validation (IN PROGRESS)
 
-### Problem Statement
-The CH convection CFL constraint has been removed (implicit convection, Session 17).
-The remaining issue is **mesh resolution**: h must be smaller than epsilon for meaningful
-results. r3 (h=1/80) fails for epsilon=0.01.
+### Current Run
+Run `20260306_085853_rosen_r4_direct_amr` is in progress with:
+- ref=4, AMR (bulk coarsening fix), implicit CH convection, dt=5e-4, direct solver
+- At step 819 (t=0.41): CFL=7.1e-4, theta=[-1.000,1.000], mass conserved
+- Approaching the critical instability onset region (t~0.5)
+- Estimated 10 hours total runtime
 
-### Paper Parameters (Section 6.2, p.520-522)
-- Domain: [0,1] x [0,0.6], ferrofluid pool depth 0.2
-- epsilon=0.01, lambda=0.05, chi_0=0.5, gamma=0.0002, mu_0=1
-- v_w=1.0, v_f=2.0, r=0.1 (Boussinesq density ratio)
-- g = (0, -30000) (scaled gravity)
-- 5 dipoles at y=-15, d=(0,1), ramp from alpha_s=0 to alpha_s=6000 over t in [0,1.6]
-- AMR: Kelly error estimator, every 5 steps, 6 refinement levels
-- 4000 time steps (dt=5e-4), t_F=2.0
+### CFL Instability Onset Discovery
+The explicit runs failed because the Rosensweig instability onset causes a **100x velocity
+jump in ~25 time steps** (~30% of max field). This violates the CFL constraint for explicit
+CH convection. The implicit fix removes this constraint. See `Report/CFL_INSTABILITY_ONSET_REPORT.md`.
 
-### Options for Next Run
-a. **r4 uniform, no AMR** (h=1/160 < epsilon, ~60K cells, 2 ranks)
-   - Pro: simple, adequate resolution, directly tests implicit convection
-   - Con: slow with direct solver (~60K DoFs per field), may need 4+ ranks
-b. **r3 with AMR to L5-L6** (start 3840 cells, refine interface to h=1/320-1/640)
-   - Pro: efficient, follows paper approach, adequate interface resolution
-   - Con: AMR + implicit convection not yet tested together
-c. **r4 with AMR to L6-L7** (best of both)
-   - Pro: higher base resolution + AMR at interface
-   - Con: most expensive, may not be needed
-
-### Kelvin Force Stability (Secondary)
-The earlier odd-even Kelvin force oscillation (Session 13-14) occurred with explicit
-convection. It's unclear whether implicit convection also fixes that issue, or whether
-the Kelvin force DG skew form has a separate stability problem. Running at r4+ will
-clarify this.
+### What to Expect
+- If the implicit run survives t~0.5 and continues to t=2.0: Rosensweig spikes should form
+- Compare spike morphology with Nochetto et al. Figure 6
+- If it fails: investigate other coupling instabilities (Kelvin force, Picard convergence)
 
 ---
 
@@ -90,9 +77,12 @@ Key items:
 |-----------|------|------|--------|
 | `20260228_063736_droplet_r5_direct_amr` | Droplet (no mag) | Feb 28 | Complete |
 | `20260228_221805_droplet-uniform-B_r5_direct_Namr` | Droplet + uniform B | Feb 28 | Complete (slow instability) |
-| `20260301_052316_rosen_r4_direct_Namr` | Rosensweig r=4 (explicit) | Mar 1 | Failed (odd-even oscillation) |
+| `20260301_052316_rosen_r4_direct_Namr` | Rosensweig r=4 noAMR DG | Mar 1 | Died t~1.0 (CFL) |
 | `20260303_*_rosen_*_amr` | Rosensweig AMR attempts | Mar 3 | Failed (CFL blowup) |
 | `20260303_214052_rosen_r3_direct_Namr` | Rosensweig r3 implicit | Mar 3 | Killed (under-resolved) |
+| `20260305_115128_rosen_r3_direct_amr` | Rosensweig r3 AMR explicit | Mar 5 | **Completed** t=2.0 (CFL~1.0) |
+| `20260305_171805_rosen_r4_direct_amr` | Rosensweig r4 AMR explicit | Mar 5 | Died t~0.99 (CFL=1.15) |
+| `20260306_085853_rosen_r4_direct_amr` | Rosensweig r4 AMR **implicit** | Mar 6 | **Running** (t=0.41) |
 
 ---
 

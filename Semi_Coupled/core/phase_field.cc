@@ -27,6 +27,7 @@
 #include "solvers/poisson_solver.h"
 #include "solvers/magnetization_solver.h"
 #include "solvers/ns_solver.h"
+#include "physics/material_properties.h"  // susceptibility() for L2 projection
 
 // Utilities - MUST come before diagnostics/loggers that use tools.h functions
 #include "utilities/tools.h"
@@ -39,6 +40,9 @@
 #include "output/console_logger.h"
 #include "output/metrics_logger.h"
 #include "output/timing_logger.h"
+#include "output/parallel_diagnostics_logger.h"
+#include "diagnostics/parallel_data.h"
+#include "utilities/sparsity_export.h"
 
 #include <deal.II/numerics/data_out.h>
 #include <deal.II/numerics/vector_tools.h>
@@ -84,11 +88,8 @@ void PhaseFieldProblem<dim>::run()
         pcout_ << "[3/5] Setting up Poisson system...\n";
         setup_poisson_system();
 
-        if (params_.use_dg_transport)
-        {
-            pcout_ << "[3/5] Setting up Magnetization system...\n";
-            setup_magnetization_system();
-        }
+        pcout_ << "[3/5] Setting up Magnetization system...\n";
+        setup_magnetization_system();
     }
 
     if (params_.enable_ns)
@@ -128,6 +129,73 @@ void PhaseFieldProblem<dim>::run()
 
     // Optional: Magnetization/field distribution logger
     MagnetizationLogger mag_logger;
+
+    // Parallel diagnostics logger (optional, --parallel-diag flag)
+    std::unique_ptr<ParallelDiagnosticsLogger> parallel_diag;
+    if (params_.enable_parallel_diagnostics)
+    {
+        parallel_diag = std::make_unique<ParallelDiagnosticsLogger>(
+            output_dir, params_, mpi_communicator_,
+            params_.parallel_diag_all_ranks);
+    }
+
+    // ========================================================================
+    // SPARSITY PATTERN EXPORT (optional, --dump-sparsity flag)
+    // Exports SVG + gnuplot + bandwidth CSV for each matrix at step 0
+    // ========================================================================
+    if (params_.dump_sparsity)
+    {
+        pcout_ << "\n[Sparsity Export] Dumping sparsity patterns...\n";
+        pcout_ << "  Cuthill-McKee renumbering: "
+               << (params_.renumber_dofs ? "ON" : "OFF") << "\n";
+
+        std::vector<SparsityAnalysis> all_analyses;
+
+        // CH matrix
+        {
+            auto a = analyze_sparsity(ch_matrix_, "CH");
+            unsigned int global_bw = 0;
+            MPI_Reduce(&a.bandwidth, &global_bw, 1, MPI_UNSIGNED, MPI_MAX, 0, mpi_communicator_);
+            if (MPIUtils::is_root(mpi_communicator_))
+                a.bandwidth = global_bw;
+            all_analyses.push_back(a);
+            export_sparsity_pattern(ch_matrix_, "ch", output_dir, mpi_communicator_, pcout_);
+        }
+
+        // Poisson matrix
+        if (params_.enable_magnetic)
+        {
+            auto a = analyze_sparsity(phi_matrix_, "Poisson");
+            unsigned int global_bw = 0;
+            MPI_Reduce(&a.bandwidth, &global_bw, 1, MPI_UNSIGNED, MPI_MAX, 0, mpi_communicator_);
+            if (MPIUtils::is_root(mpi_communicator_))
+                a.bandwidth = global_bw;
+            all_analyses.push_back(a);
+            export_sparsity_pattern(phi_matrix_, "poisson", output_dir, mpi_communicator_, pcout_);
+        }
+
+        // Magnetization matrix (only if DG transport enabled, otherwise L2 projection)
+        if (params_.enable_magnetic && params_.use_dg_transport
+            && M_matrix_.m() > 0 && M_matrix_.n_nonzero_elements() > 0)
+        {
+            auto a = analyze_sparsity(M_matrix_, "Magnetization");
+            unsigned int global_bw = 0;
+            MPI_Reduce(&a.bandwidth, &global_bw, 1, MPI_UNSIGNED, MPI_MAX, 0, mpi_communicator_);
+            if (MPIUtils::is_root(mpi_communicator_))
+                a.bandwidth = global_bw;
+            all_analyses.push_back(a);
+            export_sparsity_pattern(M_matrix_, "magnetization", output_dir, mpi_communicator_, pcout_);
+        }
+
+        // NS matrix (need to assemble first — it's assembled each step)
+        // Skip: NS matrix is zero at setup. It will be dumped after first step solve.
+
+        // Write summary
+        if (MPIUtils::is_root(mpi_communicator_))
+            write_sparsity_summary(all_analyses, output_dir, params_.renumber_dofs, pcout_);
+
+        pcout_ << "[Sparsity Export] Done.\n\n";
+    }
 
     // ========================================================================
     // PRINT ROSENSWEIG VALIDATION REFERENCE (one-time at startup)
@@ -218,10 +286,15 @@ void PhaseFieldProblem<dim>::run()
     while (time_ < t_final - 1e-12 && timestep_number_ <= params_.time.max_steps)
     {
         // Adaptive mesh refinement (before solving on this step)
+        double amr_time_this_step = 0.0;
         if (params_.mesh.use_amr && timestep_number_ > 0 &&
             timestep_number_ % params_.mesh.amr_interval == 0)
         {
+            CumulativeTimer t_amr;
+            t_amr.start();
             refine_mesh();
+            t_amr.stop();
+            amr_time_this_step = t_amr.last();
         }
 
         time_ += dt;
@@ -378,7 +451,7 @@ void PhaseFieldProblem<dim>::run()
         theta_old_solution_ = theta_solution_;
         theta_old_relevant_ = theta_relevant_;
 
-        if (params_.enable_magnetic && params_.use_dg_transport)
+        if (params_.enable_magnetic)
         {
             Mx_old_solution_ = Mx_solution_;
             My_old_solution_ = My_solution_;
@@ -395,8 +468,11 @@ void PhaseFieldProblem<dim>::run()
         step_timing.step_total = step_timer.last();
 
         // ====================================================================
-        // COMPUTE DIAGNOSTICS
+        // COMPUTE DIAGNOSTICS (timed for parallel diagnostics)
         // ====================================================================
+        CumulativeTimer t_diagnostics;
+        t_diagnostics.start();
+
         StepData data = compute_system_diagnostics<dim>(
             theta_dof_handler_, theta_relevant_,
             params_.enable_magnetic ? &phi_dof_handler_ : nullptr,
@@ -432,10 +508,8 @@ void PhaseFieldProblem<dim>::run()
         {
             update_poisson_solver_info(data, last_poisson_info_.iterations,
                                        last_poisson_info_.residual, step_timing.poisson_time);
-            // Add Picard iteration count to magnetization info
-            if (params_.use_dg_transport)
-                update_mag_solver_info(data, last_M_info_.iterations,
-                                       last_M_info_.residual, step_timing.mag_time);
+            update_mag_solver_info(data, last_M_info_.iterations,
+                                   last_M_info_.residual, step_timing.mag_time);
         }
         if (params_.enable_ns)
             update_ns_solver_info(data, last_ns_info_.iterations, 0,
@@ -451,6 +525,8 @@ void PhaseFieldProblem<dim>::run()
         update_mesh_info(data, triangulation_.n_global_active_cells(),
                          theta_dof_handler_.n_dofs());
 
+        t_diagnostics.stop();
+
         // ====================================================================
         // LOGGING
         // ====================================================================
@@ -458,6 +534,162 @@ void PhaseFieldProblem<dim>::run()
         // CSV logging (every step)
         metrics.log_step(data);
         timing.log_step(timestep_number_, time_, step_timing);
+
+        // ====================================================================
+        // PARALLEL DIAGNOSTICS (optional, --parallel-diag flag)
+        // ====================================================================
+        if (parallel_diag)
+        {
+            ParallelStepData pdata;
+            pdata.step = timestep_number_;
+            pdata.time = time_;
+
+            // --- Timing breakdown (from instrumented solve methods) ---
+            pdata.ch_assemble_time = last_ch_assemble_time_;
+            pdata.ch_solve_time = last_ch_solve_time_;
+            pdata.poisson_assemble_time = last_poisson_assemble_time_;
+            pdata.poisson_solve_time = last_poisson_solve_time_;
+            pdata.mag_time = last_mag_time_;
+            pdata.ns_assemble_time = last_ns_assemble_time_;
+            pdata.ns_solve_time = last_ns_solve_time_;
+            pdata.diagnostics_time = t_diagnostics.last();
+            pdata.amr_time = amr_time_this_step;
+            pdata.step_total = step_timing.step_total;
+
+            // --- Picard/BGS iteration counts ---
+            pdata.picard_iterations = last_picard_iterations_;
+            pdata.bgs_iterations = last_bgs_iterations_;
+
+            // --- Solver iterations ---
+            pdata.ch_solver_iters = last_ch_info_.iterations;
+            pdata.poisson_solver_iters = last_poisson_info_.iterations;
+            pdata.mag_solver_iters = last_M_info_.iterations;
+            pdata.ns_solver_iters = last_ns_info_.iterations;
+
+            // --- Sparsity metrics (local nnz on this rank) ---
+            pdata.ch_nnz = ch_matrix_.n_nonzero_elements();
+            if (params_.enable_magnetic)
+            {
+                pdata.poisson_nnz = phi_matrix_.n_nonzero_elements();
+                pdata.mag_nnz = params_.use_dg_transport ?
+                    M_matrix_.n_nonzero_elements() : 0;
+            }
+            if (params_.enable_ns)
+                pdata.ns_nnz = ns_matrix_.n_nonzero_elements();
+
+            // --- Bandwidth (only computed at step 1; cached for subsequent steps) ---
+            // Computing bandwidth requires iterating all entries — expensive every step
+            {
+                static unsigned int cached_ch_bw = 0, cached_poi_bw = 0;
+                static unsigned int cached_mag_bw = 0, cached_ns_bw = 0;
+                static bool bandwidth_computed = false;
+
+                if (!bandwidth_computed)
+                {
+                    auto compute_bandwidth = [](const dealii::TrilinosWrappers::SparseMatrix& mat)
+                        -> unsigned int
+                    {
+                        unsigned int max_bw = 0;
+                        const auto range = mat.local_range();
+                        for (unsigned int i = range.first; i < range.second; ++i)
+                        {
+                            for (auto entry = mat.begin(i); entry != mat.end(i); ++entry)
+                            {
+                                const unsigned int j = entry->column();
+                                const unsigned int dist = (i > j) ? (i - j) : (j - i);
+                                if (dist > max_bw) max_bw = dist;
+                            }
+                        }
+                        return max_bw;
+                    };
+
+                    cached_ch_bw = compute_bandwidth(ch_matrix_);
+                    if (params_.enable_magnetic)
+                        cached_poi_bw = compute_bandwidth(phi_matrix_);
+                    if (params_.enable_magnetic && params_.use_dg_transport
+                        && M_matrix_.m() > 0 && M_matrix_.n_nonzero_elements() > 0)
+                        cached_mag_bw = compute_bandwidth(M_matrix_);
+                    if (params_.enable_ns && ns_matrix_.m() > 0
+                        && ns_matrix_.n_nonzero_elements() > 0)
+                        cached_ns_bw = compute_bandwidth(ns_matrix_);
+
+                    bandwidth_computed = true;
+                }
+
+                pdata.ch_bandwidth = cached_ch_bw;
+                pdata.poisson_bandwidth = cached_poi_bw;
+                pdata.mag_bandwidth = cached_mag_bw;
+                pdata.ns_bandwidth = cached_ns_bw;
+            }
+
+            // --- Load balance (per-rank) ---
+            pdata.local_cells = triangulation_.n_locally_owned_active_cells();
+            // Ghost cells = total active cells on this partition - locally owned
+            pdata.ghost_cells = 0; // Not easily available; p4est ghost count is internal
+            pdata.local_dofs_theta = theta_locally_owned_.n_elements();
+            pdata.local_dofs_phi = params_.enable_magnetic ?
+                phi_locally_owned_.n_elements() : 0;
+            pdata.local_dofs_M = params_.enable_magnetic ?
+                M_locally_owned_.n_elements() : 0;
+            pdata.local_dofs_ns = params_.enable_ns ?
+                ns_locally_owned_.n_elements() : 0;
+            pdata.total_local_dofs = pdata.local_dofs_theta + pdata.local_dofs_phi
+                                   + pdata.local_dofs_M + pdata.local_dofs_ns;
+            pdata.global_cells = triangulation_.n_global_active_cells();
+            pdata.global_dofs = theta_dof_handler_.n_dofs()
+                + (params_.enable_magnetic ? phi_dof_handler_.n_dofs() : 0)
+                + (params_.enable_magnetic ? M_dof_handler_.n_dofs() : 0)
+                + (params_.enable_ns ?
+                    (ux_dof_handler_.n_dofs() + uy_dof_handler_.n_dofs()
+                     + p_dof_handler_.n_dofs()) : 0);
+
+            // --- AMR levels ---
+            pdata.amr_min_level = triangulation_.n_global_levels() > 0 ? 0 : 0;
+            pdata.amr_max_level = triangulation_.n_global_levels() - 1;
+
+            // --- Memory ---
+            pdata.memory_mb = ParallelDiagnosticsLogger::get_memory_usage_mb();
+
+            // --- MPI reductions (computes imbalance ratios) ---
+            pdata.compute_mpi_reductions(mpi_communicator_);
+
+            // --- Log ---
+            parallel_diag->log_step(pdata);
+        }
+
+        // Sparsity export of NS matrix (only after step 1, when NS matrix is assembled)
+        if (params_.dump_sparsity && timestep_number_ == 1 && params_.enable_ns)
+        {
+            pcout_ << "[Sparsity Export] Dumping NS matrix (after step 1)...\n";
+            export_sparsity_pattern(ns_matrix_, "ns", output_dir, mpi_communicator_, pcout_);
+
+            // Append NS to summary
+            auto ns_analysis = analyze_sparsity(ns_matrix_, "NS");
+            unsigned int global_bw = 0;
+            MPI_Reduce(&ns_analysis.bandwidth, &global_bw, 1, MPI_UNSIGNED, MPI_MAX, 0, mpi_communicator_);
+            if (MPIUtils::is_root(mpi_communicator_))
+            {
+                ns_analysis.bandwidth = global_bw;
+
+                // Append to summary file
+                std::string path = output_dir + "/sparsity_summary.csv";
+                std::ofstream f(path, std::ios::app);
+                if (f.is_open())
+                {
+                    f << ns_analysis.name << ","
+                      << ns_analysis.n_rows << "," << ns_analysis.n_cols << ","
+                      << ns_analysis.total_nnz << ","
+                      << ns_analysis.bandwidth << ","
+                      << std::fixed << std::setprecision(2) << ns_analysis.avg_bandwidth << ","
+                      << ns_analysis.min_nnz_per_row << "," << ns_analysis.max_nnz_per_row << ","
+                      << std::setprecision(2) << ns_analysis.avg_nnz_per_row << ","
+                      << std::setprecision(2) << ns_analysis.std_nnz_per_row << ","
+                      << std::scientific << std::setprecision(4) << ns_analysis.density << "\n";
+                    f.close();
+                }
+            }
+            pcout_ << "[Sparsity Export] NS matrix done.\n";
+        }
 
         // Console output (every N steps)
         if (timestep_number_ % output_frequency == 0)
@@ -551,15 +783,13 @@ void PhaseFieldProblem<dim>::run()
 template <int dim>
 unsigned int PhaseFieldProblem<dim>::solve_poisson_magnetization_picard(double dt)
 {
+    // Reset accumulated Poisson timing for this step's Picard loop
+    last_poisson_assemble_time_ = 0.0;
+    last_poisson_solve_time_ = 0.0;
+    last_mag_time_ = 0.0;
+
     // Update ghosted theta for magnetization (from CH solve)
     theta_relevant_ = theta_solution_;
-
-    if (!params_.use_dg_transport)
-    {
-        // No DG transport - just solve Poisson once
-        solve_poisson();
-        return 1;
-    }
 
     const double picard_tol = params_.picard_tolerance;
     const double omega = params_.picard_omega;
@@ -579,7 +809,8 @@ unsigned int PhaseFieldProblem<dim>::solve_poisson_magnetization_picard(double d
         My_prev = My_solution_;
 
         // ================================================================
-        // Solve Poisson: uses current M
+        // Solve Poisson (Paper Eq. 42c): uses current M
+        //   (∇Φ^k, ∇v) = (h_a - M^{k-1}, ∇v)
         // ================================================================
         Mx_relevant_ = Mx_solution_;
         My_relevant_ = My_solution_;
@@ -588,10 +819,26 @@ unsigned int PhaseFieldProblem<dim>::solve_poisson_magnetization_picard(double d
         phi_relevant_ = phi_solution_;
 
         // ================================================================
-        // Solve Magnetization: uses new φ (hence new H = ∇φ)
+        // Update Magnetization using new φ (hence new H = ∇φ)
         // ================================================================
-        bool matrix_changed = (picard_iter == 0); // Only assemble matrix on first iteration
-        solve_magnetization(dt, matrix_changed);
+        {
+            CumulativeTimer t_mag;
+            t_mag.start();
+            if (params_.use_dg_transport)
+            {
+                // DG transport PDE: ∂M/∂t + (u·∇)M = (1/τ)(χ(θ)H - M)
+                bool matrix_changed = (picard_iter == 0);
+                solve_magnetization(dt, matrix_changed);
+            }
+            else
+            {
+                // Paper Eq. 42d: algebraic L2 projection M = χ(θ)∇Φ
+                // Cell-local since DG mass matrix is block-diagonal
+                project_equilibrium_magnetization();
+            }
+            t_mag.stop();
+            last_mag_time_ += t_mag.last();
+        }
 
         // ================================================================
         // Under-relaxation for stability
@@ -654,7 +901,10 @@ unsigned int PhaseFieldProblem<dim>::solve_poisson_magnetization_picard(double d
 template <int dim>
 void PhaseFieldProblem<dim>::solve_ch(double dt)
 {
+    CumulativeTimer t_assemble, t_solve;
+
     // Assemble CH system
+    t_assemble.start();
     assemble_ch_system<dim>(
         theta_dof_handler_,
         psi_dof_handler_,
@@ -671,8 +921,10 @@ void PhaseFieldProblem<dim>::solve_ch(double dt)
         ch_constraints_,
         ch_matrix_,
         ch_rhs_);
+    t_assemble.stop();
 
     // Solve and extract θ, ψ
+    t_solve.start();
     last_ch_info_ = solve_ch_system(
         ch_matrix_,
         ch_rhs_,
@@ -688,6 +940,11 @@ void PhaseFieldProblem<dim>::solve_ch(double dt)
         params_.solvers.ch,
         mpi_communicator_,
         params_.output.verbose);
+    t_solve.stop();
+
+    // Record assembly/solve split for parallel diagnostics
+    last_ch_assemble_time_ = t_assemble.last();
+    last_ch_solve_time_ = t_solve.last();
 
     // Update ghosted vectors
     theta_relevant_ = theta_solution_;
@@ -706,7 +963,10 @@ void PhaseFieldProblem<dim>::solve_ch(double dt)
 template <int dim>
 void PhaseFieldProblem<dim>::solve_poisson()
 {
+    CumulativeTimer t_assemble, t_solve;
+
     // Assemble Poisson RHS (matrix is constant, assembled at setup)
+    t_assemble.start();
     assemble_poisson_rhs<dim>(
         phi_dof_handler_,
         M_dof_handler_,
@@ -716,6 +976,7 @@ void PhaseFieldProblem<dim>::solve_poisson()
         time_,
         phi_constraints_,
         phi_rhs_);
+    t_assemble.stop();
 
     // Initialize solver if needed
     if (!poisson_solver_)
@@ -728,11 +989,17 @@ void PhaseFieldProblem<dim>::solve_poisson()
     }
 
     // Solve
+    t_solve.start();
     last_poisson_info_ = poisson_solver_->solve(
         phi_rhs_,
         phi_solution_,
         phi_constraints_,
         params_.output.verbose);
+    t_solve.stop();
+
+    // Record assembly/solve split for parallel diagnostics
+    last_poisson_assemble_time_ += t_assemble.last();  // += because Picard accumulates
+    last_poisson_solve_time_ += t_solve.last();
 
     phi_relevant_ = phi_solution_;
 
@@ -863,11 +1130,131 @@ void PhaseFieldProblem<dim>::solve_magnetization_rhs_only(double dt)
 }
 
 // ============================================================================
+// project_equilibrium_magnetization() - L2 projection M = χ(θ)∇Φ
+//
+// Paper Eq. 42d: (M^k, z) = (χ₀ f_ε(Θ^{k-1}) ∇Φ^k, z)  ∀z ∈ M_h
+//
+// Since DG mass matrix is block-diagonal (no inter-element coupling),
+// this reduces to independent cell-local L2 projections:
+//   M_mass_local * M_local = RHS_local
+// where RHS_i = ∫_K χ(θ) ∂Φ/∂x_d · z_i dx
+//
+// This is the EXACT paper formulation — algebraic, no transport PDE.
+// ============================================================================
+template <int dim>
+void PhaseFieldProblem<dim>::project_equilibrium_magnetization()
+{
+    const auto& fe_M = M_dof_handler_.get_fe();
+    const auto& fe_phi = phi_dof_handler_.get_fe();
+    const auto& fe_theta = theta_dof_handler_.get_fe();
+
+    const unsigned int dofs_per_cell_M = fe_M.n_dofs_per_cell();
+
+    // Quadrature: degree M + degree phi (grad) + 1 for accuracy
+    const unsigned int quad_degree = fe_M.degree + fe_phi.degree + 1;
+    dealii::QGauss<dim> quadrature(quad_degree);
+    const unsigned int n_q_points = quadrature.size();
+
+    dealii::FEValues<dim> fe_values_M(fe_M, quadrature,
+                                       dealii::update_values | dealii::update_JxW_values);
+    dealii::FEValues<dim> fe_values_phi(fe_phi, quadrature,
+                                         dealii::update_gradients);
+    dealii::FEValues<dim> fe_values_theta(fe_theta, quadrature,
+                                           dealii::update_values);
+
+    // Cell-local storage
+    dealii::FullMatrix<double> local_mass(dofs_per_cell_M, dofs_per_cell_M);
+    dealii::Vector<double> local_rhs_x(dofs_per_cell_M);
+    dealii::Vector<double> local_rhs_y(dofs_per_cell_M);
+    dealii::Vector<double> local_sol_x(dofs_per_cell_M);
+    dealii::Vector<double> local_sol_y(dofs_per_cell_M);
+
+    std::vector<dealii::types::global_dof_index> local_dof_indices(dofs_per_cell_M);
+
+    // Quadrature-point data
+    std::vector<dealii::Tensor<1, dim>> grad_phi_q(n_q_points);
+    std::vector<double> theta_q(n_q_points);
+
+    // Iterate over all three DoF handlers in sync (same triangulation)
+    auto cell_M     = M_dof_handler_.begin_active();
+    auto cell_phi   = phi_dof_handler_.begin_active();
+    auto cell_theta = theta_dof_handler_.begin_active();
+
+    for (; cell_M != M_dof_handler_.end(); ++cell_M, ++cell_phi, ++cell_theta)
+    {
+        if (!cell_M->is_locally_owned())
+            continue;
+
+        fe_values_M.reinit(cell_M);
+        fe_values_phi.reinit(cell_phi);
+        fe_values_theta.reinit(cell_theta);
+
+        // Get φ gradient and θ values at quadrature points
+        fe_values_phi.get_function_gradients(phi_relevant_, grad_phi_q);
+        fe_values_theta.get_function_values(theta_relevant_, theta_q);
+
+        local_mass = 0;
+        local_rhs_x = 0;
+        local_rhs_y = 0;
+
+        for (unsigned int q = 0; q < n_q_points; ++q)
+        {
+            // χ(θ) = χ₀ H(θ/ε) — susceptibility from material_properties.h
+            const double chi = susceptibility(theta_q[q],
+                                               params_.physics.epsilon,
+                                               params_.physics.chi_0);
+            const double JxW = fe_values_M.JxW(q);
+
+            for (unsigned int i = 0; i < dofs_per_cell_M; ++i)
+            {
+                const double z_i = fe_values_M.shape_value(i, q);
+
+                // RHS: (χ(θ) ∇Φ, z)
+                local_rhs_x(i) += chi * grad_phi_q[q][0] * z_i * JxW;
+                local_rhs_y(i) += chi * grad_phi_q[q][1] * z_i * JxW;
+
+                for (unsigned int j = 0; j < dofs_per_cell_M; ++j)
+                {
+                    const double z_j = fe_values_M.shape_value(j, q);
+                    // Mass matrix: (z_j, z_i)
+                    local_mass(i, j) += z_i * z_j * JxW;
+                }
+            }
+        }
+
+        // Solve cell-local system: mass * sol = rhs
+        local_mass.gauss_jordan();
+        local_mass.vmult(local_sol_x, local_rhs_x);
+        local_mass.vmult(local_sol_y, local_rhs_y);
+
+        // Distribute to global vectors
+        cell_M->get_dof_indices(local_dof_indices);
+        for (unsigned int i = 0; i < dofs_per_cell_M; ++i)
+        {
+            if (M_locally_owned_.is_element(local_dof_indices[i]))
+            {
+                Mx_solution_[local_dof_indices[i]] = local_sol_x(i);
+                My_solution_[local_dof_indices[i]] = local_sol_y(i);
+            }
+        }
+    }
+
+    Mx_solution_.compress(dealii::VectorOperation::insert);
+    My_solution_.compress(dealii::VectorOperation::insert);
+
+    // Update ghosted vectors
+    Mx_relevant_ = Mx_solution_;
+    My_relevant_ = My_solution_;
+}
+
+// ============================================================================
 // solve_ns() - Navier-Stokes solver with Kelvin force
 // ============================================================================
 template <int dim>
 void PhaseFieldProblem<dim>::solve_ns(double dt)
 {
+    CumulativeTimer t_assemble, t_solve;
+
     // Compute spatially-varying viscosity: ν(θ) = ν_w + (ν_f - ν_w) * H(θ)
     const double nu = 0.5 * (params_.physics.nu_water + params_.physics.nu_ferro);
 
@@ -875,6 +1262,7 @@ void PhaseFieldProblem<dim>::solve_ns(double dt)
     const bool include_convection = true;
 
     // Assemble with magnetic forces if enabled
+    t_assemble.start();
     if (params_.enable_magnetic)
     {
         assemble_ns_system_ferrofluid_parallel<dim>(
@@ -953,8 +1341,10 @@ void PhaseFieldProblem<dim>::solve_ns(double dt)
             time_ - dt,
             params_.domain.y_max - params_.domain.y_min);
     }
+    t_assemble.stop();
 
     // Solve NS system - select direct or iterative based on --direct flag
+    t_solve.start();
     if (!params_.solvers.ns.use_iterative)
     {
         // Direct solver with pressure pinning (fast for refinement <= 4)
@@ -1004,6 +1394,11 @@ void PhaseFieldProblem<dim>::solve_ns(double dt)
         uy_solution_,
         p_solution_,
         mpi_communicator_);
+    t_solve.stop();
+
+    // Record assembly/solve split for parallel diagnostics
+    last_ns_assemble_time_ = t_assemble.last();
+    last_ns_solve_time_ = t_solve.last();
 
     // Update ghosted vectors
     ux_relevant_ = ux_solution_;
@@ -1070,7 +1465,7 @@ void PhaseFieldProblem<dim>::output_results(const std::string& output_dir)
         M_locally_owned_, M_locally_relevant_, mpi_communicator_);
     dealii::TrilinosWrappers::MPI::Vector My_out(
         M_locally_owned_, M_locally_relevant_, mpi_communicator_);
-    if (params_.enable_magnetic && params_.use_dg_transport)
+    if (params_.enable_magnetic)
     {
         Mx_out = Mx_solution_;
         My_out = My_solution_;
@@ -1111,7 +1506,7 @@ void PhaseFieldProblem<dim>::output_results(const std::string& output_dir)
                                      dealii::DataOut<dim>::type_cell_data);
         }
 
-        if (params_.enable_magnetic && params_.use_dg_transport)
+        if (params_.enable_magnetic)
         {
             dealii::FEValues<dim> fe_mag(M_dof_handler_.get_fe(),
                                           q_mid, dealii::update_values);

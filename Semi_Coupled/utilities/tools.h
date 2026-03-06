@@ -296,6 +296,7 @@ inline void write_run_info(const std::string& output_dir,
     file << "  enable_gravity          = " << (params.enable_gravity ? "true" : "FALSE") << "\n";
     file << "  use_dg_transport        = " << (params.use_dg_transport ? "true" : "false") << "\n";
     file << "  use_reduced_mag_field   = " << (params.use_reduced_magnetic_field ? "TRUE (h=ha only)" : "false (h=ha+hd)") << "\n";
+    file << "  implicit_ch_convection  = " << (params.physics.implicit_ch_convection ? "true (no CFL limit)" : "false (CFL-limited)") << "\n";
     file << "\n";
 
     // Time stepping

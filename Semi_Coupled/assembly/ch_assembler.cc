@@ -8,7 +8,9 @@
 //   Eq 42a: (δθ^k/τ, Λ) - (U^{k-1} θ^{k-1}, ∇Λ) + γ(∇ψ^k, ∇Λ) = 0
 //   Eq 42b: (ψ^k, Υ) - ε(∇θ^k, ∇Υ) - (1/ε)(f(θ^{k-1}), Υ) - (1/η)(δθ^k, Υ) = 0
 //
-// Convection is EXPLICIT: θ^{k-1} on RHS with velocity U^{k-1}
+// Convection treatment controlled by params.physics.implicit_ch_convection:
+//   EXPLICIT (original): θ^{k-1} on RHS with velocity U^{k-1} (CFL-limited)
+//   IMPLICIT (default):  θ^k on LHS with velocity U^{k-1} (unconditionally stable)
 // (Block-GS: CH solved first, so only U^{k-1} is available).
 // The +γ sign (vs paper's -γ) is due to ψ_code = -ψ_paper.
 //
@@ -176,9 +178,14 @@ void assemble_ch_system(
                     const unsigned int j_psi = dofs_per_cell + j;
 
                     // Eq 42a LHS: (θ^k/τ, Λ) + γ(∇ψ^k, ∇Λ)
-                    // Convection explicit: (U^{k-1} θ^{k-1}, ∇Λ) on RHS below
                     local_matrix(i_theta, j_theta) += (1.0 / dt) * theta_j * Lambda_i * JxW;
                     local_matrix(i_theta, j_psi) += gamma * (grad_psi_j * grad_Lambda_i) * JxW;
+
+                    // IMPLICIT convection: -(U · ∇Λ_i) θ_j on LHS matrix
+                    // Integration by parts: -∫ U·∇θ Λ dx = ∫ θ (U·∇Λ) dx
+                    // For implicit: move θ^k from RHS to LHS → subtract (U·∇Λ_i) θ_j
+                    if (params.physics.implicit_ch_convection && use_velocity_convection)
+                        local_matrix(i_theta, j_theta) -= (U * grad_Lambda_i) * theta_j * JxW;
 
                     // Eq 42b LHS: (ψ^k, Υ) - ε(∇θ^k, ∇Υ) - (1/η)(θ^k, Υ)
                     // Note: Paper has -1/η (θ^k - θ^{k-1}).
@@ -188,10 +195,11 @@ void assemble_ch_system(
                     local_matrix(i_psi, j_theta) -= (1.0 / eta) * theta_j * Upsilon_i * JxW;     // FIX: -1/eta
                 }
 
-                // Eq 42a RHS: (θ^{k-1}/τ, Λ) + (U^{k-1} θ^{k-1}, ∇Λ)
-                // Explicit convection: U^{k-1} and θ^{k-1} both at old time
+                // Eq 42a RHS: (θ^{k-1}/τ, Λ) + convection
                 local_rhs(i_theta) += (1.0 / dt) * theta_old_q * Lambda_i * JxW;
-                if (use_velocity_convection)
+
+                // EXPLICIT convection: (U^{k-1} θ^{k-1}, ∇Λ) on RHS only when NOT implicit
+                if (!params.physics.implicit_ch_convection && use_velocity_convection)
                     local_rhs(i_theta) += theta_old_q * (U * grad_Lambda_i) * JxW;
 
                 // Eq 42b RHS: (1/ε)(f(θ^{k-1}), Υ) - (1/η)(θ^{k-1}, Υ)
@@ -212,26 +220,56 @@ void assemble_ch_system(
             // Use source with convection if velocity is provided, otherwise standalone
             if (use_velocity_convection)
             {
-                CHSourceThetaWithConvection<dim> source_theta(gamma, dt, L_y);
+                // Choose MMS source based on implicit/explicit convection treatment
+                // Implicit: U·∇θ^n (gradient at current time)
+                // Explicit: U·∇θ^{n-1} (gradient at old time)
                 CHSourcePsi<dim> source_psi(eps, dt, L_y);
-                source_theta.set_time(current_time);
                 source_psi.set_time(current_time);
 
-                for (unsigned int q = 0; q < n_q_points; ++q)
+                if (params.physics.implicit_ch_convection)
                 {
-                    const double JxW = theta_fe_values.JxW(q);
-                    const auto& x_q = theta_fe_values.quadrature_point(q);
+                    CHSourceThetaWithImplicitConvection<dim> source_theta(gamma, dt, L_y);
+                    source_theta.set_time(current_time);
 
-                    const double f_theta = source_theta.value(x_q);
-                    const double f_psi = source_psi.value(x_q);
-
-                    for (unsigned int i = 0; i < dofs_per_cell; ++i)
+                    for (unsigned int q = 0; q < n_q_points; ++q)
                     {
-                        const double Lambda_i = theta_fe_values.shape_value(i, q);
-                        const double Upsilon_i = psi_fe_values.shape_value(i, q);
+                        const double JxW = theta_fe_values.JxW(q);
+                        const auto& x_q = theta_fe_values.quadrature_point(q);
 
-                        local_rhs(i) += f_theta * Lambda_i * JxW;
-                        local_rhs(dofs_per_cell + i) += f_psi * Upsilon_i * JxW;
+                        const double f_theta = source_theta.value(x_q);
+                        const double f_psi = source_psi.value(x_q);
+
+                        for (unsigned int i = 0; i < dofs_per_cell; ++i)
+                        {
+                            const double Lambda_i = theta_fe_values.shape_value(i, q);
+                            const double Upsilon_i = psi_fe_values.shape_value(i, q);
+
+                            local_rhs(i) += f_theta * Lambda_i * JxW;
+                            local_rhs(dofs_per_cell + i) += f_psi * Upsilon_i * JxW;
+                        }
+                    }
+                }
+                else
+                {
+                    CHSourceThetaWithConvection<dim> source_theta(gamma, dt, L_y);
+                    source_theta.set_time(current_time);
+
+                    for (unsigned int q = 0; q < n_q_points; ++q)
+                    {
+                        const double JxW = theta_fe_values.JxW(q);
+                        const auto& x_q = theta_fe_values.quadrature_point(q);
+
+                        const double f_theta = source_theta.value(x_q);
+                        const double f_psi = source_psi.value(x_q);
+
+                        for (unsigned int i = 0; i < dofs_per_cell; ++i)
+                        {
+                            const double Lambda_i = theta_fe_values.shape_value(i, q);
+                            const double Upsilon_i = psi_fe_values.shape_value(i, q);
+
+                            local_rhs(i) += f_theta * Lambda_i * JxW;
+                            local_rhs(dofs_per_cell + i) += f_psi * Upsilon_i * JxW;
+                        }
                     }
                 }
             }
