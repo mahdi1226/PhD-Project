@@ -93,6 +93,20 @@ CahnHilliardSubsystem<dim>::get_old_relevant() const
 }
 
 template <int dim>
+dealii::TrilinosWrappers::MPI::Vector&
+CahnHilliardSubsystem<dim>::get_solution_mutable()
+{
+    return solution_;
+}
+
+template <int dim>
+dealii::TrilinosWrappers::MPI::Vector&
+CahnHilliardSubsystem<dim>::get_old_solution_mutable()
+{
+    return old_solution_relevant_;
+}
+
+template <int dim>
 void CahnHilliardSubsystem<dim>::update_ghosts()
 {
     if (!ghosts_valid_)

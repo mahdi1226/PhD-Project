@@ -5,11 +5,14 @@
 //   All material constants (ν, ν_r, μ₀, ȷ, c₁, c₂, σ, 𝒯, κ₀) are spatially
 //   uniform and stored in Parameters. No phase-field dependence.
 //
-// Phase B (future): Two-phase ferrofluid with Cahn-Hilliard
-//   Material properties become functions of the phase field c (or θ):
-//     χ(θ) = χ₀·(θ+1)/2        magnetic susceptibility
-//     ν(θ) = ν_w·(1-θ)/2 + ν_f·(θ+1)/2  viscosity
-//     ρ(θ) = 1 + r·H(θ/ε)      density ratio
+// Phase B: Two-phase ferrofluid with Cahn-Hilliard
+//   Material properties become functions of the phase field θ:
+//     χ(θ) = χ₀·H(θ/ε)         magnetic susceptibility (sigmoid)
+//     ν(θ) = ν_w + (ν_f-ν_w)·H(θ/ε)  viscosity (sigmoid)
+//     ρ(θ) = 1 + r·H(θ/ε)      density ratio (sigmoid)
+//
+//   Zhang, He & Yang (2021) use sigmoid 1/(1+e^{-(2Φ-1)/ε}) for ALL
+//   material properties. In θ convention: H(θ/ε) = 1/(1+e^{-θ/ε}).
 //
 //   Convention: θ ∈ {-1, +1}. Mapping from Φ ∈ {0, 1}: Φ = (θ+1)/2.
 //
@@ -46,44 +49,45 @@ inline double heaviside_derivative(double x)
 }
 
 // ============================================================================
-// Phase B: Magnetic Susceptibility χ(θ) = χ₀·(θ+1)/2
+// Phase B: Magnetic Susceptibility χ(θ) = χ₀·H(θ/ε)
 //
-// θ = +1 (ferrofluid)    → χ = χ₀
-// θ = -1 (non-magnetic)  → χ = 0
+// Zhang (2021): χ(Φ) = χ₀/(1+e^{-(2Φ-1)/ε})
+// In θ convention: χ(θ) = χ₀·H(θ/ε) = χ₀/(1+e^{-θ/ε})
+//
+// θ = +1 (ferrofluid)    → χ ≈ χ₀  (sigmoid → 1)
+// θ = -1 (non-magnetic)  → χ ≈ 0   (sigmoid → 0)
+// Transition width ~ ε (sharp step for small ε)
 // ============================================================================
-inline double susceptibility(double theta, double chi_0)
+inline double susceptibility(double theta, double chi_0, double epsilon)
 {
-    const double phi = 0.5 * (theta + 1.0);
-    const double phi_clamped = (phi < 0.0) ? 0.0 : (phi > 1.0 ? 1.0 : phi);
-    return chi_0 * phi_clamped;
+    return chi_0 * heaviside(theta / epsilon);
 }
 
-inline double susceptibility_derivative(double theta, double chi_0)
+inline double susceptibility_derivative(double theta, double chi_0, double epsilon)
 {
-    const double phi = 0.5 * (theta + 1.0);
-    if (phi < 0.0 || phi > 1.0)
-        return 0.0;
-    return 0.5 * chi_0;
+    return chi_0 * heaviside_derivative(theta / epsilon) / epsilon;
 }
 
 // ============================================================================
 // Phase B: Magnetic Permeability μ(θ) = 1 + χ(θ)
 // ============================================================================
-inline double permeability(double theta, double chi_0)
+inline double permeability(double theta, double chi_0, double epsilon)
 {
-    return 1.0 + susceptibility(theta, chi_0);
+    return 1.0 + susceptibility(theta, chi_0, epsilon);
 }
 
 // ============================================================================
-// Phase B: Viscosity ν(θ) = ν_w·(1-θ)/2 + ν_f·(θ+1)/2
+// Phase B: Viscosity ν(θ) = ν_w + (ν_f − ν_w)·H(θ/ε)
 //
-// Linear interpolation between phases.
+// Zhang (2021): ν(Φ) = ν_w + (ν_f − ν_w)/(1+e^{-(2Φ-1)/ε})
+// In θ convention: ν(θ) = ν_w + (ν_f − ν_w)·H(θ/ε)
+//
+// Sigmoid interpolation: sharp transition at interface.
 // ============================================================================
-inline double viscosity(double theta, double nu_water, double nu_ferro)
+inline double viscosity(double theta, double nu_water, double nu_ferro,
+                        double epsilon)
 {
-    const double phi = 0.5 * (theta + 1.0);
-    const double phi_clamped = (phi < 0.0) ? 0.0 : (phi > 1.0 ? 1.0 : phi);
-    return nu_water * (1.0 - phi_clamped) + nu_ferro * phi_clamped;
+    return nu_water + (nu_ferro - nu_water) * heaviside(theta / epsilon);
 }
 
 // ============================================================================

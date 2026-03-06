@@ -64,6 +64,7 @@ void MagnetizationSubsystem<dim>::assemble(
     const double sigma = params_.physics.sigma;
     const double kappa_0 = params_.physics.kappa_0;
     const double chi_ferro = params_.physics.chi_ferro;
+    const double beta = params_.physics.beta;
     const double eta = params_.dg.penalty_parameter;
     const double mass_coeff = 1.0 / tau + 1.0 / tau_M;
     const double old_coeff = 1.0 / tau;
@@ -98,7 +99,8 @@ void MagnetizationSubsystem<dim>::assemble(
         dealii::update_values | dealii::update_gradients);
 
     dealii::FESubfaceValues<dim> fe_subface_M(fe_, face_quadrature,
-        dealii::update_values | dealii::update_gradients);
+        dealii::update_values | dealii::update_gradients |
+        dealii::update_normal_vectors | dealii::update_JxW_values);
 
     // FEValues for Poisson (CG) — evaluate ∇φ at DG quadrature points
     std::unique_ptr<dealii::FEValues<dim>> fe_values_phi;
@@ -119,9 +121,13 @@ void MagnetizationSubsystem<dim>::assemble(
     }
 
     std::unique_ptr<dealii::FEFaceValues<dim>> fe_face_U;
+    std::unique_ptr<dealii::FESubfaceValues<dim>> fe_subface_U;
     if (has_velocity)
     {
         fe_face_U = std::make_unique<dealii::FEFaceValues<dim>>(
+            u_dof_handler.get_fe(), face_quadrature,
+            dealii::update_values);
+        fe_subface_U = std::make_unique<dealii::FESubfaceValues<dim>>(
             u_dof_handler.get_fe(), face_quadrature,
             dealii::update_values);
     }
@@ -262,11 +268,13 @@ void MagnetizationSubsystem<dim>::assemble(
             if (has_w)
                 w_q = w_vals[q];
 
-            // Phase-dependent susceptibility: χ(φ) / 𝒯
-            // In carrier (φ=-1): χ=0, relax drives M→0
-            // In ferrofluid (φ=+1): χ=χ_ferro, full response
+            // Phase-dependent susceptibility: χ(θ) = χ₀·H(θ/ε) / 𝒯
+            // Zhang (2021): sigmoid — sharp transition at interface
+            // In carrier (θ=-1): χ≈0, relax drives M→0
+            // In ferrofluid (θ=+1): χ≈χ_ferro, full response
             const double chi_q = has_ch
-                ? susceptibility(ch_theta_vals[q], chi_ferro)
+                ? susceptibility(ch_theta_vals[q], chi_ferro,
+                                 params_.cahn_hilliard_params.epsilon)
                 : kappa_0;
             const double relax_coeff_q = chi_q / tau_M;
 
@@ -288,6 +296,26 @@ void MagnetizationSubsystem<dim>::assemble(
                 {
                     cell_rhs_x(i) += (-w_q * My_old_vals[q]) * z_i * JxW;
                     cell_rhs_y(i) += (+w_q * Mx_old_vals[q]) * z_i * JxW;
+                }
+
+                // Beta term: −β m_old × (m_old × h) on RHS (explicit)
+                // Zhang (2021) Eq. 2.8: m_t + ... + β m×(m×h) = RHS
+                //   → moved to RHS: −β m×(m×h)
+                // BAC-CAB: m × (m × h) = (m·h)m − |m|²h
+                // Note: Zhang's equation uses μ in the Kelvin force but
+                // NOT in the beta term. Coefficient is just β.
+                if (beta > 0.0 && has_phi)
+                {
+                    const double m_dot_h = Mx_old_vals[q] * H[0]
+                                         + My_old_vals[q] * H[1];
+                    const double m_sq = Mx_old_vals[q] * Mx_old_vals[q]
+                                      + My_old_vals[q] * My_old_vals[q];
+                    cell_rhs_x(i) -= beta
+                        * (m_dot_h * Mx_old_vals[q] - m_sq * H[0])
+                        * z_i * JxW;
+                    cell_rhs_y(i) -= beta
+                        * (m_dot_h * My_old_vals[q] - m_sq * H[1])
+                        * z_i * JxW;
                 }
 
                 // MMS source
@@ -330,7 +358,114 @@ void MagnetizationSubsystem<dim>::assemble(
 
         // ================================================================
         // Face loop (interior faces only)
+        //
+        // Three cases for DG on adapted meshes:
+        //   1. Same-level neighbor → standard face integral (dedup by CellId)
+        //   2. Neighbor is coarser → skip (handled from coarser side)
+        //   3. Neighbor has children → subface loop (we are coarser)
         // ================================================================
+
+        // Lambda: compute face integral matrices (SIP + transport)
+        // Works with both FEFaceValues and FESubfaceValues via base class
+        auto process_face_integrals = [&](
+            const dealii::FEFaceValuesBase<dim>& fe_here,
+            const dealii::FEFaceValuesBase<dim>& fe_there,
+            const double h_face)
+        {
+            face_hh = 0.0;
+            face_ht = 0.0;
+            face_th = 0.0;
+            face_tt = 0.0;
+
+            const double penalty = eta * degree * (degree + 1) / h_face;
+
+            for (unsigned int q = 0; q < n_face_q_points; ++q)
+            {
+                const double JxW = fe_here.JxW(q);
+                const auto& normal = fe_here.normal_vector(q);
+
+                double U_dot_n = 0.0;
+                if (has_velocity)
+                {
+                    U_dot_n = ux_face_vals[q] * normal[0]
+                            + uy_face_vals[q] * normal[1];
+                }
+
+                for (unsigned int i = 0; i < dpc; ++i)
+                {
+                    const double z_h = fe_here.shape_value(i, q);
+                    const double z_t = fe_there.shape_value(i, q);
+                    const auto& grad_z_h = fe_here.shape_grad(i, q);
+                    const auto& grad_z_t = fe_there.shape_grad(i, q);
+
+                    for (unsigned int j = 0; j < dpc; ++j)
+                    {
+                        const double m_h = fe_here.shape_value(j, q);
+                        const double m_t = fe_there.shape_value(j, q);
+                        const auto& grad_m_h = fe_here.shape_grad(j, q);
+                        const auto& grad_m_t = fe_there.shape_grad(j, q);
+
+                        // SIP diffusion face terms (if σ > 0)
+                        if (sigma > 0.0)
+                        {
+                            face_hh(i, j) += sigma * penalty * m_h * z_h * JxW;
+                            face_ht(i, j) -= sigma * penalty * m_t * z_h * JxW;
+                            face_th(i, j) -= sigma * penalty * m_h * z_t * JxW;
+                            face_tt(i, j) += sigma * penalty * m_t * z_t * JxW;
+
+                            const double avg_grad_m_n_h = 0.5 * (grad_m_h * normal);
+                            const double avg_grad_m_n_t = 0.5 * (grad_m_t * normal);
+                            face_hh(i, j) -= sigma * avg_grad_m_n_h * z_h * JxW;
+                            face_ht(i, j) -= sigma * avg_grad_m_n_t * z_h * JxW;
+                            face_th(i, j) += sigma * avg_grad_m_n_h * z_t * JxW;
+                            face_tt(i, j) += sigma * avg_grad_m_n_t * z_t * JxW;
+
+                            const double avg_grad_z_n_h = 0.5 * (grad_z_h * normal);
+                            const double avg_grad_z_n_t = 0.5 * (grad_z_t * normal);
+                            face_hh(i, j) -= sigma * m_h * avg_grad_z_n_h * JxW;
+                            face_ht(i, j) += sigma * m_t * avg_grad_z_n_h * JxW;
+                            face_th(i, j) -= sigma * m_h * avg_grad_z_n_t * JxW;
+                            face_tt(i, j) += sigma * m_t * avg_grad_z_n_t * JxW;
+                        }
+
+                        // Transport face terms: -U·n [[m]] {z} + ½|U·n| [[m]][[z]]
+                        if (has_velocity && std::abs(U_dot_n) > 1e-14)
+                        {
+                            const double abs_Un = std::abs(U_dot_n);
+
+                            const double central_hh = -U_dot_n * m_h * 0.5 * z_h;
+                            const double central_ht = -U_dot_n * (-m_t) * 0.5 * z_h;
+                            const double central_th = -U_dot_n * m_h * 0.5 * z_t;
+                            const double central_tt = -U_dot_n * (-m_t) * 0.5 * z_t;
+
+                            const double upwind_hh = 0.5 * abs_Un * m_h * z_h;
+                            const double upwind_ht = 0.5 * abs_Un * (-m_t) * z_h;
+                            const double upwind_th = 0.5 * abs_Un * m_h * (-z_t);
+                            const double upwind_tt = 0.5 * abs_Un * (-m_t) * (-z_t);
+
+                            face_hh(i, j) += (central_hh + upwind_hh) * JxW;
+                            face_ht(i, j) += (central_ht + upwind_ht) * JxW;
+                            face_th(i, j) += (central_th + upwind_th) * JxW;
+                            face_tt(i, j) += (central_tt + upwind_tt) * JxW;
+                        }
+                    }
+                }
+            }
+        };
+
+        // Lambda: distribute face matrices to global system
+        auto distribute_face_matrices = [&]()
+        {
+            constraints_.distribute_local_to_global(
+                face_hh, local_dofs, system_matrix_);
+            constraints_.distribute_local_to_global(
+                face_ht, local_dofs, local_dofs_neighbor, system_matrix_);
+            constraints_.distribute_local_to_global(
+                face_th, local_dofs_neighbor, local_dofs, system_matrix_);
+            constraints_.distribute_local_to_global(
+                face_tt, local_dofs_neighbor, system_matrix_);
+        };
+
         for (unsigned int f = 0; f < dealii::GeometryInfo<dim>::faces_per_cell; ++f)
         {
             const auto face = cell->face(f);
@@ -343,27 +478,26 @@ void MagnetizationSubsystem<dim>::assemble(
             if (cell->neighbor_is_coarser(f))
                 continue;
 
-            // Determine neighbor
+            // Determine neighbor (may be non-active if it has children)
             const auto neighbor = cell->neighbor(f);
 
-            // Each internal face is visited by BOTH adjacent cells.
-            // Process only once: the cell with the smaller CellId handles it.
-            // This prevents double-counting of face flux terms.
-            if (cell->level() == neighbor->level()
-                && neighbor->id() < cell->id())
-                continue;
-
-            if (neighbor->is_ghost() || neighbor->is_locally_owned())
+            if (!neighbor->has_children())
             {
-                // Same-level or coarser processing
+                // ---- Case 1: Same-level neighbor ----
+                // Dedup: process only once per face (smaller CellId handles it)
+                if (cell->level() == neighbor->level()
+                    && neighbor->id() < cell->id())
+                    continue;
+
+                if (!(neighbor->is_ghost() || neighbor->is_locally_owned()))
+                    continue;
+
                 const unsigned int neighbor_face = cell->neighbor_of_neighbor(f);
 
                 fe_face_M.reinit(cell, f);
                 fe_face_M_neighbor.reinit(neighbor, neighbor_face);
-
                 neighbor->get_dof_indices(local_dofs_neighbor);
 
-                // Evaluate velocity at face quadrature points
                 if (has_velocity)
                 {
                     const auto u_cell = cell->as_dof_handler_iterator(u_dof_handler);
@@ -372,103 +506,45 @@ void MagnetizationSubsystem<dim>::assemble(
                     fe_face_U->get_function_values(uy_relevant, uy_face_vals);
                 }
 
-                face_hh = 0.0;
-                face_ht = 0.0;
-                face_th = 0.0;
-                face_tt = 0.0;
-
-                const double h_face = face->diameter();
-                const double penalty = eta * degree * (degree + 1) / h_face;
-
-                for (unsigned int q = 0; q < n_face_q_points; ++q)
+                process_face_integrals(fe_face_M, fe_face_M_neighbor, face->diameter());
+                distribute_face_matrices();
+            }
+            else
+            {
+                // ---- Case 3: Neighbor has children (we are coarser) ----
+                // Loop over subfaces: each child of the refined neighbor
+                // contributes a face integral with a portion of our face.
+                for (unsigned int subface = 0;
+                     subface < face->n_children(); ++subface)
                 {
-                    const double JxW = fe_face_M.JxW(q);
-                    const auto& normal = fe_face_M.normal_vector(q);
+                    const auto neighbor_child =
+                        cell->neighbor_child_on_subface(f, subface);
 
-                    // Velocity at face quadrature point
-                    double U_dot_n = 0.0;
+                    if (!neighbor_child->is_locally_owned()
+                        && !neighbor_child->is_ghost())
+                        continue;
+
+                    // The child's face index is the same as the parent's face
+                    // that borders our cell. In 2D: opposite_face = f ^ 1.
+                    const unsigned int neighbor_face = f ^ 1;
+
+                    fe_subface_M.reinit(cell, f, subface);
+                    fe_face_M_neighbor.reinit(neighbor_child, neighbor_face);
+                    neighbor_child->get_dof_indices(local_dofs_neighbor);
+
                     if (has_velocity)
                     {
-                        U_dot_n = ux_face_vals[q] * normal[0]
-                                + uy_face_vals[q] * normal[1];
+                        const auto u_cell =
+                            cell->as_dof_handler_iterator(u_dof_handler);
+                        fe_subface_U->reinit(u_cell, f, subface);
+                        fe_subface_U->get_function_values(ux_relevant, ux_face_vals);
+                        fe_subface_U->get_function_values(uy_relevant, uy_face_vals);
                     }
 
-                    for (unsigned int i = 0; i < dpc; ++i)
-                    {
-                        const double z_h = fe_face_M.shape_value(i, q);
-                        const double z_t = fe_face_M_neighbor.shape_value(i, q);
-                        const auto& grad_z_h = fe_face_M.shape_grad(i, q);
-                        const auto& grad_z_t = fe_face_M_neighbor.shape_grad(i, q);
-
-                        for (unsigned int j = 0; j < dpc; ++j)
-                        {
-                            const double m_h = fe_face_M.shape_value(j, q);
-                            const double m_t = fe_face_M_neighbor.shape_value(j, q);
-                            const auto& grad_m_h = fe_face_M.shape_grad(j, q);
-                            const auto& grad_m_t = fe_face_M_neighbor.shape_grad(j, q);
-
-                            // SIP diffusion face terms (if σ > 0)
-                            if (sigma > 0.0)
-                            {
-                                // Penalty: +η/h [[m]][[z]]
-                                // Here-here: +penalty * m_h * z_h
-                                face_hh(i, j) += sigma * penalty * m_h * z_h * JxW;
-                                face_ht(i, j) -= sigma * penalty * m_t * z_h * JxW;
-                                face_th(i, j) -= sigma * penalty * m_h * z_t * JxW;
-                                face_tt(i, j) += sigma * penalty * m_t * z_t * JxW;
-
-                                // Consistency: -{∂m/∂n}[[z]]
-                                const double avg_grad_m_n_h = 0.5 * (grad_m_h * normal);
-                                const double avg_grad_m_n_t = 0.5 * (grad_m_t * normal);
-                                face_hh(i, j) -= sigma * avg_grad_m_n_h * z_h * JxW;
-                                face_ht(i, j) -= sigma * avg_grad_m_n_t * z_h * JxW;
-                                face_th(i, j) += sigma * avg_grad_m_n_h * z_t * JxW;
-                                face_tt(i, j) += sigma * avg_grad_m_n_t * z_t * JxW;
-
-                                // Symmetry: -[[m]]{∂z/∂n}
-                                const double avg_grad_z_n_h = 0.5 * (grad_z_h * normal);
-                                const double avg_grad_z_n_t = 0.5 * (grad_z_t * normal);
-                                face_hh(i, j) -= sigma * m_h * avg_grad_z_n_h * JxW;
-                                face_ht(i, j) += sigma * m_t * avg_grad_z_n_h * JxW;
-                                face_th(i, j) -= sigma * m_h * avg_grad_z_n_t * JxW;
-                                face_tt(i, j) += sigma * m_t * avg_grad_z_n_t * JxW;
-                            }
-
-                            // Transport face terms: -U·n [[m]] {z} + ½|U·n| [[m]][[z]]
-                            if (has_velocity && std::abs(U_dot_n) > 1e-14)
-                            {
-                                const double abs_Un = std::abs(U_dot_n);
-
-                                // Central: -U·n (m_h - m_t) · ½(z_h + z_t)
-                                const double central_hh = -U_dot_n * m_h * 0.5 * z_h;
-                                const double central_ht = -U_dot_n * (-m_t) * 0.5 * z_h;
-                                const double central_th = -U_dot_n * m_h * 0.5 * z_t;
-                                const double central_tt = -U_dot_n * (-m_t) * 0.5 * z_t;
-
-                                // Upwind: ½|U·n| (m_h - m_t)(z_h - z_t)
-                                const double upwind_hh = 0.5 * abs_Un * m_h * z_h;
-                                const double upwind_ht = 0.5 * abs_Un * (-m_t) * z_h;
-                                const double upwind_th = 0.5 * abs_Un * m_h * (-z_t);
-                                const double upwind_tt = 0.5 * abs_Un * (-m_t) * (-z_t);
-
-                                face_hh(i, j) += (central_hh + upwind_hh) * JxW;
-                                face_ht(i, j) += (central_ht + upwind_ht) * JxW;
-                                face_th(i, j) += (central_th + upwind_th) * JxW;
-                                face_tt(i, j) += (central_tt + upwind_tt) * JxW;
-                            }
-                        }
-                    }
+                    const double h_sub = face->child(subface)->diameter();
+                    process_face_integrals(fe_subface_M, fe_face_M_neighbor, h_sub);
+                    distribute_face_matrices();
                 }
-
-                // Distribute face matrices to global
-                constraints_.distribute_local_to_global(
-                    face_hh, local_dofs, system_matrix_);
-                constraints_.distribute_local_to_global(
-                    face_ht, local_dofs, local_dofs_neighbor, system_matrix_);
-                constraints_.distribute_local_to_global(
-                    face_th, local_dofs_neighbor, local_dofs, system_matrix_);
-                constraints_.distribute_local_to_global(
-                    face_tt, local_dofs_neighbor, system_matrix_);
             }
         }
 

@@ -103,8 +103,11 @@ def main():
     print(f"Bo_m = mu_0 * chi * H0^2 * R / sigma = {MU_0*CHI*R_DROP/SIGMA:.4f} * H0^2")
     print("=" * 90)
 
-    # 2D small-deformation theory coefficient
-    theory_coeff_2D = CHI / (2.0 * (2.0 + CHI))
+    # 2D small-deformation theory: pressure balance on circular interface
+    # Magnetic normal stress: f_n = (mu_0/2)*M_n^2 with M_n = chi*2H0/(2+chi)*cos(theta)
+    # Curvature perturbation: Delta_kappa = 3*delta*cos(2theta)/R^2
+    # D = Bo_m * chi / (3*(2+chi)^2)
+    theory_coeff_2D = CHI / (3.0 * (2.0 + CHI)**2)
 
     # 3D Afkhami theory: D = (9/16) * Bo_m * (mu_r - 1)/(mu_r + 1/2)
     # mu_r = 1 + chi (relative permeability)

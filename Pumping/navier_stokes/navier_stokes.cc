@@ -116,6 +116,27 @@ NavierStokesSubsystem<dim>::get_p_relevant() const
 }
 
 template <int dim>
+dealii::TrilinosWrappers::MPI::Vector&
+NavierStokesSubsystem<dim>::get_ux_solution_mutable()
+{
+    return ux_solution_;
+}
+
+template <int dim>
+dealii::TrilinosWrappers::MPI::Vector&
+NavierStokesSubsystem<dim>::get_uy_solution_mutable()
+{
+    return uy_solution_;
+}
+
+template <int dim>
+dealii::TrilinosWrappers::MPI::Vector&
+NavierStokesSubsystem<dim>::get_p_solution_mutable()
+{
+    return p_solution_;
+}
+
+template <int dim>
 void NavierStokesSubsystem<dim>::update_ghosts()
 {
     if (!ghosts_valid_)

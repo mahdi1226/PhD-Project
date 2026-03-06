@@ -160,8 +160,11 @@ std::pair<double, double> compute_ch_ns_coupled_source(
     double epsilon,
     double gamma)
 {
-    const double S    = 1.0 / (epsilon * epsilon);
-    const double eps2 = epsilon * epsilon;
+    // Standard CH: μ = -εΔθ + (1/ε)F'(θ), stabilized with S=1/2
+    const double S_stab     = 0.5;
+    const double S_eff      = S_stab / epsilon;
+    const double grad_coeff = epsilon;
+    const double pot_coeff  = 1.0 / epsilon;
 
     // Exact phi and mu at t_new
     double cos_phi = std::cos(M_PI * p[0]);
@@ -189,12 +192,12 @@ std::pair<double, double> compute_ch_ns_coupled_source(
                          + conv
                          - gamma * lap_mu;
 
-    // f_mu = μ*_new − S(φ*_new − φ_old_disc) + ε²Δφ*_new − Ψ'(φ_old_disc)
+    // f_mu = μ*_new − (S/ε)(φ*_new − φ_old_disc) + εΔφ*_new − (1/ε)Ψ'(φ_old_disc)
     const double psi_prime = double_well_derivative(phi_old_disc);
     const double f_mu = mu_star_new
-                        - S * (phi_star_new - phi_old_disc)
-                        + eps2 * lap_phi
-                        - psi_prime;
+                        - S_eff * (phi_star_new - phi_old_disc)
+                        + grad_coeff * lap_phi
+                        - pot_coeff * psi_prime;
 
     return {f_phi, f_mu};
 }

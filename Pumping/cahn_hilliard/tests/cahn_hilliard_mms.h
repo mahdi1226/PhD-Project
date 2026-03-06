@@ -1,10 +1,12 @@
 // ============================================================================
 // cahn_hilliard/tests/cahn_hilliard_mms.h - MMS Exact Solutions and Sources
 //
-// SPLIT CH (Eyre's convex-concave, backward Euler):
+// STABILIZED CH (backward Euler):
 //
-//   (phi^k - phi^{k-1})/dt = gamma * Delta(mu^k)                      (1)
-//   mu^k = Psi'(phi^{k-1}) + S*(phi^k - phi^{k-1}) - eps^2*Delta(phi^k) (2)
+//   (phi^k - phi^{k-1})/dt = gamma * Delta(mu^k)                         (1)
+//   mu^k = (1/ε)[Psi'(phi^{k-1}) + S(phi^k - phi^{k-1})] - ε*Delta(phi^k) (2)
+//
+//   Standard formulation: μ = -εΔθ + (1/ε)F'(θ), S = max|F''| = 1/2
 //
 // STANDALONE MMS (no convection, u = 0):
 //
@@ -14,11 +16,11 @@
 //
 // Both satisfy homogeneous Neumann BCs on [0,1]^2.
 //
-// MMS SOURCES (use DISCRETE phi_old to avoid 1/tau and 1/eps^2 amplification):
+// MMS SOURCES (use DISCRETE phi_old to avoid 1/tau amplification):
 //
 //   f_phi(x) = (1/dt)(phi*_new - phi_old_disc) - gamma * Delta_mu*_new
-//   f_mu(x)  = mu*_new - S*(phi*_new - phi_old_disc)
-//              + eps^2 * Delta_phi*_new - Psi'(phi_old_disc)
+//   f_mu(x)  = mu*_new - (S/ε)*(phi*_new - phi_old_disc)
+//              + ε * Delta_phi*_new - (1/ε)*Psi'(phi_old_disc)
 //
 // EXPECTED CONVERGENCE (CG Q_l with l=2):
 //   phi_L2: O(h^3) — rate ~= 3.0
@@ -27,6 +29,7 @@
 //   mu_H1:  O(h^2) — rate ~= 2.0
 //
 // Reference: Nochetto, Salgado & Tomas, CMAME 2016, arXiv:1601.06824
+//            Zhang, He, Yang (2021), SIAM J. Sci. Comput.
 // ============================================================================
 #ifndef FHD_CAHN_HILLIARD_MMS_H
 #define FHD_CAHN_HILLIARD_MMS_H
@@ -133,14 +136,14 @@ private:
 // ============================================================================
 // MMS source computation (per quadrature point)
 //
-// Uses discrete phi_old to avoid 1/tau and 1/eps^2 amplification.
+// Uses discrete phi_old to avoid 1/tau amplification.
 //
-// f_phi = (1/dt)(phi*_new - phi_old_disc) + gamma * 2*dim*pi^2 * B*t_new * cos
-// f_mu  = mu*_new - S*(phi*_new - phi_old_disc) - eps^2*A*t_new*2*pi^2*cos
-//         - Psi'(phi_old_disc)
+// New formulation: μ = -ε·Δθ + (1/ε)[F'(θ_old) + S(θ − θ_old)]
+//   with S = 1/2 (max|F''|), S_eff = S/ε = 1/(2ε)
 //
-// (Note: -gamma*Delta_mu* = gamma * dim*(2pi)^2 * B*t_new * cos(2pi*x)*cos(2pi*y)
-//        eps^2*Delta_phi* = -eps^2 * A*t_new * dim*pi^2 * cos(pi*x)*cos(pi*y))
+// f_phi = (1/dt)(phi*_new - phi_old_disc) - gamma * Delta_mu*_new
+// f_mu  = mu*_new - (S/ε)*(phi*_new - phi_old_disc) + ε*Delta_phi*_new
+//         - (1/ε)*Psi'(phi_old_disc)
 // ============================================================================
 template <int dim>
 std::pair<double, double> compute_ch_mms_source(
@@ -151,8 +154,11 @@ std::pair<double, double> compute_ch_mms_source(
     double epsilon,
     double gamma)
 {
-    const double S    = 1.0 / (epsilon * epsilon);
-    const double eps2 = epsilon * epsilon;
+    // Standard CH: μ = -εΔθ + (1/ε)F'(θ), stabilized with S=1/2
+    const double S_stab     = 0.5;                    // max|F''(θ)|
+    const double S_eff      = S_stab / epsilon;       // = 1/(2ε)
+    const double grad_coeff = epsilon;                 // coeff of Δθ
+    const double pot_coeff  = 1.0 / epsilon;           // coeff of F'(θ)
 
     // Exact values at t_new
     double cos_phi = std::cos(M_PI * p[0]);
@@ -176,13 +182,13 @@ std::pair<double, double> compute_ch_mms_source(
     const double f_phi = (1.0 / dt) * (phi_star_new - phi_old_disc)
                          - gamma * lap_mu;
 
-    // f_mu = mu*_new - S*(phi*_new - phi_old_disc) + eps^2*Delta_phi*_new
-    //        - Psi'(phi_old_disc)
+    // f_mu = mu*_new - S_eff*(phi*_new - phi_old_disc) + ε*Delta_phi*_new
+    //        - (1/ε)*Psi'(phi_old_disc)
     const double psi_prime = double_well_derivative(phi_old_disc);
     const double f_mu = mu_star_new
-                        - S * (phi_star_new - phi_old_disc)
-                        + eps2 * lap_phi
-                        - psi_prime;
+                        - S_eff * (phi_star_new - phi_old_disc)
+                        + grad_coeff * lap_phi
+                        - pot_coeff * psi_prime;
 
     return {f_phi, f_mu};
 }

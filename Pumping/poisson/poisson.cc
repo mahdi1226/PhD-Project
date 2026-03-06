@@ -59,6 +59,13 @@ PoissonSubsystem<dim>::get_solution_relevant() const
 }
 
 template <int dim>
+dealii::TrilinosWrappers::MPI::Vector&
+PoissonSubsystem<dim>::get_solution_mutable()
+{
+    return solution_;
+}
+
+template <int dim>
 void PoissonSubsystem<dim>::update_ghosts()
 {
     if (!ghosts_valid_)

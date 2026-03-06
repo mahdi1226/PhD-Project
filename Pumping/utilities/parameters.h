@@ -123,6 +123,18 @@ struct Parameters
         double rho_carrier = 1.0;    // carrier fluid density
         double rho_ferro = 1.0;      // ferrofluid density
         double chi_ferro = 1.0;      // susceptibility of ferrofluid phase
+
+        // -- Gravity (Boussinesq approximation) --
+        // f_g = (1 + r·H(θ/ε)) · g
+        // Zhang (2021) Sec 4.3: g = (0, -6e4), r = 0.1
+        double gravity_x = 0.0;
+        double gravity_y = 0.0;
+        double boussinesq_r = 0.0;   // density ratio parameter r
+
+        // -- Magnetization beta term: β m × (m × h) --
+        // Zhang (2021) Eq. 2.8: additional nonlinear relaxation
+        // BAC-CAB: m × (m × h) = (m·h)m − |m|²h
+        double beta = 0.0;
     } physics;
 
     // ========================================================================
@@ -131,6 +143,15 @@ struct Parameters
     struct Mesh
     {
         unsigned int initial_refinement = 4;
+
+        // AMR (Adaptive Mesh Refinement)
+        bool use_amr = false;                    // master switch (CLI: --amr/--no-amr)
+        unsigned int amr_interval = 5;           // refine every N time steps
+        unsigned int amr_min_level = 0;          // minimum refinement level
+        unsigned int amr_max_level = 0;          // max level (0 = initial_refinement + 4)
+        double amr_upper_fraction = 0.3;         // top fraction cells → refine
+        double amr_lower_fraction = 0.1;         // bottom fraction cells → coarsen
+        double interface_coarsen_threshold = 0.9; // protect |θ| < this from coarsening
     } mesh;
 
     // ========================================================================

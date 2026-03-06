@@ -109,4 +109,47 @@ private:
     double width_;
 };
 
+// ============================================================================
+// Diamond region IC (L1 ball = rotated square)
+//
+//   phi(x,y) = tanh((d − (|x−cx| + |y−cy|)) / (2√2 ε))
+//   mu(x,y)  = 0
+//
+// Diamond with half-diagonal d centered at (cx, cy).
+// phi = +1 inside, −1 outside.
+// ============================================================================
+template <int dim>
+class DiamondRegionIC : public dealii::Function<dim>
+{
+public:
+    DiamondRegionIC(const dealii::Point<dim>& center,
+                    double half_diagonal,
+                    double epsilon)
+        : dealii::Function<dim>(2)
+        , center_(center)
+        , half_diag_(half_diagonal)
+        , width_(2.0 * std::sqrt(2.0) * epsilon)
+    {}
+
+    double value(const dealii::Point<dim>& p,
+                 const unsigned int component = 0) const override
+    {
+        if (component == 0)
+        {
+            double l1_dist = std::abs(p[0] - center_[0]);
+            if constexpr (dim >= 2)
+                l1_dist += std::abs(p[1] - center_[1]);
+
+            const double d = half_diag_ - l1_dist;
+            return std::tanh(d / width_);
+        }
+        return 0.0;   // mu = 0
+    }
+
+private:
+    dealii::Point<dim> center_;
+    double half_diag_;
+    double width_;
+};
+
 #endif // FHD_BENCHMARK_INITIAL_CONDITIONS_H

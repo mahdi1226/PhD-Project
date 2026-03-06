@@ -1,20 +1,30 @@
 // ============================================================================
 // cahn_hilliard/cahn_hilliard_assemble.cc - Monolithic Cell Assembly
 //
-// SPLIT CH (Eyre's convex-concave, backward Euler):
+// SPLIT CH (stabilized linear, backward Euler):
 //
+// Standard CH formulation for θ ∈ {-1, +1}, F(θ) = (θ²-1)²/16:
+//
+//   μ = -ε·Δθ + (1/ε)·F'(θ)     (chemical potential)
+//   θ_t + ∇·(uθ) = γ·Δμ         (phase evolution)
+//
+// Stabilized linearization (Eyre-type):
+//   μ^n = -ε·Δθ^n + (1/ε)[F'(θ^{n-1}) + S(θ^n − θ^{n-1})]
+//   where S = max|F''(θ)| = 1/2  (conservative choice)
+//
+// Block structure:
 //   Block(1,1) [phi test, phi trial]: (1/dt)(phi_j, v_i) + b_h(u; phi_j, v_i)
 //   Block(1,2) [phi test, mu trial]:  gamma * (grad mu_j, grad v_i)
-//   Block(2,1) [mu test, phi trial]:  -S*(phi_j, w_i) - eps^2*(grad phi_j, grad w_i)
+//   Block(2,1) [mu test, phi trial]:  -(S/ε)(phi_j, w_i) - ε(grad phi_j, grad w_i)
 //   Block(2,2) [mu test, mu trial]:   (mu_j, w_i)
 //
 //   RHS_phi: (1/dt)(phi_old, v_i) [+ MMS source]
-//   RHS_mu:  (Psi'(phi_old) - S*phi_old, w_i) [+ MMS source]
+//   RHS_mu:  ((1/ε)(Psi'(phi_old) - S*phi_old), w_i) [+ MMS source]
 //
-//   S = 1/eps^2 (stabilization coefficient)
 //   b_h = skew-symmetric convection for energy neutrality
 //
 // Reference: Nochetto, Salgado & Tomas, CMAME 2016, arXiv:1601.06824
+//            Zhang, He, Yang (2021), SIAM J. Sci. Comput.
 // ============================================================================
 
 #include "cahn_hilliard/cahn_hilliard.h"
@@ -40,8 +50,13 @@ void CahnHilliardSubsystem<dim>::assemble(
 
     const double epsilon = params_.cahn_hilliard_params.epsilon;
     const double gamma   = params_.cahn_hilliard_params.gamma;
-    const double S       = 1.0 / (epsilon * epsilon);   // stabilization
-    const double eps2    = epsilon * epsilon;
+
+    // Standard CH: μ = -ε·Δθ + (1/ε)·F'(θ)
+    // Stabilized: μ^n includes S·(θ^n − θ^{n-1})/ε with S = max|F''| = 1/2
+    const double grad_coeff = epsilon;                   // coeff of (∇θ, ∇w)
+    const double pot_coeff  = 1.0 / epsilon;             // coeff of F'(θ)·w
+    const double S_stab     = 0.5;                       // ≥ max|F''(θ)| = 1/2
+    const double S_eff      = pot_coeff * S_stab;        // = 1/(2ε)
     const double mass_coeff = 1.0 / dt;
 
     const bool has_old = (old_solution_relevant.size() > 0);
@@ -165,8 +180,9 @@ void CahnHilliardSubsystem<dim>::assemble(
                 if (has_mms)
                     cell_rhs(i) += f_phi * v_i * JxW;
 
-                // Mu equation RHS: (Psi'(phi_old) - S*phi_old, w_i) + (f_mu, w_i)
-                cell_rhs(i) += (psi_prime - S * phi_old_q) * w_i * JxW;
+                // Mu equation RHS: ((1/ε)(Psi'(phi_old) - S*phi_old), w_i) + (f_mu, w_i)
+                cell_rhs(i) += pot_coeff * (psi_prime - S_stab * phi_old_q)
+                               * w_i * JxW;
                 if (has_mms)
                     cell_rhs(i) += f_mu * w_i * JxW;
 
@@ -192,9 +208,9 @@ void CahnHilliardSubsystem<dim>::assemble(
                     // Block(1,2): gamma * (grad mu_j, grad v_i)
                     entry += gamma * (grad_mu_j * grad_v_i);
 
-                    // Block(2,1): -S*(phi_j, w_i) - eps^2*(grad phi_j, grad w_i)
-                    entry += -S * phi_j * w_i;
-                    entry += -eps2 * (grad_phi_j * grad_w_i);
+                    // Block(2,1): -(S/ε)(phi_j, w_i) - ε(grad phi_j, grad w_i)
+                    entry += -S_eff * phi_j * w_i;
+                    entry += -grad_coeff * (grad_phi_j * grad_w_i);
 
                     // Block(2,2): (mu_j, w_i)
                     entry += mu_j * w_i;

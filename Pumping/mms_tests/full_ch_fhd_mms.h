@@ -72,9 +72,21 @@ dealii::Tensor<1, dim> compute_full_ch_fhd_ns_source(
     bool include_convection)
 {
     // Phase A source: time + viscous + pressure + convection + micropolar + Kelvin
+    // Note: Phase A uses full skew form: (M·∇)H + ½div(M)H
     auto f = compute_full_ns_mms_source<dim>(
         p, t_new, t_old, nu_eff, nu_r, mu_0,
         U_old_disc, div_U_old_disc, include_convection);
+
+    // Two-phase Kelvin correction: remove the ½div(M)H skew term
+    // Phase A source subtracted -μ₀[(M·∇)H + ½div(M)H]. The two-phase
+    // assembler uses only (M·∇)H, so we add back +μ₀·½div(M)H to
+    // make the net source consistent: -μ₀(M·∇)H only.
+    {
+        const double divM = div_M_exact<dim>(p, t_new);
+        const auto H = H_exact<dim>(p, t_new);
+        for (unsigned int d = 0; d < dim; ++d)
+            f[d] += mu_0 * 0.5 * divM * H[d];
+    }
 
     // Phase B capillary force: -sigma * mu*(t_old) * grad(theta*(t_old))
     const double mu_ch = ch_exact_mu<dim>(p, t_old);

@@ -83,6 +83,11 @@ int main(int argc, char* argv[])
             benchmark = "square";
             t_final = 2.0;
         }
+        else if (std::strcmp(argv[i], "--diamond") == 0)
+        {
+            benchmark = "diamond";
+            t_final = 2.0;
+        }
         else if ((std::strcmp(argv[i], "-r") == 0 ||
                   std::strcmp(argv[i], "--refinement") == 0) && i+1 < argc)
             refinement = std::stoul(argv[++i]);
@@ -195,11 +200,17 @@ int main(int argc, char* argv[])
     ux_old_rel = 0.0;
     uy_old_rel = 0.0;
 
-    // Phase field: droplet or square
+    // Phase field: droplet, square, or diamond
     if (benchmark == "droplet")
     {
         Point<dim> center(0.5, 0.5);
         CircularDropletIC<dim> ic(center, radius, epsilon);
+        ch.initialize(ic);
+    }
+    else if (benchmark == "diamond")
+    {
+        Point<dim> center(0.5, 0.5);
+        DiamondRegionIC<dim> ic(center, 0.25, epsilon);
         ch.initialize(ic);
     }
     else // square
@@ -234,54 +245,65 @@ int main(int argc, char* argv[])
     }
 
     // ================================================================
-    // 5. VTK output lambda
+    // 5. VTK output lambda — unified "solution" file
     // ================================================================
-    auto write_vtu = [&](unsigned int out_step, double out_time)
+    auto write_vtu = [&](unsigned int out_step, double /*out_time*/)
     {
-        // NS fields: velocity, pressure, |u|
+        DataOut<dim> data_out;
+        data_out.attach_dof_handler(ns.get_ux_dof_handler());
+
+        // NS fields
+        data_out.add_data_vector(ns.get_ux_relevant(), "ux");
+        data_out.add_data_vector(ns.get_uy_relevant(), "uy");
+        data_out.add_data_vector(ns.get_p_dof_handler(),
+                                 ns.get_p_relevant(), "p");
+
+        // CH fields (FESystem with 2 components: theta + mu)
+        std::vector<std::string> ch_names = {"theta", "mu"};
+        std::vector<DataComponentInterpretation::DataComponentInterpretation>
+            ch_interp(2, DataComponentInterpretation::component_is_scalar);
+        data_out.add_data_vector(ch.get_dof_handler(),
+                                 ch.get_relevant(),
+                                 ch_names, ch_interp);
+
+        // Cell-averaged |u|
+        const unsigned int nc = triangulation.n_active_cells();
+        Vector<float> U_mag_cell(nc);
         {
-            DataOut<dim> data_out;
-            data_out.attach_dof_handler(ns.get_ux_dof_handler());
-
-            data_out.add_data_vector(ns.get_ux_relevant(), "ux");
-            data_out.add_data_vector(ns.get_uy_relevant(), "uy");
-
-            data_out.add_data_vector(ns.get_p_dof_handler(),
-                                     ns.get_p_relevant(), "p");
-
-            // Cell-averaged |u|
-            const unsigned int nc = triangulation.n_active_cells();
-            Vector<float> U_mag_cell(nc);
+            const QMidpoint<dim> q_mid;
+            FEValues<dim> fe_vel(ns.get_ux_dof_handler().get_fe(),
+                                  q_mid, update_values);
+            unsigned int idx = 0;
+            for (const auto& cell : ns.get_ux_dof_handler().active_cell_iterators())
             {
-                const QMidpoint<dim> q_mid;
-                FEValues<dim> fe_vel(ns.get_ux_dof_handler().get_fe(),
-                                      q_mid, update_values);
-                unsigned int idx = 0;
-                for (const auto& cell : ns.get_ux_dof_handler().active_cell_iterators())
+                if (cell->is_locally_owned())
                 {
-                    if (cell->is_locally_owned())
-                    {
-                        fe_vel.reinit(cell);
-                        std::vector<double> ux_val(1), uy_val(1);
-                        fe_vel.get_function_values(ns.get_ux_relevant(), ux_val);
-                        fe_vel.get_function_values(ns.get_uy_relevant(), uy_val);
-                        U_mag_cell[idx] = static_cast<float>(
-                            std::sqrt(ux_val[0]*ux_val[0] + uy_val[0]*uy_val[0]));
-                    }
-                    ++idx;
+                    fe_vel.reinit(cell);
+                    std::vector<double> ux_val(1), uy_val(1);
+                    fe_vel.get_function_values(ns.get_ux_relevant(), ux_val);
+                    fe_vel.get_function_values(ns.get_uy_relevant(), uy_val);
+                    U_mag_cell[idx] = static_cast<float>(
+                        std::sqrt(ux_val[0]*ux_val[0] + uy_val[0]*uy_val[0]));
                 }
+                ++idx;
             }
-            data_out.add_data_vector(U_mag_cell, "U_mag",
-                                     DataOut<dim>::type_cell_data);
-
-            data_out.build_patches();
-            data_out.write_vtu_with_pvtu_record(
-                output_dir + "/", "ns_",
-                out_step, mpi_comm, 4, 0);
         }
+        data_out.add_data_vector(U_mag_cell, "U_mag",
+                                 DataOut<dim>::type_cell_data);
 
-        // CH fields: phi, mu (separate file — FESystem has non-contiguous DoFs)
-        ch.write_vtu(output_dir, out_step, out_time);
+        // Subdomain ID
+        Vector<float> subdomain(nc);
+        for (const auto& cell : triangulation.active_cell_iterators())
+            if (cell->is_locally_owned())
+                subdomain[cell->active_cell_index()] =
+                    static_cast<float>(cell->subdomain_id());
+        data_out.add_data_vector(subdomain, "subdomain",
+                                 DataOut<dim>::type_cell_data);
+
+        data_out.build_patches();
+        data_out.write_vtu_with_pvtu_record(
+            output_dir + "/", "solution_",
+            out_step, mpi_comm, 4, 0);
     };
 
     // ================================================================
@@ -301,7 +323,8 @@ int main(int argc, char* argv[])
     pcout << "\n"
           << "================================================================\n"
           << "  CH + NS BENCHMARK: "
-          << (benchmark == "droplet" ? "Circular Droplet" : "Square Relaxation")
+          << (benchmark == "droplet" ? "Circular Droplet" :
+              benchmark == "diamond" ? "Diamond Relaxation" : "Square Relaxation")
           << "\n"
           << "================================================================\n"
           << "  MPI ranks:      " << n_ranks << "\n"
@@ -485,7 +508,8 @@ int main(int argc, char* argv[])
     pcout << "\n"
           << "================================================================\n"
           << "  BENCHMARK COMPLETE: "
-          << (benchmark == "droplet" ? "Circular Droplet" : "Square Relaxation")
+          << (benchmark == "droplet" ? "Circular Droplet" :
+              benchmark == "diamond" ? "Diamond Relaxation" : "Square Relaxation")
           << "\n"
           << "================================================================\n"
           << "  Steps:          " << step << "\n"

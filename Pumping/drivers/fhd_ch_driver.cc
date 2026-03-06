@@ -41,11 +41,17 @@
 //   --perturbation-modes N     : number of cosine modes (default 3)
 //   --field-strength VALUE     : uniform field intensity H_max
 //   --ramp-time VALUE          : field ramp time
+//   --field-direction DX DY    : field direction (default 0 1 = vertical)
 //   --epsilon VALUE            : CH interface width parameter ε
 //   --gamma VALUE              : CH mobility γ
 //   --sigma-ch VALUE           : capillary surface tension σ
 //   --chi VALUE                : ferrofluid susceptibility χ₀
 //   --block-schur              : use block-Schur preconditioner for NS
+//   --amr / --no-amr          : enable/disable adaptive mesh refinement
+//   --amr-interval N          : refine every N steps (default 5)
+//   --amr-max-level N         : maximum refinement level
+//   --amr-upper-fraction F    : fraction of cells to refine (default 0.3)
+//   --amr-lower-fraction F    : fraction of cells to coarsen (default 0.1)
 //
 // References:
 //   Nochetto, Salgado & Tomas (2016), CMAME, arXiv:1601.06824
@@ -59,6 +65,7 @@
 #include "cahn_hilliard/cahn_hilliard.h"
 #include "mesh/mesh.h"
 #include "utilities/timestamp.h"
+#include "utilities/amr.h"
 #include "physics/benchmark_initial_conditions.h"
 
 #include <deal.II/base/utilities.h>
@@ -87,15 +94,19 @@ constexpr int dim = 2;
 // ============================================================================
 // Interface position tracking
 //
-// Finds the y-range of the φ=0 contour by scanning cells where φ changes sign.
-// Returns (y_min_interface, y_max_interface) — the vertical extent of the
-// interface. For Rosensweig instability, spike height = y_max - y_ref.
+// Finds the x-range and y-range of the φ=0 contour by scanning cells where
+// φ is near the transition. Returns both vertical and horizontal extents.
+// For Rosensweig instability, spike height = y_max - y_ref.
+// For droplet elongation, aspect ratio = (y_max-y_min)/(x_max-x_min).
 // ============================================================================
 struct InterfaceMetrics
 {
     double y_min = 1e30;    // lowest y of phi=0 contour
     double y_max = -1e30;   // highest y of phi=0 contour
+    double x_min = 1e30;    // leftmost x of phi=0 contour
+    double x_max = -1e30;   // rightmost x of phi=0 contour
     double amplitude = 0.0; // (y_max - y_min)/2
+    double aspect_ratio = 1.0; // (y_max-y_min)/(x_max-x_min)
 };
 
 template <int dim_t>
@@ -104,17 +115,24 @@ InterfaceMetrics compute_interface_position(
     const dealii::TrilinosWrappers::MPI::Vector& ch_solution_relevant,
     MPI_Comm mpi_comm)
 {
-    // Use FEValues to evaluate phi at cell midpoints
-    const dealii::QMidpoint<dim_t> q_mid;
-    dealii::FEValues<dim_t> fe_values(ch_dof_handler.get_fe(), q_mid,
+    // Sub-cell interpolation: find φ=0 contour by detecting sign changes
+    // across cell edges and linearly interpolating for sub-cell accuracy.
+    // QTrapezoid evaluates at vertices: (0,0),(1,0),(0,1),(1,1)
+    const dealii::QTrapezoid<dim_t> q_vert;
+    dealii::FEValues<dim_t> fe_values(ch_dof_handler.get_fe(), q_vert,
                                        dealii::update_values |
                                        dealii::update_quadrature_points);
 
     const dealii::FEValuesExtractors::Scalar phi_extractor(0);
-    std::vector<double> phi_vals(1);
 
-    double local_y_min = 1e30;
-    double local_y_max = -1e30;
+    // Edge connectivity for deal.II quad vertices (2D)
+    // Vertex ordering: 0=(0,0), 1=(1,0), 2=(0,1), 3=(1,1)
+    // Edges: bottom(0-1), right(1-3), top(2-3), left(0-2)
+    static constexpr unsigned int edges[4][2] = {{0,1}, {1,3}, {2,3}, {0,2}};
+    static constexpr unsigned int n_edges = 4;
+
+    double local_y_min = 1e30, local_y_max = -1e30;
+    double local_x_min = 1e30, local_x_max = -1e30;
 
     for (const auto& cell : ch_dof_handler.active_cell_iterators())
     {
@@ -122,79 +140,120 @@ InterfaceMetrics compute_interface_position(
             continue;
 
         fe_values.reinit(cell);
-        fe_values[phi_extractor].get_function_values(ch_solution_relevant, phi_vals);
-        const double phi_val = phi_vals[0];
 
-        // Interface region: |φ| < 0.9 means we're near the transition
-        if (std::abs(phi_val) < 0.9)
+        std::vector<double> phi_v(q_vert.size());
+        fe_values[phi_extractor].get_function_values(ch_solution_relevant, phi_v);
+
+        for (unsigned int e = 0; e < n_edges; ++e)
         {
-            const double y = fe_values.quadrature_point(0)[1];
-            local_y_min = std::min(local_y_min, y);
-            local_y_max = std::max(local_y_max, y);
+            const unsigned int v1 = edges[e][0];
+            const unsigned int v2 = edges[e][1];
+
+            // Check for sign change (φ=0 crossing)
+            if (phi_v[v1] * phi_v[v2] < 0.0)
+            {
+                // Linear interpolation: t = φ1/(φ1 - φ2)
+                const double t = phi_v[v1] / (phi_v[v1] - phi_v[v2]);
+                const auto& p1 = fe_values.quadrature_point(v1);
+                const auto& p2 = fe_values.quadrature_point(v2);
+                const double xc = p1[0] + t * (p2[0] - p1[0]);
+                const double yc = p1[1] + t * (p2[1] - p1[1]);
+
+                local_x_min = std::min(local_x_min, xc);
+                local_x_max = std::max(local_x_max, xc);
+                local_y_min = std::min(local_y_min, yc);
+                local_y_max = std::max(local_y_max, yc);
+            }
         }
     }
 
     // MPI reduce
     double global_y_min = 0.0, global_y_max = 0.0;
+    double global_x_min = 0.0, global_x_max = 0.0;
     MPI_Allreduce(&local_y_min, &global_y_min, 1, MPI_DOUBLE, MPI_MIN, mpi_comm);
     MPI_Allreduce(&local_y_max, &global_y_max, 1, MPI_DOUBLE, MPI_MAX, mpi_comm);
+    MPI_Allreduce(&local_x_min, &global_x_min, 1, MPI_DOUBLE, MPI_MIN, mpi_comm);
+    MPI_Allreduce(&local_x_max, &global_x_max, 1, MPI_DOUBLE, MPI_MAX, mpi_comm);
 
     InterfaceMetrics m;
     m.y_min = global_y_min;
     m.y_max = global_y_max;
+    m.x_min = global_x_min;
+    m.x_max = global_x_max;
     m.amplitude = (global_y_max - global_y_min) / 2.0;
+    const double x_span = global_x_max - global_x_min;
+    const double y_span = global_y_max - global_y_min;
+    m.aspect_ratio = (x_span > 1e-12) ? y_span / x_span : 1.0;
     return m;
 }
 
 // ============================================================================
 // Rosensweig instability preset
 //
-// Zhang Fig 4.7 / Nochetto 2016: ferrofluid pool at bottom under uniform field
-// Domain: [0,1] x [0,0.6], ferrofluid in y ∈ [0, 0.3], carrier above
-// 5 dipoles below at y = -0.2 (or uniform vertical field)
+// Zhang, He & Yang (2021) SIAM J. Sci. Comput., Section 4.3, Eq. (4.4)
+//
+// Domain: [0,1] x [0,0.6], ferrofluid pool y ∈ [0, 0.2], carrier above.
+// 5 dipoles far below (y = -15) approximate a uniform vertical field.
+// Intensity ramps linearly 0 → 8000 over t ∈ [0, 1.6], then constant.
+// Gravity is essential: g = (0, -6e4) with Boussinesq r = 0.1.
+//
+// Parameters from Zhang Eq. (4.4):
+//   ε=5e-3, M=2e-4, ν_f=2, ν_w=1, μ=1, τ=1e-4,
+//   β=1, χ₀=0.5, λ=1, r=0.1, h=1e-2, δt=1e-3, g=(0,-6e4)
 // ============================================================================
 void setup_rosensweig_instability(Parameters& params)
 {
     params.experiment_name = "rosensweig_instability";
 
     // Domain: [0,1] x [0,0.6]
-    // Ferrofluid pool at bottom (y < 0.3), carrier above
+    // Ferrofluid pool at bottom (y < 0.2), carrier above
     params.domain.x_min = 0.0;  params.domain.x_max = 1.0;
     params.domain.y_min = 0.0;  params.domain.y_max = 0.6;
     params.domain.initial_cells_x = 5;
     params.domain.initial_cells_y = 3;
 
-    // Physics (Zhang Fig 4.7 / Nochetto 2016 parameters)
+    // Physics — Zhang Eq. (4.4) exact values
     params.physics.kappa_0 = 0.5;     // χ₀ for single-phase fallback
-    params.physics.chi_ferro = 0.5;   // χ of ferrofluid phase
-    params.physics.nu = 2.0;          // single-phase viscosity
-    params.physics.nu_r = 0.0;        // no micropolar for Shliomis
-    params.physics.nu_carrier = 1.0;  // carrier (water) viscosity
-    params.physics.nu_ferro = 2.0;    // ferrofluid viscosity
-    params.physics.mu_0 = 1.0;
+    params.physics.chi_ferro = 0.5;   // χ₀ = 0.5
+    params.physics.nu = 2.0;          // single-phase viscosity (unused with CH)
+    params.physics.nu_r = 0.0;        // no micropolar ν_r for Shliomis model
+    params.physics.nu_carrier = 1.0;  // ν_w = 1
+    params.physics.nu_ferro = 2.0;    // ν_f = 2
+    params.physics.mu_0 = 1.0;        // μ = 1
     params.physics.j_micro = 1.0;
     params.physics.c_1 = 1.0;
     params.physics.c_2 = 1.0;
     params.physics.sigma = 0.0;       // no magnetic diffusion
-    params.physics.T_relax = 1e-4;
+    params.physics.T_relax = 1e-4;    // τ = 1e-4
+    params.physics.beta = 1.0;        // β = 1 (Zhang Eq. 2.8)
 
-    // Cahn-Hilliard
-    // ε=0.02 for development (well-resolved at r=5), reduce to 0.01 or 5e-3 later
-    params.cahn_hilliard_params.epsilon = 0.02;
-    params.cahn_hilliard_params.gamma = 1.0;
-    params.cahn_hilliard_params.sigma = 1.0;    // surface tension σ
+    // Gravity (Boussinesq): f_g = (1 + r·H(θ/ε)) · g
+    // Zhang Sec 4.3: g = (0, -6e4), r = 0.1
+    params.physics.gravity_x = 0.0;
+    params.physics.gravity_y = -6e4;
+    params.physics.boussinesq_r = 0.1;
+
+    // Cahn-Hilliard — Zhang Eq. (4.4)
+    params.cahn_hilliard_params.epsilon = 5e-3;   // ε = 5e-3
+    params.cahn_hilliard_params.gamma = 2e-4;     // M = 2e-4 (mobility)
+    params.cahn_hilliard_params.sigma = 1.0;      // λ = 1 (surface tension)
     params.enable_cahn_hilliard = true;
 
-    // Uniform vertical field (ramped over 0.5 time units)
-    params.uniform_field.enabled = true;
-    params.uniform_field.direction = {0.0, 1.0};
-    params.uniform_field.intensity_max = 10.0;
-    params.uniform_field.ramp_time = 0.5;
-    params.uniform_field.ramp_slope = 0.0;
-
-    // No dipoles
+    // Applied field: 5 dipoles far below, approximating uniform vertical field
+    // Zhang Sec 4.3: positions (-0.5,-15),(0,-15),(0.5,-15),(1,-15),(1.5,-15)
+    // direction d = (0,1), intensity ramps 0 → 8000 linearly over [0, 1.6]
+    params.uniform_field.enabled = false;  // use dipoles, not uniform
     params.dipoles.positions.clear();
-    params.dipoles.intensities.clear();
+    params.dipoles.positions.push_back(dealii::Point<2>(-0.5, -15.0));
+    params.dipoles.positions.push_back(dealii::Point<2>( 0.0, -15.0));
+    params.dipoles.positions.push_back(dealii::Point<2>( 0.5, -15.0));
+    params.dipoles.positions.push_back(dealii::Point<2>( 1.0, -15.0));
+    params.dipoles.positions.push_back(dealii::Point<2>( 1.5, -15.0));
+    params.dipoles.direction = {0.0, 1.0};
+    params.dipoles.intensity_max = 8000.0;
+    params.dipoles.ramp_time = 1.6;
+    params.dipoles.ramp_slope = 0.0;
+    params.dipoles.intensities.clear();   // shared intensity for all dipoles
 
     // Time
     params.time.dt = 1e-3;
@@ -207,7 +266,7 @@ void setup_rosensweig_instability(Parameters& params)
     params.picard_relaxation = 0.7;
 
     // Output
-    params.output.vtk_interval = 10;
+    params.output.vtk_interval = 50;
 }
 
 // ============================================================================
@@ -243,7 +302,7 @@ void setup_droplet_deformation(Parameters& params)
 
     // Cahn-Hilliard
     params.cahn_hilliard_params.epsilon = 0.02;
-    params.cahn_hilliard_params.gamma = 1.0;
+    params.cahn_hilliard_params.gamma = 1e-3;   // O(ε²) mobility for O(1) timescale
     params.cahn_hilliard_params.sigma = 1.0;
     params.enable_cahn_hilliard = true;
 
@@ -393,6 +452,12 @@ int main(int argc, char* argv[])
             params.uniform_field.intensity_max = std::stod(argv[++i]);
         else if (std::strcmp(argv[i], "--ramp-time") == 0 && i+1 < argc)
             params.uniform_field.ramp_time = std::stod(argv[++i]);
+        else if (std::strcmp(argv[i], "--field-direction") == 0 && i+2 < argc)
+        {
+            params.uniform_field.direction = {std::stod(argv[i+1]),
+                                               std::stod(argv[i+2])};
+            i += 2;
+        }
         else if (std::strcmp(argv[i], "--nu-carrier") == 0 && i+1 < argc)
             params.physics.nu_carrier = std::stod(argv[++i]);
         else if (std::strcmp(argv[i], "--nu-ferro") == 0 && i+1 < argc)
@@ -403,18 +468,40 @@ int main(int argc, char* argv[])
             perturbation_modes = std::stoi(argv[++i]);
         else if (std::strcmp(argv[i], "--gamma") == 0 && i+1 < argc)
             params.cahn_hilliard_params.gamma = std::stod(argv[++i]);
+        else if (std::strcmp(argv[i], "--gravity-y") == 0 && i+1 < argc)
+            params.physics.gravity_y = std::stod(argv[++i]);
+        else if (std::strcmp(argv[i], "--boussinesq-r") == 0 && i+1 < argc)
+            params.physics.boussinesq_r = std::stod(argv[++i]);
+        else if (std::strcmp(argv[i], "--beta") == 0 && i+1 < argc)
+            params.physics.beta = std::stod(argv[++i]);
         else if (std::strcmp(argv[i], "--block-schur") == 0)
             params.solvers.navier_stokes.preconditioner =
                 LinearSolverParams::Preconditioner::BlockSchur;
+        // AMR flags
+        else if (std::strcmp(argv[i], "--amr") == 0)
+            params.mesh.use_amr = true;
+        else if (std::strcmp(argv[i], "--no-amr") == 0)
+            params.mesh.use_amr = false;
+        else if (std::strcmp(argv[i], "--amr-interval") == 0 && i+1 < argc)
+            params.mesh.amr_interval = std::stoul(argv[++i]);
+        else if (std::strcmp(argv[i], "--amr-max-level") == 0 && i+1 < argc)
+            params.mesh.amr_max_level = std::stoul(argv[++i]);
+        else if (std::strcmp(argv[i], "--amr-upper-fraction") == 0 && i+1 < argc)
+            params.mesh.amr_upper_fraction = std::stod(argv[++i]);
+        else if (std::strcmp(argv[i], "--amr-lower-fraction") == 0 && i+1 < argc)
+            params.mesh.amr_lower_fraction = std::stod(argv[++i]);
     }
 
-    // Default perturbation for Rosensweig (required to trigger instability)
+    // Default perturbation for Rosensweig
+    // Zhang uses a step-function IC (no perturbation). The normal-field
+    // instability develops from numerical noise once H exceeds the critical
+    // value. A small perturbation can help seed it faster.
     if (preset == "rosensweig")
     {
         if (perturbation_amp < 0.0)
-            perturbation_amp = 0.01;
+            perturbation_amp = 0.0;  // Zhang: none (step IC)
         if (perturbation_modes < 0)
-            perturbation_modes = 3;
+            perturbation_modes = 0;
     }
     else
     {
@@ -525,7 +612,12 @@ int main(int argc, char* argv[])
           << "  nu_carrier=" << params.physics.nu_carrier
           << "  nu_ferro=" << params.physics.nu_ferro << "\n"
           << "    mu_0=" << params.physics.mu_0
-          << "  T_relax=" << params.physics.T_relax << "\n"
+          << "  T_relax=" << params.physics.T_relax
+          << "  beta=" << params.physics.beta << "\n"
+          << "  Gravity:\n"
+          << "    g=(" << params.physics.gravity_x << ", "
+          << params.physics.gravity_y << ")"
+          << "  r=" << params.physics.boussinesq_r << "\n"
           << "  CH params:\n"
           << "    epsilon=" << params.cahn_hilliard_params.epsilon
           << "  gamma=" << params.cahn_hilliard_params.gamma
@@ -533,7 +625,9 @@ int main(int argc, char* argv[])
           << "  Perturbation:   amp=" << perturbation_amp
           << "  modes=" << perturbation_modes << "\n"
           << "  Field:          H_max=" << params.uniform_field.intensity_max
-          << "  ramp=" << params.uniform_field.ramp_time << "\n"
+          << "  ramp=" << params.uniform_field.ramp_time
+          << "  dir=(" << params.uniform_field.direction[0]
+          << ", " << params.uniform_field.direction[1] << ")\n"
           << "  Output:         " << output_dir << "\n"
           << "================================================================\n\n";
 
@@ -584,8 +678,13 @@ int main(int argc, char* argv[])
     // Cahn-Hilliard: initial condition
     if (preset == "rosensweig")
     {
+        // Zhang Eq. (4.3): Φ(0) = 1 for y ≤ 0.2, Φ(0) = 0 for y > 0.2
+        // Our convention: θ=+1 (ferro) at bottom, θ=−1 (carrier) above
+        // FerrofluidPoolIC uses tanh profile for smooth transition
+        const double y_interface = 0.2;
         const double domain_width = params.domain.x_max - params.domain.x_min;
-        FerrofluidPoolIC<dim> ic(0.3, params.cahn_hilliard_params.epsilon,
+        FerrofluidPoolIC<dim> ic(y_interface,
+                                 params.cahn_hilliard_params.epsilon,
                                  perturbation_amp,
                                  static_cast<unsigned int>(perturbation_modes),
                                  domain_width);
@@ -631,7 +730,7 @@ int main(int argc, char* argv[])
 
         // Magnetic potential, angular velocity
         data_out.add_data_vector(poisson.get_dof_handler(),
-                                 poisson.get_solution_relevant(), "phi_mag");
+                                 poisson.get_solution_relevant(), "phi");
         data_out.add_data_vector(am.get_dof_handler(),
                                  am.get_relevant(), "w");
 
@@ -641,9 +740,9 @@ int main(int argc, char* argv[])
         data_out.add_data_vector(mag.get_dof_handler(),
                                  mag.get_My_relevant(), "My");
 
-        // Cahn-Hilliard: phi (phase field) + mu (chemical potential)
+        // Cahn-Hilliard: theta (phase field) + mu (chemical potential)
         {
-            const std::vector<std::string> ch_names = {"phi", "mu"};
+            const std::vector<std::string> ch_names = {"theta", "mu"};
             const std::vector<DataComponentInterpretation::DataComponentInterpretation>
                 ch_interp(2, DataComponentInterpretation::component_is_scalar);
             data_out.add_data_vector(ch.get_dof_handler(),
@@ -696,6 +795,15 @@ int main(int argc, char* argv[])
         data_out.add_data_vector(M_mag_cell, "M_mag",
                                  DataOut<dim>::type_cell_data);
 
+        // Subdomain
+        Vector<float> subdomain(n_cells);
+        for (const auto& cell : triangulation.active_cell_iterators())
+            if (cell->is_locally_owned())
+                subdomain[cell->active_cell_index()] =
+                    static_cast<float>(cell->subdomain_id());
+        data_out.add_data_vector(subdomain, "subdomain",
+                                 DataOut<dim>::type_cell_data);
+
         data_out.build_patches();
         data_out.write_vtu_with_pvtu_record(
             output_dir + "/", "solution_",
@@ -729,7 +837,8 @@ int main(int argc, char* argv[])
                  << "w_max_abs,M_max,H_max,"
                  << "phi_min,phi_max,phi_mass,free_energy,"
                  << "mu_L2,CFL,"
-                 << "intf_y_min,intf_y_max,intf_amplitude,"
+                 << "intf_x_min,intf_x_max,intf_y_min,intf_y_max,"
+                 << "intf_amplitude,aspect_ratio,"
                  << "wall_s\n";
     }
 
@@ -752,6 +861,28 @@ int main(int argc, char* argv[])
 
         Timer step_timer;
         step_timer.start();
+
+        // ============================================================
+        // AMR: Adaptive Mesh Refinement (if enabled)
+        // ============================================================
+        if (params.mesh.use_amr && step > 1 &&
+            step % params.mesh.amr_interval == 0)
+        {
+            perform_amr<dim>(
+                triangulation, params, mpi_comm,
+                ch, ns, am, poisson, mag,
+                ux_old_rel, uy_old_rel, w_old_rel,
+                Mx_old, My_old, Mx_relaxed, My_relaxed);
+
+            // Reinitialize Picard scratch vectors with new DoF distribution
+            const IndexSet M_owned_new = mag.get_dof_handler().locally_owned_dofs();
+            Mx_relaxed_owned.reinit(M_owned_new, mpi_comm);
+            My_relaxed_owned.reinit(M_owned_new, mpi_comm);
+            Mx_prev.reinit(M_owned_new, mpi_comm);
+            My_prev.reinit(M_owned_new, mpi_comm);
+            Mx_diff.reinit(M_owned_new, mpi_comm);
+            My_diff.reinit(M_owned_new, mpi_comm);
+        }
 
         // ============================================================
         // Phase 1: Picard iteration — Poisson <-> Magnetization
@@ -921,8 +1052,10 @@ int main(int argc, char* argv[])
                      << ch_diag.phi_mass << "," << ch_diag.free_energy << ","
                      << ch_diag.mu_L2 << ","
                      << CFL << ","
+                     << intf.x_min << "," << intf.x_max << ","
                      << intf.y_min << "," << intf.y_max << ","
                      << intf.amplitude << ","
+                     << std::fixed << std::setprecision(4) << intf.aspect_ratio << ","
                      << std::fixed << std::setprecision(2) << step_wall
                      << "\n";
             csv_file << std::flush;
@@ -941,8 +1074,10 @@ int main(int argc, char* argv[])
                   << "   " << std::setprecision(2) << ns_diag.U_max
                   << "   " << ch_diag.phi_mass
                   << "   " << ch_diag.free_energy
-                  << "   intf=[" << std::fixed << std::setprecision(4)
-                  << intf.y_min << "," << intf.y_max << "]"
+                  << "   x=[" << std::fixed << std::setprecision(4)
+                  << intf.x_min << "," << intf.x_max << "]"
+                  << " y=[" << intf.y_min << "," << intf.y_max << "]"
+                  << " AR=" << std::setprecision(3) << intf.aspect_ratio
                   << "   " << std::setprecision(1) << step_wall << "\n";
         }
 

@@ -71,6 +71,20 @@ MagnetizationSubsystem<dim>::get_My_relevant() const
 }
 
 template <int dim>
+dealii::TrilinosWrappers::MPI::Vector&
+MagnetizationSubsystem<dim>::get_Mx_solution_mutable()
+{
+    return Mx_solution_;
+}
+
+template <int dim>
+dealii::TrilinosWrappers::MPI::Vector&
+MagnetizationSubsystem<dim>::get_My_solution_mutable()
+{
+    return My_solution_;
+}
+
+template <int dim>
 void MagnetizationSubsystem<dim>::update_ghosts()
 {
     if (!ghosts_valid_)

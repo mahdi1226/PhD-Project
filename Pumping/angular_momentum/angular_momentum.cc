@@ -58,6 +58,13 @@ AngularMomentumSubsystem<dim>::get_relevant() const
 }
 
 template <int dim>
+dealii::TrilinosWrappers::MPI::Vector&
+AngularMomentumSubsystem<dim>::get_solution_mutable()
+{
+    return w_solution_;
+}
+
+template <int dim>
 void AngularMomentumSubsystem<dim>::update_ghosts()
 {
     if (!ghosts_valid_)

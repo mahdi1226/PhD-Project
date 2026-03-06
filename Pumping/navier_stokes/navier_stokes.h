@@ -133,6 +133,11 @@ public:
     const dealii::TrilinosWrappers::MPI::Vector& get_uy_relevant() const;
     const dealii::TrilinosWrappers::MPI::Vector& get_p_relevant() const;
 
+    // Mutable accessors (for AMR solution transfer)
+    dealii::TrilinosWrappers::MPI::Vector& get_ux_solution_mutable();
+    dealii::TrilinosWrappers::MPI::Vector& get_uy_solution_mutable();
+    dealii::TrilinosWrappers::MPI::Vector& get_p_solution_mutable();
+
     // ========================================================================
     // Ghost management
     // ========================================================================

@@ -98,6 +98,14 @@ void NavierStokesSubsystem<dim>::assemble(
                                 && ch_dof_handler != nullptr);
     const double ch_sigma = params_.cahn_hilliard_params.sigma;
 
+    // Gravity (Boussinesq): f_g = (1 + r·H(θ/ε)) · g
+    const double gravity_x = params_.physics.gravity_x;
+    const double gravity_y = params_.physics.gravity_y;
+    const double boussinesq_r = params_.physics.boussinesq_r;
+    const double ch_epsilon = params_.cahn_hilliard_params.epsilon;
+    const bool has_gravity = (std::abs(gravity_x) > 1e-30
+                              || std::abs(gravity_y) > 1e-30);
+
     const unsigned int vel_degree = fe_velocity_.degree;
     const dealii::QGauss<dim> quadrature(vel_degree + 1);
     const unsigned int n_q = quadrature.size();
@@ -341,11 +349,11 @@ void NavierStokesSubsystem<dim>::assemble(
                 div_U_old = grad_ux_old[q][0] + grad_uy_old[q][1];
             }
 
-            // Phase-dependent viscosity: ν(φ) + ν_r
-            // In carrier (φ=-1): ν = ν_carrier + ν_r
-            // In ferrofluid (φ=+1): ν = ν_ferro + ν_r
+            // Phase-dependent viscosity: ν(θ) = ν_w + (ν_f−ν_w)·H(θ/ε) + ν_r
+            // Zhang (2021): sigmoid interpolation, sharp transition at interface
             const double nu_eff_q = has_capillary
-                ? viscosity(ch_theta_vals[q], nu_carrier, nu_ferro) + nu_r
+                ? viscosity(ch_theta_vals[q], nu_carrier, nu_ferro,
+                            ch_epsilon) + nu_r
                 : nu_const;
 
             // MMS source
@@ -365,7 +373,6 @@ void NavierStokesSubsystem<dim>::assemble(
             }
 
             // Kelvin cell force density diagnostic (independent of test function)
-            // f_cell = μ₀[(M·∇)H + ½ div(M) H]
             if (has_kelvin)
             {
                 dealii::Tensor<1, dim> M_q;
@@ -381,11 +388,20 @@ void NavierStokesSubsystem<dim>::assemble(
                     for (unsigned int e = 0; e < dim; ++e)
                         M_grad_H[d] += M_q[e] * grad_H[d][e];
 
-                const double div_M = grad_Mx_vals[q][0] + grad_My_vals[q][1];
-
                 dealii::Tensor<1, dim> f_cell;
-                for (unsigned int d = 0; d < dim; ++d)
-                    f_cell[d] = mu_0 * (M_grad_H[d] + 0.5 * div_M * H_q[d]);
+                if (has_capillary)
+                {
+                    // Two-phase: standard Kelvin (M·∇)H only
+                    for (unsigned int d = 0; d < dim; ++d)
+                        f_cell[d] = mu_0 * M_grad_H[d];
+                }
+                else
+                {
+                    // Single-phase: full skew form (M·∇)H + ½div(M)H
+                    const double div_M = grad_Mx_vals[q][0] + grad_My_vals[q][1];
+                    for (unsigned int d = 0; d < dim; ++d)
+                        f_cell[d] = mu_0 * (M_grad_H[d] + 0.5 * div_M * H_q[d]);
+                }
 
                 local_kelvin_cell_sq += (f_cell * f_cell) * JxW;
                 local_kelvin_Fx += f_cell[0] * JxW;
@@ -421,7 +437,15 @@ void NavierStokesSubsystem<dim>::assemble(
                 }
 
                 // Kelvin force (cell kernel): μ₀·B_h^m(v, h, m)
-                // Cell integrand: (M·∇)H · V + ½(∇·M)(H·V)
+                //
+                // Two modes:
+                //   Single-phase: Full skew form (M·∇)H·V + ½div(M)(H·V)
+                //                 + face integral (Eq. 38 energy identity)
+                //   Two-phase:    Standard Kelvin (M·∇)H·V only
+                //                 (skew form's ½div(M)H introduces spurious
+                //                  surface force at χ-interface → wrong
+                //                  deformation direction)
+                //
                 // H = ∇φ (total field; h_a encoded via Poisson RHS)
                 if (has_kelvin)
                 {
@@ -433,12 +457,25 @@ void NavierStokesSubsystem<dim>::assemble(
                     const dealii::Tensor<2, dim>& grad_H = phi_hess_vals[q];
 
                     double kelvin_ux, kelvin_uy;
-                    KelvinForce::cell_kernel_full<dim>(
-                        M_q, grad_H,
-                        grad_Mx_vals[q], grad_My_vals[q],
-                        H_q,
-                        phi_ux_i, phi_ux_i,
-                        kelvin_ux, kelvin_uy);
+                    if (has_capillary)
+                    {
+                        // Two-phase: standard Kelvin force only
+                        // f = μ₀(M·∇)H — no skew div(M)H term
+                        const auto M_grad_H =
+                            KelvinForce::compute_M_grad_H<dim>(M_q, grad_H);
+                        kelvin_ux = M_grad_H[0] * phi_ux_i;
+                        kelvin_uy = M_grad_H[1] * phi_ux_i;
+                    }
+                    else
+                    {
+                        // Single-phase: full skew form for energy identity
+                        KelvinForce::cell_kernel_full<dim>(
+                            M_q, grad_H,
+                            grad_Mx_vals[q], grad_My_vals[q],
+                            H_q,
+                            phi_ux_i, phi_ux_i,
+                            kelvin_ux, kelvin_uy);
+                    }
 
                     local_rhs_ux(i) += mu_0 * kelvin_ux * JxW;
                     local_rhs_uy(i) += mu_0 * kelvin_uy * JxW;
@@ -453,6 +490,21 @@ void NavierStokesSubsystem<dim>::assemble(
                                        * phi_ux_i * JxW;
                     local_rhs_uy(i) += ch_sigma * ch_mu_vals[q]
                                        * ch_grad_phi_vals[q][1]
+                                       * phi_ux_i * JxW;
+                }
+
+                // Gravity (Boussinesq): f_g = (1 + r·H(θ/ε)) · g
+                // Zhang (2021) Sec 4.3: g = (0, -6e4), r = 0.1
+                // Phase-dependent when CH is active, constant otherwise
+                if (has_gravity)
+                {
+                    const double rho_factor = has_capillary
+                        ? density_ratio(ch_theta_vals[q], ch_epsilon,
+                                        boussinesq_r)
+                        : (1.0 + boussinesq_r);
+                    local_rhs_ux(i) += rho_factor * gravity_x
+                                       * phi_ux_i * JxW;
+                    local_rhs_uy(i) += rho_factor * gravity_y
                                        * phi_ux_i * JxW;
                 }
 
@@ -528,7 +580,7 @@ void NavierStokesSubsystem<dim>::assemble(
         // CG velocity: evaluate test functions from one side only.
         // RHS-only contribution (no matrix modification).
         // ================================================================
-        if (has_kelvin)
+        if (has_kelvin && !has_capillary)
         {
             for (unsigned int f = 0;
                  f < dealii::GeometryInfo<dim>::faces_per_cell; ++f)
