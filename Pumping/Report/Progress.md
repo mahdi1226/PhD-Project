@@ -41,42 +41,43 @@
 - [x] Created References/comparison_study.md (decision document for numerical path)
 - [x] Critical finding: NO paper includes magnetic energy term in CH chemical potential
 - [x] Capillary force forms are equivalent (sigma*mu*grad(phi) vs (lambda/eps)*phi*grad(W))
+- [x] Read Afkhami 2008 (JFM 610): droplet motion, VOF method, chi=1.19
+- [x] Read Afkhami 2010 (JFM 663): droplet deformation, D vs Bo_m, experimental validation
+- [x] Read Afkhami 2017 (J. Eng. Math. 107): review paper (drug targeting, droplet, thin films)
 
-## In Progress
-
-### Step 3f: Rosensweig Instability Benchmark
+### Rosensweig Instability (Step 3f) -- ABANDONED
 - [x] Rosensweig preset in fhd_ch_driver (domain, ICs, parameters)
 - [x] FerrofluidPoolIC with optional perturbation
 - [x] Interface tracking (y_min, y_max of phi=0 contour)
-- [x] CLI flags: --perturbation-amp, --perturbation-modes, --field-strength, --ramp-time, --gamma
-- [ ] **Spikes not forming** — multiple runs attempted:
-  - r=3, H=10, 500 steps: U_max=0.016, no visible deformation
-  - r=4, H=10, 280 steps: U_max=0.005, interface unchanged
-  - r=4, H=30, 545 steps: U_max=0.165, still no spikes
-- [ ] Root cause analysis: likely numerical (see comparison_study.md)
-- [ ] Need to check Zhang's exact parameters before concluding scheme is at fault
+- [x] Multiple runs attempted: r=3-4, H=10-30, 500+ steps
+- [x] Spikes never formed -- consistent with Nochetto's scheme across multiple projects
+- [x] Decision: Not a convergence study in the paper, just proof of concept. Move on.
 
-## Remaining Work
+### Kelvin Force Two-Phase Fix
+- [x] Fixed Kelvin force for two-phase: phase-dependent chi(phi) in magnetic stress
+- [x] Verified with vertical and horizontal elongation tests
+- [x] Linear material properties chi(phi), nu(phi) for stability (sigmoid was unstable)
 
-### Step 3g: Droplet Deformation Benchmark
-- [ ] Circular droplet under uniform field
-- [ ] Compare aspect ratio b/a vs magnetic Bond number Bo_m
-- [ ] Analytical formula: Bo_m = [(1/chi_0)+k]^2 * (b/a)^(1/3) * [2*b/a - (b/a)^(-2) - 1]
+### AMR Infrastructure
+- [x] utilities/amr.h: phase-field gradient refinement
+- [x] DG face loop fix (is_active check)
+- [x] Working with p4est + Trilinos parallel
 
-### Numerical Path Decision (see comparison_study.md)
-- [ ] Verify Zhang's exact Rosensweig parameters (eps, nu, H, gravity)
-- [ ] If parameter issue: tune and re-run
-- [ ] If scheme issue: implement hybrid decoupling (Path C)
+### Droplet Deformation Benchmark (Step 3g) -- IN PROGRESS
+- [x] `--droplet-deformation` preset: [0,1]^2, R=0.2, chi=1.19, sigma=1.0
+- [x] CLI flags: --chi, --field-strength, --ramp-time, --sigma-ch, --epsilon, --gamma
+- [x] Sub-cell interface tracking: phi=0 contour via edge-crossing interpolation
+  (old cell-midpoint method gave quantized AR values; new method gives continuous values)
+- [x] Deformation sweep scripts: `scripts/deformation_sweep.sh` + `scripts/analyze_deformation_sweep.py`
+- [x] First sweep (t_final=1.0, old tracking): D increases monotonically with Bo_m
+- [ ] Second sweep (t_final=3.0, sub-cell tracking): RUNNING (6 jobs, ~3000 steps each)
+- [ ] Final D vs Bo_m comparison plot with 2D/3D theory curves
 
-### Pumping Application (PhD Primary Contribution)
+## Remaining (NOT planned -- project stopping after deformation benchmark)
+
+### Pumping Application (PhD Primary Contribution -- future work)
 - [ ] Droplet transport in pumping channel with traveling-wave field
 - [ ] Parametric study: droplet size, field frequency, intensity
 - [ ] Role of surface tension in droplet integrity
 - [ ] Viscosity contrast effects
 - [ ] Multiple droplet manipulation
-
-### Future: BDF2 + Full Micropolar (Methods Paper Potential)
-- [ ] Upgrade time integration from BDF1 to BDF2
-- [ ] Add SAV/ZEC for energy stability after decoupling
-- [ ] Prove energy stability for full system (NS+AngMom+Mag+Poisson+CH)
-- [ ] Convergence study (second-order in time)
