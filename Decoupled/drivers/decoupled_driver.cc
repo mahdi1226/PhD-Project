@@ -1686,6 +1686,91 @@ int main(int argc, char* argv[])
         double E_total = compute_discrete_energy(
             ch_diag, ns_diag, mag_diag, poi_diag, params);
 
+        // ============================================================
+        // Energy sanity check — abort if solution has blown up
+        //
+        // Detects runaway energy growth that indicates numerical
+        // instability (e.g., Picard divergence, CFL violation).
+        // Uses absolute thresholds on individual components plus
+        // a relative check against initial energy.
+        // ============================================================
+        {
+            static double E_total_initial = 0.0;
+            static bool   energy_baseline_set = false;
+            const double  abs_energy_cap = 1e15;  // absolute ceiling
+            const double  rel_energy_cap = 1e8;   // relative to initial
+
+            if (!energy_baseline_set && step >= 2)
+            {
+                E_total_initial = std::abs(E_total);
+                energy_baseline_set = true;
+            }
+
+            bool blown_up = false;
+            std::string reason;
+
+            if (std::isnan(E_total) || std::isinf(E_total))
+            {
+                blown_up = true;
+                reason = "E_total is NaN/Inf";
+            }
+            else if (std::isnan(ch_diag.E_total) || std::isnan(ns_diag.E_kin))
+            {
+                blown_up = true;
+                reason = "NaN in energy component (E_CH or E_kin)";
+            }
+            else if (std::abs(ch_diag.E_total) > abs_energy_cap)
+            {
+                blown_up = true;
+                reason = "E_CH = " + std::to_string(ch_diag.E_total)
+                         + " exceeds absolute cap " + std::to_string(abs_energy_cap);
+            }
+            else if (std::abs(ns_diag.E_kin) > abs_energy_cap)
+            {
+                blown_up = true;
+                reason = "E_kin = " + std::to_string(ns_diag.E_kin)
+                         + " exceeds absolute cap " + std::to_string(abs_energy_cap);
+            }
+            else if (std::abs(poi_diag.E_mag) > abs_energy_cap)
+            {
+                blown_up = true;
+                reason = "E_mag = " + std::to_string(poi_diag.E_mag)
+                         + " exceeds absolute cap " + std::to_string(abs_energy_cap);
+            }
+            else if (energy_baseline_set && E_total_initial > 1e-14
+                     && std::abs(E_total) > rel_energy_cap * E_total_initial)
+            {
+                blown_up = true;
+                reason = "E_total = " + std::to_string(E_total)
+                         + " exceeds " + std::to_string(rel_energy_cap)
+                         + "x initial (" + std::to_string(E_total_initial) + ")";
+            }
+
+            if (blown_up)
+            {
+                pcout << "\n"
+                      << "============================================================\n"
+                      << "  ENERGY SANITY CHECK FAILED — aborting run\n"
+                      << "  Step " << step << ", t = " << current_time << "\n"
+                      << "  Reason: " << reason << "\n"
+                      << "  E_CH  = " << ch_diag.E_total << "\n"
+                      << "  E_kin = " << ns_diag.E_kin << "\n"
+                      << "  E_mag = " << poi_diag.E_mag << "\n"
+                      << "  E_tot = " << E_total << "\n"
+                      << "============================================================\n"
+                      << std::endl;
+
+                // Log final state before exit
+                logger.log(step, current_time, dt,
+                           ch_diag, poi_diag, mag_diag, ns_diag,
+                           E_total, wall_s);
+
+                throw std::runtime_error(
+                    "Energy sanity check failed at step "
+                    + std::to_string(step) + ": " + reason);
+            }
+        }
+
         logger.log(step, current_time, dt,
                    ch_diag, poi_diag, mag_diag, ns_diag,
                    E_total, wall_s);
