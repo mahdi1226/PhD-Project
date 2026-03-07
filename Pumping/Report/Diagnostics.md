@@ -79,19 +79,26 @@ single-phase solver development. Key lessons:
 - **Verification**: Initial circle x_min=0.3001 (true: 0.3000) vs old method 0.2266.
   AR values now show clear separation between different H0 cases.
 
-### Issue B8: High-Bo_m runs not equilibrated (in progress)
+### Issue B8: High-Bo_m runs not equilibrated (resolved)
 - **Problem**: First sweep used t_final=1.0. High-H0 cases (3,4,5) had significant
   residual velocity (U_max=0.02-0.07) and AR was still changing at t=1.0.
 - **Cause**: Capillary relaxation timescale increases with deformation magnitude.
-  Stronger fields produce larger deformations that take longer to equilibrate.
-- **Fix**: Extended to t_final=3.0. All 6 runs re-launched with new sub-cell tracking.
-  H0=1.0 appears equilibrated (U~1.5e-3, AR stable). Higher H0 cases still evolving.
+- **Fix**: Extended to t_final=3.0. All 6 runs completed. H0=1,1.5 fully equilibrated
+  (U<3e-3). H0=3-5 have residual velocity (U=2-5e-2) but AR growth rate is small.
 
-### Issue B9: Deformation below linear theory (expected)
-- **Observation**: D_numerical is 3-4x lower than the 2D linear theory D = Bo_m*chi/(2(2+chi)).
-- **Explanation**: This is expected for two reasons:
-  1. Linear theory valid only for D < 0.05; most of our Bo_m range is nonlinear
-  2. Diffuse interface (CH, eps=0.02) adds stiffness vs sharp interface (VOF in Afkhami).
-     The CH interface energy penalizes deformation beyond just surface tension sigma.
-- **Status**: Qualitative behavior is correct (monotonic D vs Bo_m, nonlinear saturation).
-  Quantitative match not expected between 2D CH and 3D axisymmetric VOF.
+### Issue B9: Linear regime does not match 2D theory (OPEN)
+- **Problem**: At low Bo_m (linear regime, D<0.05), numerical D/Bo_m is NOT constant.
+  2D theory predicts D = 0.039*Bo_m (from pressure balance: magnetic normal stress
+  vs curvature perturbation on a 2D circle). But data shows:
+  - H0=1: D/Bo_m = 0.048 (ratio 1.23 to theory)
+  - H0=1.5: D/Bo_m = 0.060 (ratio 1.53)
+  - H0=2: D/Bo_m = 0.069 (ratio 1.78)
+  This is superlinear: D ~ Bo_m^1.3, not D ~ Bo_m^1.0.
+- **History**: Originally used WRONG formula D = Bo_m*chi/(2(2+chi)) = 0.187*Bo_m.
+  Corrected to D = Bo_m*chi/(3(2+chi)^2) = 0.039*Bo_m via 2D pressure balance.
+- **Possible causes**:
+  1. Diffuse interface too thick: eps/R = 0.1 (interface width ~40% of radius)
+  2. Insufficient mesh: ref 6 gives ~1.2 cells across eps (need ~4 for good CH)
+  3. 2D theory derivation not verified against independent 2D analytical results
+- **What would resolve it**: eps-convergence and mesh convergence studies.
+- **Status**: OPEN. Project stopped before convergence studies could be performed.

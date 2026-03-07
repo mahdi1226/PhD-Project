@@ -34,22 +34,24 @@ which acts only on the magnetic phase.
 - Magnetic coupling through chi(phi) in magnetization + Kelvin force in NS
 - All 13 reviewed papers confirm this formulation (see References/cheatsheet.md)
 
-## Current Status (2026-03-06)
+## Final Status (2026-03-07) -- PROJECT STOPPED
 
 - Steps 3a-3e COMPLETE: phase-dependent properties, full coupled driver, MMS verified
 - Step 3f ABANDONED: Rosensweig instability (spikes never form with Nochetto scheme)
-- Step 3g IN PROGRESS: Droplet deformation benchmark (D vs Bo_m sweep running)
-- Literature review COMPLETE: 13 papers + 3 Afkhami papers analyzed
+- Step 3g COMPLETE: Droplet deformation benchmark (D vs Bo_m, 6 field strengths)
+- Literature review COMPLETE: 18 papers in FHD/Reference/ (including Afkhami 2008/2010)
 - Sub-cell interface tracking implemented (phi=0 edge-crossing interpolation)
-- **PROJECT STOPPING after deformation benchmark**
 
-## Deformation Benchmark Results (preliminary, sweep still running)
+## Deformation Benchmark Results (final)
 
-Bo_m sweep at chi=1.19, R=0.2, ref 6:
+Bo_m sweep at chi=1.19, R=0.2, ref 6, eps=0.02, t_final=3.0:
 - D increases monotonically with Bo_m (qualitatively correct)
-- At high Bo_m: D saturates below linear theory (nonlinear regime, physically correct)
-- D_numerical < D_theory: expected for diffuse interface (CH stiffens vs sharp VOF)
-- Mass conservation: perfect (< 1e-8)
+- D falls between 2D theory (D=0.039*Bo_m) and 3D theory (D=0.249*Bo_m)
+- Linear regime: D/Bo_m is NOT constant -- superlinear D ~ Bo_m^1.3
+- Numerical D is 1.2-1.8x above 2D sharp-interface theory
+- Likely cause: diffuse interface (eps/R=0.1) and/or mesh resolution (ref 6)
+- Proper validation needs: eps-convergence study, mesh convergence study
+- Mass conservation: excellent (< 0.01%)
 
 ## Dependencies
 

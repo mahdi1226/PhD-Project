@@ -6,7 +6,8 @@ Finds droplet_deformation_r6 directories, reads diagnostics.csv,
 extracts equilibrium aspect ratio, computes D.
 
 Compares with:
-  - 2D small-deformation theory: D = Bo_m * chi / (2*(2+chi))
+  - 2D small-deformation theory: D = Bo_m * chi / (3*(2+chi)^2)
+    (pressure balance: magnetic normal stress vs curvature perturbation)
   - Afkhami 2010 (3D axisymmetric): D = (9/16) * Bo_m * f(mu_r)
     where f(mu_r) = (mu_r - 1) / (mu_r + 1/2) for prolate spheroid
 
@@ -38,6 +39,21 @@ H0_MAP = {
     '030626_053200_droplet_deformation_r6': 3.0,
     '030626_053202_droplet_deformation_r6': 4.0,
     '030626_053205_droplet_deformation_r6': 5.0,
+}
+
+# Old sweep: cell-midpoint tracking, t_final=1.0, ref 6
+H0_MAP_OLD = {
+    '030526_091159_droplet_deformation_r6': 1.0,
+    '030526_091202_droplet_deformation_r6': 1.5,
+    '030526_091205_droplet_deformation_r6': 2.0,
+    '030526_144222_droplet_deformation_r6': 3.0,
+    '030526_144825_droplet_deformation_r6': 4.0,
+    '030526_145022_droplet_deformation_r6': 5.0,
+}
+
+# Ref 5 run (cell-midpoint tracking, t_final=2.0)
+H0_MAP_R5 = {
+    '030426_062051_droplet_deformation_r5': 10.0,  # early high-field test
 }
 
 
@@ -115,64 +131,66 @@ def main():
     f_mu_r_3D = (mu_r - 1.0) / (mu_r + 0.5)
     theory_coeff_3D = (9.0 / 16.0) * f_mu_r_3D
 
-    results = []
-    for d in all_dirs:
-        dirname = os.path.basename(d)
+    def process_runs(h0_map, all_dirs):
+        """Process a set of runs given an H0 map."""
+        res = []
+        for d in all_dirs:
+            dirname = os.path.basename(d)
+            if dirname not in h0_map:
+                continue
+            csv_path = os.path.join(d, "diagnostics.csv")
+            if not os.path.exists(csv_path):
+                continue
+            data = read_diagnostics(csv_path)
+            if len(data.get('time', [])) < 10:
+                continue
+            H0 = h0_map[dirname]
+            Bo_m = MU_0 * CHI * H0**2 * R_DROP / SIGMA
+            ar_eq, converged, u_final = find_equilibrium_ar(data)
+            D = (ar_eq - 1.0) / (ar_eq + 1.0)
+            mass = data.get('phi_mass', np.array([0.0]))
+            mass_change = abs(mass[-1] - mass[0]) / max(abs(mass[0]), 1e-12) if len(mass) > 1 else 0.0
+            res.append({
+                'H0': H0, 'Bo_m': Bo_m, 'AR': ar_eq, 'D': D,
+                'D_theory_2D': theory_coeff_2D * Bo_m,
+                'D_theory_3D': theory_coeff_3D * Bo_m,
+                'converged': converged, 'u_final': u_final,
+                'mass_pct': mass_change * 100,
+                'n_steps': len(data['time']),
+                't_final': data['time'][-1],
+                'dir': dirname,
+            })
+        res.sort(key=lambda x: x['Bo_m'])
+        return res
 
-        # Skip if not in our known map (e.g., test runs)
-        if dirname not in H0_MAP:
-            continue
+    # Current sweep (sub-cell tracking, t_final=3.0)
+    results = process_runs(H0_MAP, all_dirs)
 
-        csv_path = os.path.join(d, "diagnostics.csv")
-        if not os.path.exists(csv_path):
-            continue
-
-        data = read_diagnostics(csv_path)
-        if len(data.get('time', [])) < 10:
-            continue
-
-        H0 = H0_MAP[dirname]
-        Bo_m = MU_0 * CHI * H0**2 * R_DROP / SIGMA
-
-        ar_eq, converged, u_final = find_equilibrium_ar(data)
-        D = (ar_eq - 1.0) / (ar_eq + 1.0)
-
-        # Mass conservation
-        mass = data.get('phi_mass', np.array([0.0]))
-        mass_change = abs(mass[-1] - mass[0]) / max(abs(mass[0]), 1e-12) if len(mass) > 1 else 0.0
-
-        results.append({
-            'H0': H0,
-            'Bo_m': Bo_m,
-            'AR': ar_eq,
-            'D': D,
-            'D_theory_2D': theory_coeff_2D * Bo_m,
-            'D_theory_3D': theory_coeff_3D * Bo_m,
-            'converged': converged,
-            'u_final': u_final,
-            'mass_pct': mass_change * 100,
-            'n_steps': len(data['time']),
-            't_final': data['time'][-1],
-            'dir': dirname,
-        })
+    # Old sweep (cell-midpoint tracking, t_final=1.0)
+    pattern_all = os.path.join(RESULTS_DIR, "*droplet_deformation_r*")
+    all_dirs_all = sorted(glob.glob(pattern_all))
+    results_old = process_runs(H0_MAP_OLD, all_dirs_all)
 
     if not results:
         print("\nNo valid results found!")
         return
 
-    results.sort(key=lambda x: x['Bo_m'])
+    # Print table -- current sweep
+    def print_table(label, res):
+        print(f"\n--- {label} ---")
+        print(f"{'H0':>6s}  {'Bo_m':>8s}  {'AR':>8s}  {'D_num':>9s}  "
+              f"{'D_th(2D)':>9s}  {'D_th(3D)':>9s}  {'U_fin':>9s}  "
+              f"{'Conv':>5s}  {'t_fin':>6s}  Directory")
+        print("-" * 120)
+        for r in res:
+            conv = "YES" if r['converged'] else "no"
+            print(f"{r['H0']:6.1f}  {r['Bo_m']:8.4f}  {r['AR']:8.4f}  {r['D']:9.6f}  "
+                  f"{r['D_theory_2D']:9.6f}  {r['D_theory_3D']:9.6f}  {r['u_final']:9.2e}  "
+                  f"{conv:>5s}  {r['t_final']:6.2f}  {r['dir']}")
 
-    # Print table
-    print(f"\n{'H0':>6s}  {'Bo_m':>8s}  {'AR':>8s}  {'D_num':>9s}  "
-          f"{'D_th(2D)':>9s}  {'D_th(3D)':>9s}  {'U_fin':>9s}  "
-          f"{'Conv':>5s}  {'dM%':>7s}  Directory")
-    print("-" * 120)
-
-    for r in results:
-        conv = "YES" if r['converged'] else "no"
-        print(f"{r['H0']:6.1f}  {r['Bo_m']:8.4f}  {r['AR']:8.4f}  {r['D']:9.6f}  "
-              f"{r['D_theory_2D']:9.6f}  {r['D_theory_3D']:9.6f}  {r['u_final']:9.2e}  "
-              f"{conv:>5s}  {r['mass_pct']:7.4f}  {r['dir']}")
+    print_table("Current sweep (sub-cell tracking, t_final=3.0)", results)
+    if results_old:
+        print_table("Old sweep (cell-midpoint tracking, t_final=1.0)", results_old)
 
     print(f"\n2D small-deformation theory: D = {theory_coeff_2D:.6f} * Bo_m")
     print(f"3D small-deformation theory: D = {theory_coeff_3D:.6f} * Bo_m")
@@ -213,13 +231,20 @@ def main():
     ax1.plot(Bo_theory, D_theory_3D, 'r--', lw=2,
              label=f'3D theory: D = {theory_coeff_3D:.4f}·Bo_m')
 
+    # Old sweep data (cell-midpoint, t=1.0) -- plot first so current is on top
+    if results_old:
+        Bo_old = np.array([r['Bo_m'] for r in results_old])
+        D_old = np.array([r['D'] for r in results_old])
+        ax1.plot(Bo_old, D_old, 'ks', ms=7, mfc='lightgray', mec='gray',
+                 label='Old tracking (cell-midpoint, t=1.0)')
+
     # Numerical: equilibrated vs not
     eq_mask = conv_arr
     ax1.plot(Bo_arr[eq_mask], D_arr[eq_mask], 'ko', ms=10, mfc='green',
-             label='Numerical (equilibrated)')
+             label='Sub-cell tracking (equilibrated)')
     if (~eq_mask).any():
         ax1.plot(Bo_arr[~eq_mask], D_arr[~eq_mask], 'k^', ms=10, mfc='orange',
-                 label='Numerical (not equilibrated)')
+                 label='Sub-cell tracking (not equil.)')
 
     # Annotate H0 values
     for r in results:
@@ -244,10 +269,20 @@ def main():
     ax2.plot(Bo_low, D_theory_2D_low, 'b--', lw=2, label='2D theory')
     ax2.plot(Bo_low, D_theory_3D_low, 'r--', lw=2, label='3D theory')
 
+    # Old data in zoom panel
+    if results_old:
+        Bo_old = np.array([r['Bo_m'] for r in results_old])
+        D_old = np.array([r['D'] for r in results_old])
+        low_old = Bo_old < 1.5
+        if low_old.any():
+            ax2.plot(Bo_old[low_old], D_old[low_old], 'ks', ms=7, mfc='lightgray',
+                     mec='gray', label='Old tracking')
+
     # Only plot low Bo_m data
     low_mask = Bo_arr < 1.5
     if low_mask.any():
-        ax2.plot(Bo_arr[low_mask], D_arr[low_mask], 'ko', ms=10, mfc='green')
+        ax2.plot(Bo_arr[low_mask], D_arr[low_mask], 'ko', ms=10, mfc='green',
+                 label='Sub-cell tracking')
         for r in [r for r in results if r['Bo_m'] < 1.5]:
             ax2.annotate(f'H₀={r["H0"]:.0f}',
                          (r['Bo_m'], r['D']),
@@ -272,12 +307,20 @@ def main():
 
     # Also plot AR vs Bo_m
     fig2, ax3 = plt.subplots(figsize=(8, 6))
+
+    # Old data
+    if results_old:
+        Bo_old = np.array([r['Bo_m'] for r in results_old])
+        AR_old = np.array([r['AR'] for r in results_old])
+        ax3.plot(Bo_old, AR_old, 'ks--', ms=7, mfc='lightgray', mec='gray',
+                 label='Old tracking (cell-midpoint, t=1.0)')
+
     ax3.plot(Bo_arr[eq_mask], np.array([r['AR'] for r in results])[eq_mask],
-             'ko-', ms=10, mfc='green', label='Numerical (equilibrated)')
+             'ko-', ms=10, mfc='green', label='Sub-cell tracking (equilibrated)')
     if (~eq_mask).any():
         ax3.plot(Bo_arr[~eq_mask],
                  np.array([r['AR'] for r in results])[~eq_mask],
-                 'k^--', ms=10, mfc='orange', label='Numerical (not equilibrated)')
+                 'k^--', ms=10, mfc='orange', label='Sub-cell tracking (not equil.)')
     for r in results:
         ax3.annotate(f'H₀={r["H0"]:.0f}',
                      (r['Bo_m'], r['AR']),
@@ -286,7 +329,7 @@ def main():
     ax3.set_xlabel('Bo_m', fontsize=12)
     ax3.set_ylabel('Aspect Ratio (y_span / x_span)', fontsize=12)
     ax3.set_title(f'Droplet Aspect Ratio vs Bo_m (χ={CHI}, R={R_DROP})', fontsize=13)
-    ax3.legend(fontsize=10)
+    ax3.legend(fontsize=9)
     ax3.set_xlim(left=0)
     ax3.set_ylim(bottom=0.95)
     ax3.grid(True, alpha=0.3)
@@ -296,6 +339,45 @@ def main():
     plot_path2 = os.path.join(RESULTS_DIR, "deformation_sweep_AR_vs_Bom.png")
     plt.savefig(plot_path2, dpi=150, bbox_inches='tight')
     print(f"Saved plot: {plot_path2}")
+
+    # ====================================================================
+    # Time history: AR(t) and U_max(t) for each run
+    # ====================================================================
+    fig3, (ax4, ax5) = plt.subplots(1, 2, figsize=(14, 6))
+    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b']
+
+    for i, r in enumerate(results):
+        d = os.path.join(RESULTS_DIR, r['dir'])
+        csv_path = os.path.join(d, "diagnostics.csv")
+        data = read_diagnostics(csv_path)
+        t = data.get('time', np.array([]))
+        ar = data.get('aspect_ratio', np.array([]))
+        u = data.get('U_max', np.array([]))
+
+        label = f"H₀={r['H0']:.0f} (Bo_m={r['Bo_m']:.2f})"
+        ax4.plot(t, ar, color=colors[i % len(colors)], lw=1.5, label=label)
+        ax5.semilogy(t, u, color=colors[i % len(colors)], lw=1.5, label=label)
+
+    ax4.set_xlabel('Time', fontsize=12)
+    ax4.set_ylabel('Aspect Ratio', fontsize=12)
+    ax4.set_title('AR(t) for Each Field Strength', fontsize=13)
+    ax4.legend(fontsize=8)
+    ax4.grid(True, alpha=0.3)
+    ax4.axhline(y=1.0, color='gray', ls=':', lw=1)
+    ax4.axvline(x=0.5, color='gray', ls=':', lw=1, alpha=0.5)
+    ax4.text(0.52, ax4.get_ylim()[0] + 0.01, 'ramp end', fontsize=7, color='gray')
+
+    ax5.set_xlabel('Time', fontsize=12)
+    ax5.set_ylabel('U_max', fontsize=12)
+    ax5.set_title('Maximum Velocity vs Time', fontsize=13)
+    ax5.legend(fontsize=8)
+    ax5.grid(True, alpha=0.3)
+    ax5.axvline(x=0.5, color='gray', ls=':', lw=1, alpha=0.5)
+
+    plt.tight_layout()
+    plot_path3 = os.path.join(RESULTS_DIR, "deformation_sweep_time_history.png")
+    plt.savefig(plot_path3, dpi=150, bbox_inches='tight')
+    print(f"Saved plot: {plot_path3}")
 
 
 if __name__ == '__main__':

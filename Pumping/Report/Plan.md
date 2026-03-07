@@ -30,18 +30,19 @@ See `References/comparison_study.md` for numerical scheme decision analysis.
 - Consistent with Nochetto scheme limitation (confirmed across 3+ projects)
 - Not a convergence study in the paper; moved on to droplet deformation
 
-### Droplet Deformation (Step 3g -- FINAL BENCHMARK)
+### Droplet Deformation (Step 3g -- COMPLETE)
 - Afkhami et al. (2010) JFM 663: D vs Bo_m under uniform field
 - Chi=1.19, R=0.2, sigma=1.0, H0=1.0-5.0 (Bo_m=0.24-5.95)
 - Sub-cell phi=0 contour tracking (edge-crossing interpolation)
-- Sweep running: t_final=3.0, ref 6, 6 H0 values
-- Validates Kelvin force + capillary force coupling
+- Sweep completed: t_final=3.0, ref 6, 6 H0 values
+- D between 2D and 3D theories; linear regime not quantitatively matched
+- Needs eps/mesh convergence study for proper validation
 
-## Project Status: STOPPING AFTER DEFORMATION BENCHMARK
+## Project Status: STOPPED (2026-03-07)
 
-This Pumping project is stopping after the deformation sweep completes.
-The solver infrastructure (CH + FHD coupling, phase-dependent properties,
-AMR, interface tracking) is established and validated.
+Solver infrastructure established. Deformation benchmark shows qualitatively
+correct behavior. Quantitative validation requires convergence studies not
+performed here. See Progress.md for final results table and conclusions.
 
 ## Architecture
 

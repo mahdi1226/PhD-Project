@@ -63,21 +63,40 @@
 - [x] DG face loop fix (is_active check)
 - [x] Working with p4est + Trilinos parallel
 
-### Droplet Deformation Benchmark (Step 3g) -- IN PROGRESS
+### Droplet Deformation Benchmark (Step 3g) -- COMPLETE
 - [x] `--droplet-deformation` preset: [0,1]^2, R=0.2, chi=1.19, sigma=1.0
 - [x] CLI flags: --chi, --field-strength, --ramp-time, --sigma-ch, --epsilon, --gamma
 - [x] Sub-cell interface tracking: phi=0 contour via edge-crossing interpolation
-  (old cell-midpoint method gave quantized AR values; new method gives continuous values)
-- [x] Deformation sweep scripts: `scripts/deformation_sweep.sh` + `scripts/analyze_deformation_sweep.py`
-- [x] First sweep (t_final=1.0, old tracking): D increases monotonically with Bo_m
-- [ ] Second sweep (t_final=3.0, sub-cell tracking): RUNNING (6 jobs, ~3000 steps each)
-- [ ] Final D vs Bo_m comparison plot with 2D/3D theory curves
+- [x] Deformation sweep scripts: `deformation_sweep.sh` + `analyze_deformation_sweep.py`
+- [x] First sweep (t_final=1.0, old tracking): grid-quantized AR (all low-Bo_m identical)
+- [x] Second sweep (t_final=3.0, sub-cell tracking): 6 H0 values, all completed
+- [x] D vs Bo_m comparison plots with 2D/3D theory curves
+- [x] Corrected 2D theory: D = Bo_m * chi / (3*(2+chi)^2) = 0.039 * Bo_m
 
-## Remaining (NOT planned -- project stopping after deformation benchmark)
+#### Final Results (ref 6, eps=0.02, t_final=3.0)
 
-### Pumping Application (PhD Primary Contribution -- future work)
+| H0 | Bo_m | AR   | D_num | D_2D  | Ratio |
+|----|------|------|-------|-------|-------|
+| 1  | 0.24 | 1.02 | 0.011 | 0.009 | 1.23  |
+| 1.5| 0.54 | 1.07 | 0.032 | 0.021 | 1.53  |
+| 2  | 0.95 | 1.14 | 0.066 | 0.037 | 1.78  |
+| 3  | 2.14 | 1.35 | 0.147 | 0.084 | 1.76  |
+| 4  | 3.81 | 1.60 | 0.231 | 0.148 | 1.55  |
+| 5  | 5.95 | 1.90 | 0.310 | 0.232 | 1.34  |
+
+#### Conclusions
+- Qualitatively correct: monotonic D(Bo_m), prolate deformation along field
+- D falls between 2D and 3D small-deformation theories
+- Linear regime issue: D/Bo_m is NOT constant -- superlinear D ~ Bo_m^1.3
+- Numerical D is 1.2-1.8x above 2D theory even at lowest Bo_m
+- Likely cause: diffuse interface too thick (eps/R=0.1) and/or insufficient mesh
+- No eps-convergence or mesh-convergence study performed
+- Sub-cell tracking essential (old cell-midpoint was grid-quantized)
+
+## PROJECT STOPPED (2026-03-07)
+
+### Not Pursued (future work)
+- [ ] eps-convergence study for deformation benchmark
+- [ ] Mesh convergence study (ref 5/6/7) at fixed eps
 - [ ] Droplet transport in pumping channel with traveling-wave field
 - [ ] Parametric study: droplet size, field frequency, intensity
-- [ ] Role of surface tension in droplet integrity
-- [ ] Viscosity contrast effects
-- [ ] Multiple droplet manipulation
