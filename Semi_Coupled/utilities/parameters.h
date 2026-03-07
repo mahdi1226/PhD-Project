@@ -176,7 +176,7 @@ struct Parameters
     // Block-Gauss-Seidel global iteration (Paper CMAME 2016, Section 6, p.520)
     // Outer loop: [CH] -> [Mag+Poisson] -> [NS], repeat until convergence
     // ========================================================================
-    unsigned int bgs_max_iterations = 5;   // Max Block-Gauss-Seidel iterations
+    unsigned int bgs_max_iterations = 20;  // Max Block-Gauss-Seidel iterations
     double bgs_tolerance = 1e-2;           // Relative change tolerance for convergence
     bool enable_bgs = true;                // Enable Block-Gauss-Seidel (paper-faithful)
 
