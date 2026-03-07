@@ -268,7 +268,7 @@ Next: test at r4 (h=1/160 < epsilon=0.01) or with AMR.
 
 ---
 
-## Phase 7: CFL Instability Onset Investigation (Session 18) -- March 6, 2026
+## Phase 7: CFL Instability Onset Investigation (Session 18) — March 6, 2026
 
 ### Discovery: CFL Jump at Rosensweig Instability Onset
 
@@ -320,7 +320,62 @@ Run `20260306_085853_rosen_r4_direct_amr`:
 
 ---
 
-## Current MMS Test Results (All Passing, np=4, March 1 2026)
+## Phase 8: BGS Investigation & Code Optimization (Session 19) — March 7, 2026
+
+### BGS Non-Convergence Investigation
+
+Testing showed that increasing BGS iterations from 5 to 20 does NOT fix the coupling
+non-convergence at Rosensweig instability onset (t~0.5). With BGS=20, residual still
+hovers at 0.2-0.5 during onset — iterating more does not help.
+
+**Paper analysis (Section 6, p.520):** The paper describes "Picard-like iteration" using
+Block-Gauss-Seidel structure but explicitly states "We make no attempt to prove convergence."
+The paper does not specify an iteration count. Analysis of scheme (51) shows:
+- With BGS=1 (single pass), magnetization uses U^{k-1} from previous time step
+- No circular dependency in single pass: [CH] -> [Mag+Poisson] -> [NS]
+- Multiple BGS passes may destabilize the coupling rather than improve it
+
+**Decision:** Set BGS=1 (single pass per time step), matching the paper's likely approach.
+
+### Code Optimization (Session 19)
+
+Comprehensive codebase optimization — 7 tasks completed:
+
+1. **M_PI centralization**: Removed redundant `#define M_PI` from 6 source files, centralized
+   in `utilities/tools.h` with proper `#ifndef M_PI` guard
+2. **Dead code removal**: Removed unused `fe_Q1_` member from `phase_field.h` and its
+   initializer from `phase_field_setup.cc`
+3. **Memory management**: Replaced raw `new/delete` with `std::make_unique` in
+   `ns_block_preconditioner.cc`
+4. **Magnetization face dedup**: Extracted duplicated ~40-line face integral assembly
+   code into a lambda function in `magnetization_assembler.cc`
+5. **NS assembler consolidation**: Created `NSForceData<dim>` struct and unified
+   `assemble_ns_system_unified()` function, converting 4 separate public functions into
+   thin wrappers. Reduces code duplication across force combinations.
+6. **Include audit**: All includes verified as actually used
+7. **Point copy audit**: All point copies already use const references
+
+**Verification:** FULL_SYSTEM MMS test passes after all changes:
+phi_L2=3.00, M_L2=2.00, theta_L2=2.91, U_L2=2.99, p_L2=2.00
+
+### Validation Pyramid Tests (Launched March 7)
+
+Three benchmark tests launched on 2 ranks each, t_final=1.5, dt=1e-3:
+
+| Test | Purpose | Status |
+|------|---------|--------|
+| `droplet` (no mag) | CH + NS baseline, circular droplet relaxation | Running |
+| `square` (no mag) | CH + NS, square-to-circle relaxation | Running |
+| `droplet_nonuniform_B` | CH + NS + Mag, droplet elongation in nonuniform field | Running |
+
+**Early results (step ~40):**
+- Droplet: stable, as expected
+- Square: relaxing toward circle, not there yet
+- Droplet-nonuniform-B: still circular (elongation not yet visible at t=0.04)
+
+---
+
+## Current MMS Test Results (All Passing, np=1, March 7 2026)
 
 ### Standalone Tests
 | Test | Key Fields | L2 Rate | Expected |

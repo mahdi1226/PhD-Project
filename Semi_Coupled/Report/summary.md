@@ -142,7 +142,8 @@ Block-Gauss-Seidel iteration (paper Section 6, p.520):
 2. **Block 2**: Solve Magnetization + Poisson (M, phi) via Picard — Eqs (42c)-(42d)
 3. **Block 3**: Solve NS (U, P) — Eq (42e)
 
-Iterate until convergence (max 5 BGS iterations, tolerance 1e-2).
+Single pass per time step (BGS=1, paper-like approach). Testing showed iterating to
+convergence (BGS=5 or 20) diverges during strong coupling onset.
 
 ### 3.5 Implementation
 
@@ -183,39 +184,36 @@ Iterate until convergence (max 5 BGS iterations, tolerance 1e-2).
 
 ## 5. Production Validation Status (IN PROGRESS)
 
-### 5.1 Droplet Tests
+### 5.1 Validation Pyramid (March 7, 2026)
 
-**Droplet (no magnetic):** Stable, Laplace pressure approximately correct.
+Testing proceeds from simple to complex to isolate physics-layer issues:
+1. **Square** (CH+NS only): relaxation to circle — mass & energy conservation
+2. **Droplet** (CH+NS only): circular droplet stability
+3. **Droplet + nonuniform B** (CH+NS+Mag): droplet elongation in magnetic field
+4. **Dome** (CH+NS+Mag+Grav, h=h_a): flat interface with gravity + magnetic force
+5. **Rosensweig** (full system, h=h_a+h_d): instability benchmark
 
-**Droplet + Uniform B:** After H field fix (Bug 9), no longer explodes. However, still
-shows spurious Kelvin force (F_mag ~ 101) and exponentially growing velocity on a
-configuration that should produce ZERO Kelvin force. This indicates a remaining issue
-in the DG skew form Kelvin force discretization.
+Tests 1-3 currently running (March 7). Early results: all stable.
 
-### 5.2 Rosensweig Instability
+### 5.2 BGS Coupling Investigation
 
-Multiple attempts to reproduce Section 6.2 Rosensweig instability:
+**BGS=5:** Non-convergent at Rosensweig onset (t~0.5), residual 0.2-0.5.
+**BGS=20:** Same result — iterating more does NOT help.
+**Paper (Section 6, p.520):** "We make no attempt to prove convergence."
+**Decision:** BGS=1 (single pass per time step). With single pass, the coupling is:
+[CH] -> [Mag+Poisson (Picard)] -> [NS], with no circular dependency.
 
-**With explicit CH convection (Sessions 13-14):** Odd-even oscillation at t=0.32, F_mag
-jumps to 275K. BGS fails to converge.
+### 5.3 Rosensweig Instability
 
-**With AMR (Session 17):** Start-coarse-refine-up approach. All runs blew up due to CFL
-from explicit CH convection (L6 at t=0.335, L7 at t=0.072).
+Multiple attempts across Sessions 13-19:
+- Explicit CH convection: CFL blowup at onset (100x velocity jump in ~25 steps)
+- Implicit CH convection: CFL crash eliminated, but BGS non-convergence persists
+- BGS=20: no improvement over BGS=1 during onset
 
-**With implicit CH convection (Session 17):** CFL crash eliminated. But r3 (h=1/80)
-under-resolves interface (epsilon=0.01). Spurious spikes at t=0.066.
+**Next approach:** Run with BGS=1 after validation pyramid benchmarks confirm basic
+physics layers work correctly.
 
-**Session 18 — CFL instability onset characterized:** Comprehensive diagnostic analysis
-of 4 runs revealed that the CFL jump at instability onset is caused by a **100x velocity
-jump** over ~25 time steps, not by mesh changes. This is the physical Rosensweig instability
-eigenmode growing exponentially when the magnetic field reaches ~30% of maximum.
-See `Report/CFL_INSTABILITY_ONSET_REPORT.md` for full analysis.
-
-**Current run (March 6):** r4 with AMR + implicit CH convection in progress.
-Step 819 (t=0.41), CFL=7.1e-4, all diagnostics healthy. Approaching the critical onset
-region (t~0.5).
-
-### 5.3 AMR Implementation
+### 5.4 AMR Implementation
 
 AMR implemented for parallel distributed mesh (Session 16):
 - Kelly error estimator, SolutionTransfer for all fields
@@ -224,11 +222,17 @@ AMR implemented for parallel distributed mesh (Session 16):
 - **Bulk coarsening fix (Session 18):** Force-coarsen cells where |theta|>0.95 to prevent
   oscillation cycle. Reduces cell count by ~70%.
 
-### 5.4 Known Working Reference
+### 5.5 Code Optimization (Session 19)
+
+Comprehensive cleanup: centralized M_PI, removed dead code, fixed memory management,
+deduplicated magnetization face assembly, consolidated 4 NS assembler overloads into
+unified function via NSForceData struct. All MMS tests verified passing after changes.
+
+### 5.6 Known Working Reference
 
 The Decoupled project uses a different Kelvin force formulation (3 separate terms instead
-of the DG skew form) and produces correct Rosensweig instability patterns. Parallel
-Rosensweig runs with the Decoupled project are in progress for comparison.
+of the DG skew form) and produces correct Rosensweig instability patterns. A Decoupled
+rosensweig-nonuniform test is currently running on 4 ranks for comparison.
 
 ---
 

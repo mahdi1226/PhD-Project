@@ -5,39 +5,49 @@
 
 ---
 
-## Current Status
+## Current Status (Updated March 7, 2026)
 
-- All 10 spatial MMS tests pass with optimal convergence rates (np=4)
-- 12 bugs found and fixed total (4 MMS, 3 MPI/solver, 1 test harness, 1 H field, 1 viscous scaling,
-  1 CH convection explicit->implicit, 1 DG face loop after AMR)
-- Block-Gauss-Seidel global iteration implemented and working
-- AMR implemented for parallel distributed mesh (start coarse, refine up)
-- **CH convection made implicit** in theta (removes CFL constraint)
-- **AMR bulk coarsening fix** prevents oscillation cycle (cells 15K -> 4.6K)
-- **CFL instability onset characterized** -- velocity-driven jump at ~30% of max field (see Report)
-- **Rosensweig run in progress** (r4, AMR, implicit CH, step 819/4000, t=0.41)
+- All 10 spatial MMS tests pass with optimal convergence rates
+- 13 bugs found and fixed total (4 MMS, 3 MPI/solver, 1 test harness, 1 H field, 1 viscous scaling,
+  1 CH convection explicit->implicit, 1 DG face loop after AMR, 1 AMR bulk coarsening)
+- **BGS set to single pass** (paper-like approach; iterating to convergence diverges)
+- **Code optimized**: M_PI centralized, dead code removed, memory management fixed,
+  NS assembler consolidated via NSForceData struct, mag face assembly deduplicated
+- **CH convection implicit** in theta (removes CFL constraint)
+- **AMR bulk coarsening fix** prevents oscillation cycle
+- **3 validation benchmarks running** (droplet, square, droplet-nonuniform-B)
+- **Decoupled rosensweig-nonuniform running** (4 ranks, comparison reference)
 - Long-duration MMS framework prepared (not yet run)
 
 ---
 
-## PRIORITY 1: Rosensweig Instability Validation (IN PROGRESS)
+## PRIORITY 1: Validation Pyramid (IN PROGRESS)
 
-### Current Run
-Run `20260306_085853_rosen_r4_direct_amr` is in progress with:
-- ref=4, AMR (bulk coarsening fix), implicit CH convection, dt=5e-4, direct solver
-- At step 819 (t=0.41): CFL=7.1e-4, theta=[-1.000,1.000], mass conserved
-- Approaching the critical instability onset region (t~0.5)
-- Estimated 10 hours total runtime
+### Step 1: Benchmark Tests (Running — March 7)
+Three tests launched to validate the basic physics before attempting Rosensweig:
 
-### CFL Instability Onset Discovery
-The explicit runs failed because the Rosensweig instability onset causes a **100x velocity
-jump in ~25 time steps** (~30% of max field). This violates the CFL constraint for explicit
-CH convection. The implicit fix removes this constraint. See `Report/CFL_INSTABILITY_ONSET_REPORT.md`.
+| Test | What it validates | Expected result |
+|------|-------------------|-----------------|
+| Droplet (no mag) | CH + NS coupling, interface stability | Circle stays circular |
+| Square (no mag) | CH + NS, energy dissipation, mass conservation | Square relaxes to circle |
+| Droplet + nonuniform B | CH + NS + Mag, Kelvin force on interface | Droplet elongates into ellipse |
 
-### What to Expect
-- If the implicit run survives t~0.5 and continues to t=2.0: Rosensweig spikes should form
-- Compare spike morphology with Nochetto et al. Figure 6
-- If it fails: investigate other coupling instabilities (Kelvin force, Picard convergence)
+**Early observations (step ~40):** All three tests running stably.
+
+### Step 2: Dome Test (NEXT)
+- Uses `h = h_a` only (reduced magnetic field, no Poisson solve)
+- Tests gravity + magnetic force on flat interface
+- Simpler than full Rosensweig (no demagnetization field)
+
+### Step 3: Rosensweig Instability (AFTER BENCHMARKS)
+- Previous runs showed BGS non-convergence at onset (t~0.5)
+- Now using BGS=1 (single pass), implicit CH convection
+- Need to verify benchmarks pass first before attempting
+
+### BGS Investigation Conclusion
+BGS=20 tested: residual stays 0.2-0.5 at onset — iterating does NOT help.
+Paper (Section 6, p.520): "We make no attempt to prove convergence."
+Decision: BGS=1 (single pass per time step), matching paper's likely approach.
 
 ---
 
@@ -58,16 +68,20 @@ This is EXPECTED, not a bug.
 
 ---
 
-## PRIORITY 3: Code Cleanup (DEFERRED)
+## PRIORITY 3: Code Cleanup (PARTIALLY COMPLETE)
 
-See detailed cleanup plan at `.claude/plans/mighty-wondering-koala.md`.
+Completed (Session 19):
+1. Centralized M_PI in tools.h (removed from 6 files)
+2. Removed dead fe_Q1_ member from phase_field
+3. Fixed raw new/delete -> unique_ptr in ns_block_preconditioner.cc
+4. Deduplicated magnetization face assembly (~40 lines -> lambda)
+5. Consolidated 4 NS assembler functions into unified NSForceData struct
 
-Key items:
+Remaining:
 1. Remove Zhang-He-Yang extension code (beta damping, spin-vorticity)
-2. Remove dead/debug code
-3. Consolidate duplicated functions (applied field, Heaviside)
-4. Fix performance (FEFaceValues inside loop)
-5. Extract hardcoded values to parameters
+2. Consolidate duplicated functions (applied field, Heaviside)
+3. Fix performance (FEFaceValues inside loop)
+4. Extract hardcoded values to parameters
 
 ---
 
@@ -78,11 +92,18 @@ Key items:
 | `20260228_063736_droplet_r5_direct_amr` | Droplet (no mag) | Feb 28 | Complete |
 | `20260228_221805_droplet-uniform-B_r5_direct_Namr` | Droplet + uniform B | Feb 28 | Complete (slow instability) |
 | `20260301_052316_rosen_r4_direct_Namr` | Rosensweig r=4 noAMR DG | Mar 1 | Died t~1.0 (CFL) |
-| `20260303_*_rosen_*_amr` | Rosensweig AMR attempts | Mar 3 | Failed (CFL blowup) |
-| `20260303_214052_rosen_r3_direct_Namr` | Rosensweig r3 implicit | Mar 3 | Killed (under-resolved) |
-| `20260305_115128_rosen_r3_direct_amr` | Rosensweig r3 AMR explicit | Mar 5 | **Completed** t=2.0 (CFL~1.0) |
+| `20260301_214922_rosen_r4_direct_Namr` | Rosensweig r=4 noAMR | Mar 1 | Died (CFL) |
+| `20260302_174643_rosen_r4_direct_Namr` | Rosensweig r=4 noAMR | Mar 2 | Died (CFL) |
+| `20260304_065229_square_r5_direct_amr` | Square r=5 AMR | Mar 4 | Partial |
+| `20260304_232520_square_r4_direct_Namr` | Square r=4 noAMR | Mar 4 | Complete |
+| `20260305_021220_rosen_r3_direct_amr` | Rosensweig r3 AMR | Mar 5 | Partial |
+| `20260305_115128_rosen_r3_direct_amr` | Rosensweig r3 AMR explicit | Mar 5 | **Completed** t=2.0 |
 | `20260305_171805_rosen_r4_direct_amr` | Rosensweig r4 AMR explicit | Mar 5 | Died t~0.99 (CFL=1.15) |
-| `20260306_085853_rosen_r4_direct_amr` | Rosensweig r4 AMR **implicit** | Mar 6 | **Running** (t=0.41) |
+| `20260306_085853_rosen_r4_direct_amr` | Rosensweig r4 AMR implicit | Mar 6 | Partial (BGS issues) |
+| `20260306_171510_rosen_r4_direct_amr` | Rosensweig r4 BGS=20 | Mar 6 | Killed t=0.60 (BGS non-conv) |
+| `20260307_*_droplet_r5_direct_amr` | Droplet benchmark | Mar 7 | **Running** |
+| `20260307_*_square_r5_direct_amr` | Square benchmark | Mar 7 | **Running** |
+| `20260307_*_droplet-nonuniform-B_*` | Droplet + nonuniform B | Mar 7 | **Running** |
 
 ---
 
