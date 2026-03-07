@@ -254,6 +254,61 @@ void MagnetizationAssembler<dim>::assemble(
         // FACE CONTRIBUTIONS (interior faces only)
         // For STANDALONE MMS with U=0, these vanish since U·n=0
         // ====================================================================
+
+        // Helper lambda: assemble face flux matrices and distribute to system matrix.
+        // Called after fe_interface_M, fe_face_U, dofs_here, dofs_there are initialized.
+        auto assemble_face_flux = [&]()
+        {
+            face_hh = 0;
+            face_ht = 0;
+            face_th = 0;
+            face_tt = 0;
+
+            for (unsigned int q = 0; q < n_q_face; ++q)
+            {
+                const double JxW = fe_interface_M.JxW(q);
+                const auto& normal = fe_interface_M.normal(q);
+
+                const double U_dot_n = Ux_face[q] * normal[0] + Uy_face[q] * normal[1];
+
+                for (unsigned int i = 0; i < dofs_per_cell; ++i)
+                {
+                    const double phi_i_here = fe_interface_M.shape_value(true, i, q);
+                    // FIX: For DG, "there" DOFs start at offset dofs_per_cell
+                    // in the interface DOF numbering
+                    const double phi_i_there = fe_interface_M.shape_value(false, dofs_per_cell + i, q);
+
+                    for (unsigned int j = 0; j < dofs_per_cell; ++j)
+                    {
+                        const double phi_j_here = fe_interface_M.shape_value(true, j, q);
+                        const double phi_j_there = fe_interface_M.shape_value(false, dofs_per_cell + j, q);
+
+                        // Face flux: B_h^m face (Eq. 57, second line)
+                        // V = φ_j (trial, transported), W = φ_i (test)
+                        face_hh(i, j) += skew_magnetic_face_value_scalar_interface(
+                            U_dot_n, phi_j_here, 0.0, phi_i_here, 0.0) * JxW;
+                        face_ht(i, j) += skew_magnetic_face_value_scalar_interface(
+                            U_dot_n, 0.0, phi_j_there, phi_i_here, 0.0) * JxW;
+                        face_th(i, j) += skew_magnetic_face_value_scalar_interface(
+                            U_dot_n, phi_j_here, 0.0, 0.0, phi_i_there) * JxW;
+                        face_tt(i, j) += skew_magnetic_face_value_scalar_interface(
+                            U_dot_n, 0.0, phi_j_there, 0.0, phi_i_there) * JxW;
+                    }
+                }
+            }
+
+            for (unsigned int i = 0; i < dofs_per_cell; ++i)
+            {
+                for (unsigned int j = 0; j < dofs_per_cell; ++j)
+                {
+                    system_matrix.add(dofs_here[i], dofs_here[j], face_hh(i, j));
+                    system_matrix.add(dofs_here[i], dofs_there[j], face_ht(i, j));
+                    system_matrix.add(dofs_there[i], dofs_here[j], face_th(i, j));
+                    system_matrix.add(dofs_there[i], dofs_there[j], face_tt(i, j));
+                }
+            }
+        };
+
         for (unsigned int f = 0; f < cell_M->n_faces(); ++f)
         {
             if (cell_M->at_boundary(f))
@@ -286,54 +341,7 @@ void MagnetizationAssembler<dim>::assemble(
                 cell_M->get_dof_indices(dofs_here);
                 neighbor_M->get_dof_indices(dofs_there);
 
-                face_hh = 0;
-                face_ht = 0;
-                face_th = 0;
-                face_tt = 0;
-
-                for (unsigned int q = 0; q < n_q_face; ++q)
-                {
-                    const double JxW = fe_interface_M.JxW(q);
-                    const auto& normal = fe_interface_M.normal(q);
-
-                    const double U_dot_n = Ux_face[q] * normal[0] + Uy_face[q] * normal[1];
-
-                    for (unsigned int i = 0; i < dofs_per_cell; ++i)
-                    {
-                        const double phi_i_here = fe_interface_M.shape_value(true, i, q);
-                        // FIX: For DG, "there" DOFs start at offset dofs_per_cell
-                        // in the interface DOF numbering
-                        const double phi_i_there = fe_interface_M.shape_value(false, dofs_per_cell + i, q);
-
-                        for (unsigned int j = 0; j < dofs_per_cell; ++j)
-                        {
-                            const double phi_j_here = fe_interface_M.shape_value(true, j, q);
-                            const double phi_j_there = fe_interface_M.shape_value(false, dofs_per_cell + j, q);
-
-                            // Face flux: B_h^m face (Eq. 57, second line)
-                            // V = φ_j (trial, transported), W = φ_i (test)
-                            face_hh(i, j) += skew_magnetic_face_value_scalar_interface(
-                                U_dot_n, phi_j_here, 0.0, phi_i_here, 0.0) * JxW;
-                            face_ht(i, j) += skew_magnetic_face_value_scalar_interface(
-                                U_dot_n, 0.0, phi_j_there, phi_i_here, 0.0) * JxW;
-                            face_th(i, j) += skew_magnetic_face_value_scalar_interface(
-                                U_dot_n, phi_j_here, 0.0, 0.0, phi_i_there) * JxW;
-                            face_tt(i, j) += skew_magnetic_face_value_scalar_interface(
-                                U_dot_n, 0.0, phi_j_there, 0.0, phi_i_there) * JxW;
-                        }
-                    }
-                }
-
-                for (unsigned int i = 0; i < dofs_per_cell; ++i)
-                {
-                    for (unsigned int j = 0; j < dofs_per_cell; ++j)
-                    {
-                        system_matrix.add(dofs_here[i], dofs_here[j], face_hh(i, j));
-                        system_matrix.add(dofs_here[i], dofs_there[j], face_ht(i, j));
-                        system_matrix.add(dofs_there[i], dofs_here[j], face_th(i, j));
-                        system_matrix.add(dofs_there[i], dofs_there[j], face_tt(i, j));
-                    }
-                }
+                assemble_face_flux();
             }
             // AMR Case 2: Same level neighbor (must be active on AMR meshes)
             else if (cell_M->level() == neighbor_M->level() && neighbor_M->is_active())
@@ -356,54 +364,7 @@ void MagnetizationAssembler<dim>::assemble(
                 cell_M->get_dof_indices(dofs_here);
                 neighbor_M->get_dof_indices(dofs_there);
 
-                face_hh = 0;
-                face_ht = 0;
-                face_th = 0;
-                face_tt = 0;
-
-                for (unsigned int q = 0; q < n_q_face; ++q)
-                {
-                    const double JxW = fe_interface_M.JxW(q);
-                    const auto& normal = fe_interface_M.normal(q);
-
-                    const double U_dot_n = Ux_face[q] * normal[0] + Uy_face[q] * normal[1];
-
-                    for (unsigned int i = 0; i < dofs_per_cell; ++i)
-                    {
-                        const double phi_i_here = fe_interface_M.shape_value(true, i, q);
-                        // FIX: For DG, "there" DOFs start at offset dofs_per_cell
-                        // in the interface DOF numbering
-                        const double phi_i_there = fe_interface_M.shape_value(false, dofs_per_cell + i, q);
-
-                        for (unsigned int j = 0; j < dofs_per_cell; ++j)
-                        {
-                            const double phi_j_here = fe_interface_M.shape_value(true, j, q);
-                            const double phi_j_there = fe_interface_M.shape_value(false, dofs_per_cell + j, q);
-
-                            // Face flux: B_h^m face (Eq. 57, second line)
-                            // V = φ_j (trial, transported), W = φ_i (test)
-                            face_hh(i, j) += skew_magnetic_face_value_scalar_interface(
-                                U_dot_n, phi_j_here, 0.0, phi_i_here, 0.0) * JxW;
-                            face_ht(i, j) += skew_magnetic_face_value_scalar_interface(
-                                U_dot_n, 0.0, phi_j_there, phi_i_here, 0.0) * JxW;
-                            face_th(i, j) += skew_magnetic_face_value_scalar_interface(
-                                U_dot_n, phi_j_here, 0.0, 0.0, phi_i_there) * JxW;
-                            face_tt(i, j) += skew_magnetic_face_value_scalar_interface(
-                                U_dot_n, 0.0, phi_j_there, 0.0, phi_i_there) * JxW;
-                        }
-                    }
-                }
-
-                for (unsigned int i = 0; i < dofs_per_cell; ++i)
-                {
-                    for (unsigned int j = 0; j < dofs_per_cell; ++j)
-                    {
-                        system_matrix.add(dofs_here[i], dofs_here[j], face_hh(i, j));
-                        system_matrix.add(dofs_here[i], dofs_there[j], face_ht(i, j));
-                        system_matrix.add(dofs_there[i], dofs_here[j], face_th(i, j));
-                        system_matrix.add(dofs_there[i], dofs_there[j], face_tt(i, j));
-                    }
-                }
+                assemble_face_flux();
             }
             // AMR Case 3: Neighbor is finer - skip, handled by fine cells
         }

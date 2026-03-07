@@ -143,7 +143,6 @@ private:
     // incompressibility. (A2): M_h = [P_h]^d (magnetization = vectorial pressure)
     // ========================================================================
     dealii::FE_Q<dim> fe_Q2_;    // Q2 for velocity, θ, ψ, φ
-    dealii::FE_Q<dim> fe_Q1_;    // Q1 (unused - kept for compatibility)
     dealii::FE_DGQ<dim> fe_DG_;  // DG for pressure (A1) and magnetization M (A2)
 
     // ========================================================================

@@ -1065,82 +1065,6 @@ static void assemble_gravity_force(
 }
 
 // ============================================================================
-// Public API: Basic assembly (no Kelvin force)
-// ============================================================================
-template <int dim>
-void assemble_ns_system_parallel(
-    const dealii::DoFHandler<dim>& ux_dof_handler,
-    const dealii::DoFHandler<dim>& uy_dof_handler,
-    const dealii::DoFHandler<dim>& p_dof_handler,
-    const dealii::TrilinosWrappers::MPI::Vector& ux_old,
-    const dealii::TrilinosWrappers::MPI::Vector& uy_old,
-    double nu,
-    double dt,
-    bool include_time_derivative,
-    bool include_convection,
-    const std::vector<dealii::types::global_dof_index>& ux_to_ns_map,
-    const std::vector<dealii::types::global_dof_index>& uy_to_ns_map,
-    const std::vector<dealii::types::global_dof_index>& p_to_ns_map,
-    const dealii::IndexSet& /*ns_owned*/,
-    const dealii::AffineConstraints<double>& ns_constraints,
-    dealii::TrilinosWrappers::SparseMatrix& ns_matrix,
-    dealii::TrilinosWrappers::MPI::Vector& ns_rhs,
-    MPI_Comm /*mpi_comm*/,
-    bool enable_mms,
-    double mms_time,
-    double mms_time_old,
-    double mms_L_y)
-{
-    assemble_ns_core<dim>(
-        ux_dof_handler, uy_dof_handler, p_dof_handler,
-        ux_old, uy_old, nu, dt,
-        include_time_derivative, include_convection,
-        ux_to_ns_map, uy_to_ns_map, p_to_ns_map,
-        ns_constraints, ns_matrix, ns_rhs,
-        nullptr, 0.0,
-        enable_mms, mms_time, mms_time_old, mms_L_y);
-}
-
-// ============================================================================
-// Public API: Assembly with body force
-// ============================================================================
-template <int dim>
-void assemble_ns_system_with_body_force_parallel(
-    const dealii::DoFHandler<dim>& ux_dof_handler,
-    const dealii::DoFHandler<dim>& uy_dof_handler,
-    const dealii::DoFHandler<dim>& p_dof_handler,
-    const dealii::TrilinosWrappers::MPI::Vector& ux_old,
-    const dealii::TrilinosWrappers::MPI::Vector& uy_old,
-    double nu,
-    double dt,
-    bool include_time_derivative,
-    bool include_convection,
-    const std::vector<dealii::types::global_dof_index>& ux_to_ns_map,
-    const std::vector<dealii::types::global_dof_index>& uy_to_ns_map,
-    const std::vector<dealii::types::global_dof_index>& p_to_ns_map,
-    const dealii::IndexSet& /*ns_owned*/,
-    const dealii::AffineConstraints<double>& ns_constraints,
-    dealii::TrilinosWrappers::SparseMatrix& ns_matrix,
-    dealii::TrilinosWrappers::MPI::Vector& ns_rhs,
-    MPI_Comm /*mpi_comm*/,
-    const std::function<dealii::Tensor<1, dim>(const dealii::Point<dim>&, double)>& body_force,
-    double current_time,
-    bool enable_mms,
-    double mms_time,
-    double mms_time_old,
-    double mms_L_y)
-{
-    assemble_ns_core<dim>(
-        ux_dof_handler, uy_dof_handler, p_dof_handler,
-        ux_old, uy_old, nu, dt,
-        include_time_derivative, include_convection,
-        ux_to_ns_map, uy_to_ns_map, p_to_ns_map,
-        ns_constraints, ns_matrix, ns_rhs,
-        &body_force, current_time,
-        enable_mms, mms_time, mms_time_old, mms_L_y);
-}
-
-// ============================================================================
 // Helper: Subtract exact Kelvin force for MMS correction
 //
 // When testing NS + Kelvin coupling with MMS:
@@ -1150,7 +1074,7 @@ void assemble_ns_system_with_body_force_parallel(
 // For convergence, we need: f_NS - F_K(M*, H*) + F_K(M_h, H_h)
 // So we must SUBTRACT the exact Kelvin force F_K(M*, H*).
 //
-// As h→0: F_K(M_h, H_h) → F_K(M*, H*), so total → f_NS ✓
+// As h->0: F_K(M_h, H_h) -> F_K(M*, H*), so total -> f_NS
 // ============================================================================
 template <int dim>
 static void assemble_kelvin_mms_correction(
@@ -1207,7 +1131,6 @@ static void assemble_kelvin_mms_correction(
             dealii::Tensor<1, dim> F_K_exact =
                 compute_kelvin_force_mms_source<dim>(x_q, mms_time, mu_0, mms_L_y);
 
-
             // SUBTRACT from RHS: we need (f_NS - F_K_exact), and f_NS was already added
             for (unsigned int i = 0; i < dofs_per_cell_vel; ++i)
             {
@@ -1236,8 +1159,219 @@ static void assemble_kelvin_mms_correction(
 }
 
 // ============================================================================
-// Public API: Assembly with Kelvin force (PRODUCTION FERROFLUID)
-// NOTE: This function is legacy - use assemble_ns_system_ferrofluid_parallel
+// Public API: Unified NS assembly function
+//
+// Single entry point for all NS assembly variants. Calls internal helpers
+// based on what forces are enabled in the NSForceData struct.
+//
+// Execution order:
+//   1. assemble_ns_core() — LHS matrix + core RHS (time, viscous, convection,
+//      pressure, body force, MMS source). Variable viscosity if enabled.
+//   2. Kelvin force — either gradient form or DG skew form (Eq. 38)
+//      + MMS correction if enable_mms
+//   3. Capillary force — (lambda/epsilon) theta grad(psi)
+//   4. Gravity force — r*H(theta/epsilon)*g
+// ============================================================================
+template <int dim>
+void assemble_ns_system_unified(
+    const dealii::DoFHandler<dim>& ux_dof_handler,
+    const dealii::DoFHandler<dim>& uy_dof_handler,
+    const dealii::DoFHandler<dim>& p_dof_handler,
+    const dealii::TrilinosWrappers::MPI::Vector& ux_old,
+    const dealii::TrilinosWrappers::MPI::Vector& uy_old,
+    double nu,
+    double dt,
+    bool include_time_derivative,
+    bool include_convection,
+    const std::vector<dealii::types::global_dof_index>& ux_to_ns_map,
+    const std::vector<dealii::types::global_dof_index>& uy_to_ns_map,
+    const std::vector<dealii::types::global_dof_index>& p_to_ns_map,
+    const dealii::AffineConstraints<double>& ns_constraints,
+    dealii::TrilinosWrappers::SparseMatrix& ns_matrix,
+    dealii::TrilinosWrappers::MPI::Vector& ns_rhs,
+    const NSForceData<dim>& forces,
+    bool enable_mms,
+    double mms_time,
+    double mms_time_old,
+    double mms_L_y)
+{
+    // Step 1: Assemble core NS (time, viscous, convection, pressure, body/MMS source)
+    // Optionally with variable viscosity nu(theta)
+    if (forces.has_variable_viscosity)
+    {
+        assemble_ns_core<dim>(
+            ux_dof_handler, uy_dof_handler, p_dof_handler,
+            ux_old, uy_old, nu, dt,
+            include_time_derivative, include_convection,
+            ux_to_ns_map, uy_to_ns_map, p_to_ns_map,
+            ns_constraints, ns_matrix, ns_rhs,
+            forces.body_force, forces.body_force_time,
+            enable_mms, mms_time, mms_time_old, mms_L_y,
+            forces.theta_visc_dof_handler, forces.theta_visc_solution,
+            forces.epsilon_visc, forces.nu_water, forces.nu_ferro);
+    }
+    else
+    {
+        assemble_ns_core<dim>(
+            ux_dof_handler, uy_dof_handler, p_dof_handler,
+            ux_old, uy_old, nu, dt,
+            include_time_derivative, include_convection,
+            ux_to_ns_map, uy_to_ns_map, p_to_ns_map,
+            ns_constraints, ns_matrix, ns_rhs,
+            forces.body_force, forces.body_force_time,
+            enable_mms, mms_time, mms_time_old, mms_L_y);
+    }
+
+    // Step 2: Add Kelvin force to RHS (if enabled)
+    if (forces.has_kelvin)
+    {
+        const Parameters& kp = *forces.kelvin_params;
+        if (kp.use_gradient_kelvin_force)
+        {
+            // CG gradient form: f = (mu_0/2)|H|^2 grad(chi(theta))
+            // Requires theta_cap_dof_handler for chi(theta) and grad(theta)
+            assemble_kelvin_force_gradient<dim>(
+                ux_dof_handler, uy_dof_handler,
+                *forces.phi_dof_handler, *forces.theta_cap_dof_handler,
+                *forces.phi_solution, *forces.theta_cap_solution,
+                forces.mu_0, kp.physics.chi_0, forces.epsilon_cap,
+                ux_to_ns_map, uy_to_ns_map,
+                ns_constraints, ns_rhs);
+        }
+        else
+        {
+            // DG skew form: mu_0[(M.grad)H + 0.5(div M)H] (Eq. 38)
+            assemble_kelvin_force<dim>(
+                ux_dof_handler, uy_dof_handler,
+                *forces.phi_dof_handler, *forces.M_dof_handler,
+                *forces.phi_solution, *forces.Mx_solution, *forces.My_solution,
+                forces.mu_0,
+                ux_to_ns_map, uy_to_ns_map,
+                ns_constraints, ns_rhs,
+                kp, forces.kelvin_time);
+        }
+
+        // MMS correction: subtract exact Kelvin force F_K(M*, H*)
+        if (enable_mms)
+        {
+            assemble_kelvin_mms_correction<dim>(
+                ux_dof_handler, uy_dof_handler,
+                ux_to_ns_map, uy_to_ns_map,
+                ns_constraints, ns_rhs,
+                forces.mu_0, mms_time, mms_L_y);
+        }
+    }
+
+    // Step 3: Add capillary force (lambda/epsilon) theta grad(psi) to RHS
+    if (forces.has_capillary)
+    {
+        assemble_capillary_force<dim>(
+            ux_dof_handler, uy_dof_handler,
+            *forces.theta_cap_dof_handler, *forces.psi_dof_handler,
+            *forces.theta_cap_solution, *forces.psi_solution,
+            forces.lambda, forces.epsilon_cap,
+            ux_to_ns_map, uy_to_ns_map,
+            ns_constraints, ns_rhs);
+    }
+
+    // Step 4: Add gravity force r*H(theta/epsilon)*g to RHS
+    if (forces.has_gravity)
+    {
+        // Use the capillary theta dof handler for gravity as well
+        // (gravity uses theta for Heaviside density interpolation)
+        assemble_gravity_force<dim>(
+            ux_dof_handler, uy_dof_handler,
+            *forces.theta_cap_dof_handler, *forces.theta_cap_solution,
+            forces.r, forces.epsilon_cap, forces.gravity_mag, forces.gravity_dir,
+            ux_to_ns_map, uy_to_ns_map,
+            ns_constraints, ns_rhs);
+    }
+}
+
+// ============================================================================
+// Legacy wrapper: Basic NS assembly (no forces)
+// ============================================================================
+template <int dim>
+void assemble_ns_system_parallel(
+    const dealii::DoFHandler<dim>& ux_dof_handler,
+    const dealii::DoFHandler<dim>& uy_dof_handler,
+    const dealii::DoFHandler<dim>& p_dof_handler,
+    const dealii::TrilinosWrappers::MPI::Vector& ux_old,
+    const dealii::TrilinosWrappers::MPI::Vector& uy_old,
+    double nu,
+    double dt,
+    bool include_time_derivative,
+    bool include_convection,
+    const std::vector<dealii::types::global_dof_index>& ux_to_ns_map,
+    const std::vector<dealii::types::global_dof_index>& uy_to_ns_map,
+    const std::vector<dealii::types::global_dof_index>& p_to_ns_map,
+    const dealii::IndexSet& /*ns_owned*/,
+    const dealii::AffineConstraints<double>& ns_constraints,
+    dealii::TrilinosWrappers::SparseMatrix& ns_matrix,
+    dealii::TrilinosWrappers::MPI::Vector& ns_rhs,
+    MPI_Comm /*mpi_comm*/,
+    bool enable_mms,
+    double mms_time,
+    double mms_time_old,
+    double mms_L_y)
+{
+    assemble_ns_system_unified<dim>(
+        ux_dof_handler, uy_dof_handler, p_dof_handler,
+        ux_old, uy_old, nu, dt,
+        include_time_derivative, include_convection,
+        ux_to_ns_map, uy_to_ns_map, p_to_ns_map,
+        ns_constraints, ns_matrix, ns_rhs,
+        NSForceData<dim>{},  // no forces
+        enable_mms, mms_time, mms_time_old, mms_L_y);
+}
+
+// ============================================================================
+// Legacy wrapper: NS assembly with body force
+// ============================================================================
+template <int dim>
+void assemble_ns_system_with_body_force_parallel(
+    const dealii::DoFHandler<dim>& ux_dof_handler,
+    const dealii::DoFHandler<dim>& uy_dof_handler,
+    const dealii::DoFHandler<dim>& p_dof_handler,
+    const dealii::TrilinosWrappers::MPI::Vector& ux_old,
+    const dealii::TrilinosWrappers::MPI::Vector& uy_old,
+    double nu,
+    double dt,
+    bool include_time_derivative,
+    bool include_convection,
+    const std::vector<dealii::types::global_dof_index>& ux_to_ns_map,
+    const std::vector<dealii::types::global_dof_index>& uy_to_ns_map,
+    const std::vector<dealii::types::global_dof_index>& p_to_ns_map,
+    const dealii::IndexSet& /*ns_owned*/,
+    const dealii::AffineConstraints<double>& ns_constraints,
+    dealii::TrilinosWrappers::SparseMatrix& ns_matrix,
+    dealii::TrilinosWrappers::MPI::Vector& ns_rhs,
+    MPI_Comm /*mpi_comm*/,
+    const std::function<dealii::Tensor<1, dim>(const dealii::Point<dim>&, double)>& body_force,
+    double current_time,
+    bool enable_mms,
+    double mms_time,
+    double mms_time_old,
+    double mms_L_y)
+{
+    NSForceData<dim> forces;
+    forces.set_body_force(&body_force, current_time);
+
+    assemble_ns_system_unified<dim>(
+        ux_dof_handler, uy_dof_handler, p_dof_handler,
+        ux_old, uy_old, nu, dt,
+        include_time_derivative, include_convection,
+        ux_to_ns_map, uy_to_ns_map, p_to_ns_map,
+        ns_constraints, ns_matrix, ns_rhs,
+        forces,
+        enable_mms, mms_time, mms_time_old, mms_L_y);
+}
+
+// ============================================================================
+// Legacy wrapper: NS assembly with Kelvin force only (used by MMS tests)
+//
+// NOTE: Uses H = grad(phi) only (no applied field h_a).
+// Default Parameters has empty dipoles => h_a = 0, use_reduced = false => H = grad(phi).
 // ============================================================================
 template <int dim>
 void assemble_ns_system_with_kelvin_force_parallel(
@@ -1269,55 +1403,29 @@ void assemble_ns_system_with_kelvin_force_parallel(
     double mms_time_old,
     double mms_L_y)
 {
-    // First assemble core NS (adds standalone MMS source f_NS if enable_mms)
-    assemble_ns_core<dim>(
+    // Create default params for Kelvin force (empty dipoles => H = grad(phi))
+    Parameters mms_params;
+    mms_params.enable_mms = enable_mms;
+
+    NSForceData<dim> forces;
+    forces.enable_kelvin(phi_dof_handler, M_dof_handler,
+                         phi_solution, Mx_solution, My_solution,
+                         mu_0, mms_params, 0.0);
+
+    assemble_ns_system_unified<dim>(
         ux_dof_handler, uy_dof_handler, p_dof_handler,
         ux_old, uy_old, nu, dt,
         include_time_derivative, include_convection,
         ux_to_ns_map, uy_to_ns_map, p_to_ns_map,
         ns_constraints, ns_matrix, ns_rhs,
-        nullptr, 0.0,
+        forces,
         enable_mms, mms_time, mms_time_old, mms_L_y);
-
-    // Add numerical Kelvin force F_K(M_h, H_h)
-    // NOTE: Using H = ∇φ only (no h_a) for this legacy MMS function.
-    // Default Parameters has empty dipoles → h_a = 0, use_reduced = false → H = ∇φ.
-    Parameters mms_params;
-    mms_params.enable_mms = enable_mms;
-    assemble_kelvin_force<dim>(
-        ux_dof_handler, uy_dof_handler,
-        phi_dof_handler, M_dof_handler,
-        phi_solution, Mx_solution, My_solution, mu_0,
-        ux_to_ns_map, uy_to_ns_map,
-        ns_constraints, ns_rhs,
-        mms_params, 0.0);
-
-    // MMS CORRECTION: Subtract exact Kelvin force F_K(M*, H*)
-    // This makes total source = f_NS - F_K(exact) + F_K(numerical)
-    // As h→0: F_K(numerical) → F_K(exact), so total → f_NS ✓
-    if (enable_mms)
-    {
-
-        assemble_kelvin_mms_correction<dim>(
-            ux_dof_handler, uy_dof_handler,
-            ux_to_ns_map, uy_to_ns_map,
-            ns_constraints, ns_rhs,
-            mu_0, mms_time, mms_L_y);
-    }
 }
 
 // ============================================================================
-// Public API: Full ferrofluid assembly (Kelvin + Capillary + Gravity forces)
+// Legacy wrapper: Full ferrofluid NS assembly (Kelvin + Capillary + Gravity)
 //
-// Paper Eq. 14e RHS: μ₀(M·∇)H + (λ/ε)θ∇ψ + r·H(θ/ε)·g
-//
-// This is the complete ferrofluid momentum assembler including:
-//   - Core NS: time derivative, viscous (variable ν(θ)), convection, pressure
-//   - Kelvin force: μ₀(M·∇)H (magnetic body force)
-//   - Capillary force: (λ/ε)θ∇ψ (surface tension)
-//   - Gravity force: r·H(θ/ε)·g (Boussinesq buoyancy)
-//
-// FIX: Now correctly computes H = h_a + h_d (total field)
+// Paper Eq. 14e RHS: mu_0(M.grad)H + (lambda/epsilon) theta grad(psi) + r*H(theta/epsilon)*g
 // ============================================================================
 template <int dim>
 void assemble_ns_system_ferrofluid_parallel(
@@ -1326,7 +1434,7 @@ void assemble_ns_system_ferrofluid_parallel(
     const dealii::DoFHandler<dim>& p_dof_handler,
     const dealii::TrilinosWrappers::MPI::Vector& ux_old,
     const dealii::TrilinosWrappers::MPI::Vector& uy_old,
-    double nu,  // Reference viscosity (used for MMS and Schur preconditioner)
+    double nu,
     double dt,
     bool include_time_derivative,
     bool include_convection,
@@ -1356,10 +1464,10 @@ void assemble_ns_system_ferrofluid_parallel(
     double nu_water,
     double nu_ferro,
     // Gravity force inputs
-    bool enable_gravity,
-    double r,              // density ratio
-    double gravity_mag,    // gravity magnitude
-    const dealii::Tensor<1, dim>& gravity_dir,  // gravity direction
+    bool enable_gravity_flag,
+    double r,
+    double gravity_mag,
+    const dealii::Tensor<1, dim>& gravity_dir,
     // Simulation parameters (for dipole config, MMS, reduced field)
     const Parameters& params,
     double current_time,
@@ -1369,67 +1477,54 @@ void assemble_ns_system_ferrofluid_parallel(
     double mms_time_old,
     double mms_L_y)
 {
-    // Step 1: Assemble core NS with variable viscosity ν(θ)
-    assemble_ns_core<dim>(
+    NSForceData<dim> forces;
+
+    // Kelvin force
+    forces.enable_kelvin(phi_dof_handler, M_dof_handler,
+                         phi_solution, Mx_solution, My_solution,
+                         mu_0, params, current_time);
+
+    // Capillary force
+    forces.enable_capillary(theta_dof_handler, psi_dof_handler,
+                            theta_solution, psi_solution,
+                            lambda, epsilon);
+
+    // Variable viscosity (uses same theta field as capillary)
+    forces.enable_variable_viscosity(theta_dof_handler, theta_solution,
+                                     epsilon, nu_water, nu_ferro);
+
+    // Gravity
+    if (enable_gravity_flag)
+        forces.enable_gravity_force(r, gravity_mag, gravity_dir);
+
+    assemble_ns_system_unified<dim>(
         ux_dof_handler, uy_dof_handler, p_dof_handler,
         ux_old, uy_old, nu, dt,
         include_time_derivative, include_convection,
         ux_to_ns_map, uy_to_ns_map, p_to_ns_map,
         ns_constraints, ns_matrix, ns_rhs,
-        nullptr, 0.0,
-        enable_mms, mms_time, mms_time_old, mms_L_y,
-        // Variable viscosity: pass theta field
-        &theta_dof_handler, &theta_solution, epsilon, nu_water, nu_ferro);
-
-    // Step 2: Add Kelvin force to RHS
-    if (params.use_gradient_kelvin_force)
-    {
-        // CG gradient form: f = (μ₀/2)|H|²∇χ(θ)
-        // Uses only CG fields, no DG M, no face terms, smooth
-        assemble_kelvin_force_gradient<dim>(
-            ux_dof_handler, uy_dof_handler,
-            phi_dof_handler, theta_dof_handler,
-            phi_solution, theta_solution,
-            mu_0, params.physics.chi_0, epsilon,
-            ux_to_ns_map, uy_to_ns_map,
-            ns_constraints, ns_rhs);
-    }
-    else
-    {
-        // DG skew form: μ₀[(M·∇)H + ½(∇·M)H] (Eq. 38)
-        assemble_kelvin_force<dim>(
-            ux_dof_handler, uy_dof_handler,
-            phi_dof_handler, M_dof_handler,
-            phi_solution, Mx_solution, My_solution, mu_0,
-            ux_to_ns_map, uy_to_ns_map,
-            ns_constraints, ns_rhs,
-            params, current_time);
-    }
-
-    // Step 3: Add capillary force (λ/ε)θ∇ψ to RHS
-    assemble_capillary_force<dim>(
-        ux_dof_handler, uy_dof_handler,
-        theta_dof_handler, psi_dof_handler,
-        theta_solution, psi_solution,
-        lambda, epsilon,
-        ux_to_ns_map, uy_to_ns_map,
-        ns_constraints, ns_rhs);
-
-    // Step 4: Add gravity force r·H(θ/ε)·g to RHS (if enabled)
-    if (enable_gravity)
-    {
-        assemble_gravity_force<dim>(
-            ux_dof_handler, uy_dof_handler,
-            theta_dof_handler, theta_solution,
-            r, epsilon, gravity_mag, gravity_dir,
-            ux_to_ns_map, uy_to_ns_map,
-            ns_constraints, ns_rhs);
-    }
+        forces,
+        enable_mms, mms_time, mms_time_old, mms_L_y);
 }
 
 // ============================================================================
 // Explicit instantiations
 // ============================================================================
+
+// Unified function
+template void assemble_ns_system_unified<2>(
+    const dealii::DoFHandler<2>&, const dealii::DoFHandler<2>&, const dealii::DoFHandler<2>&,
+    const dealii::TrilinosWrappers::MPI::Vector&, const dealii::TrilinosWrappers::MPI::Vector&,
+    double, double, bool, bool,
+    const std::vector<dealii::types::global_dof_index>&,
+    const std::vector<dealii::types::global_dof_index>&,
+    const std::vector<dealii::types::global_dof_index>&,
+    const dealii::AffineConstraints<double>&,
+    dealii::TrilinosWrappers::SparseMatrix&, dealii::TrilinosWrappers::MPI::Vector&,
+    const NSForceData<2>&,
+    bool, double, double, double);
+
+// Legacy wrappers
 template void assemble_ns_system_parallel<2>(
     const dealii::DoFHandler<2>&, const dealii::DoFHandler<2>&, const dealii::DoFHandler<2>&,
     const dealii::TrilinosWrappers::MPI::Vector&, const dealii::TrilinosWrappers::MPI::Vector&,

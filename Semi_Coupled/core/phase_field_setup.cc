@@ -31,10 +31,6 @@
 
 #include <cmath>
 
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
-
 // ============================================================================
 // Constructor
 // ============================================================================
@@ -48,7 +44,6 @@ PhaseFieldProblem<dim>::PhaseFieldProblem(const Parameters& params)
                          dealii::Triangulation<dim>::smoothing_on_refinement |
                          dealii::Triangulation<dim>::smoothing_on_coarsening))
     , fe_Q2_(params.fe.degree_velocity)
-    , fe_Q1_(params.fe.degree_pressure)
     , fe_DG_(params.fe.degree_magnetization)
     , theta_dof_handler_(triangulation_)
     , psi_dof_handler_(triangulation_)

@@ -174,9 +174,11 @@ struct Parameters
 
     // ========================================================================
     // Block-Gauss-Seidel global iteration (Paper CMAME 2016, Section 6, p.520)
-    // Outer loop: [CH] -> [Mag+Poisson] -> [NS], repeat until convergence
+    // Single pass per time step: [CH] -> [Mag+Poisson] -> [NS]
+    // Paper describes BGS structure but does not specify iteration count.
+    // Testing shows iterating to convergence diverges at strong coupling.
     // ========================================================================
-    unsigned int bgs_max_iterations = 20;  // Max Block-Gauss-Seidel iterations
+    unsigned int bgs_max_iterations = 1;   // Single BGS pass per time step (paper-like)
     double bgs_tolerance = 1e-2;           // Relative change tolerance for convergence
     bool enable_bgs = true;                // Enable Block-Gauss-Seidel (paper-faithful)
 

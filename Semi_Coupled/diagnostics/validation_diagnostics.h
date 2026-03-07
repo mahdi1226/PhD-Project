@@ -23,6 +23,7 @@
 #include "diagnostics/step_data.h"
 #include "utilities/parameters.h"
 #include "utilities/mpi_tools.h"
+#include "utilities/tools.h"
 
 #include <deal.II/dofs/dof_handler.h>
 #include <deal.II/lac/trilinos_vector.h>
@@ -35,10 +36,6 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
-
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
 
 // ============================================================================
 // Interface Profile - y(x) along the interface

@@ -43,6 +43,7 @@
 #include <iostream>
 #include <iomanip>
 #include <algorithm>
+#include <memory>
 
 // ============================================================================
 // Constructor
@@ -228,7 +229,7 @@ BlockSchurPreconditionerParallel::BlockSchurPreconditionerParallel(
     }
 
     // Create CrsMatrix with estimated row sizes
-    Epetra_CrsMatrix* vel_crs = new Epetra_CrsMatrix(Copy, vel_row_map, entries_per_row.data(), true);
+    auto vel_crs = std::make_unique<Epetra_CrsMatrix>(Copy, vel_row_map, entries_per_row.data(), true);
 
     // Second pass: fill matrix values
     for (int local_row = 0; local_row < num_my_rows; ++local_row)
@@ -283,9 +284,8 @@ BlockSchurPreconditionerParallel::BlockSchurPreconditionerParallel(
     // Finalize the matrix
     vel_crs->FillComplete(vel_row_map, vel_row_map);
 
-    // Wrap in deal.II matrix (takes ownership)
+    // Wrap in deal.II matrix (vel_crs released automatically)
     velocity_block_.reinit(*vel_crs);
-    delete vel_crs;
 
     // ========================================================================
     // Initialize AMG preconditioners
