@@ -1,10 +1,14 @@
 // ============================================================================
-// poisson/poisson_solve.cc - CG Solver with Cached AMG Preconditioner
+// poisson/poisson_solve.cc - Poisson Solver (CG+AMG or Direct)
 //
 // PAPER EQUATION 42d (Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531):
 //   Solve: A φ = b
 //   where A = (∇φ, ∇X) is the constant Laplacian
 //         b = (h_a − M, ∇X) changes per Picard iteration
+//
+// Solver modes:
+//   use_iterative = true  → CG + cached AMG (default)
+//   use_iterative = false → Direct (MUMPS → KLU fallback), via --poisson-direct
 //
 // AMG preconditioner is built ONCE in setup() and reused for all solves.
 // Falls back to Jacobi if AMG initialization failed.
@@ -15,12 +19,13 @@
 #include <deal.II/lac/solver_cg.h>
 #include <deal.II/lac/solver_control.h>
 #include <deal.II/lac/trilinos_precondition.h>
+#include <deal.II/lac/trilinos_solver.h>
 #include <deal.II/base/utilities.h>
 
 #include <chrono>
 
 // ============================================================================
-// solve — CG + cached AMG
+// solve — CG+AMG (default) or direct solver (--poisson-direct)
 //
 // Returns SolverInfo with iteration count, residual, timing.
 // ============================================================================
@@ -51,11 +56,71 @@ SolverInfo PoissonSubsystem<dim>::solve()
         return info;
     }
 
-    // Tolerance: max(abs_tol, rel_tol × ‖rhs‖)
     const auto& sp = params_.solvers.poisson;
     const double tol = std::max(sp.abs_tolerance, sp.rel_tolerance * rhs_norm);
-    dealii::SolverControl solver_control(sp.max_iterations, tol);
 
+    // ====================================================================
+    // Direct solver path (--poisson-direct or --all-direct)
+    // ====================================================================
+    if (!sp.use_iterative)
+    {
+        dealii::SolverControl solver_control(1, tol);
+        bool direct_ok = false;
+
+        // Try MUMPS (parallel direct)
+        try
+        {
+            dealii::TrilinosWrappers::SolverDirect::AdditionalData data;
+            data.solver_type = "Amesos_Mumps";
+            dealii::TrilinosWrappers::SolverDirect solver(solver_control, data);
+            solver.solve(system_matrix_, solution_, system_rhs_);
+            direct_ok = true;
+        }
+        catch (std::exception&)
+        {
+            // Try KLU (serial fallback)
+            try
+            {
+                dealii::TrilinosWrappers::SolverDirect solver(solver_control);
+                solver.solve(system_matrix_, solution_, system_rhs_);
+                direct_ok = true;
+            }
+            catch (std::exception& e)
+            {
+                pcout_ << "[Poisson] Direct solver failed: " << e.what()
+                       << ", falling back to CG+AMG\n";
+            }
+        }
+
+        if (direct_ok)
+        {
+            info.iterations = 1;
+            info.residual = 0.0;
+            info.converged = true;
+            info.used_direct = true;
+
+            constraints_.distribute(solution_);
+
+            auto end = std::chrono::high_resolution_clock::now();
+            info.solve_time = std::chrono::duration<double>(end - start).count();
+
+            if (sp.verbose)
+            {
+                pcout_ << "[Poisson] Direct: time="
+                       << std::fixed << info.solve_time << "s\n";
+            }
+
+            last_solve_info_ = info;
+            ghosts_valid_ = false;
+            return info;
+        }
+        // If direct failed, fall through to CG+AMG
+    }
+
+    // ====================================================================
+    // Iterative solver path: CG + cached AMG (default)
+    // ====================================================================
+    dealii::SolverControl solver_control(sp.max_iterations, tol);
     dealii::SolverCG<dealii::TrilinosWrappers::MPI::Vector> cg(solver_control);
 
     try

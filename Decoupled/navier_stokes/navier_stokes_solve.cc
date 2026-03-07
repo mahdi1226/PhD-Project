@@ -1,12 +1,16 @@
 // ============================================================================
-// navier_stokes/navier_stokes_solve.cc — CG+AMG Solver Implementation
+// navier_stokes/navier_stokes_solve.cc — NS Solver (CG+AMG or Direct)
 //
 // Pressure-correction projection method (Zhang Algorithm 3.1).
-// Each subsystem has its own CG+AMG solve:
+// Each subsystem has its own solve:
 //
-//   solve_velocity(): CG+AMG for ux_matrix_ and uy_matrix_
-//   solve_pressure(): CG+AMG for p_matrix_ + mean subtraction
+//   solve_velocity(): ux_matrix_ and uy_matrix_
+//   solve_pressure(): p_matrix_ + mean subtraction
 //   solve():          backward-compat wrapper (calls solve_velocity)
+//
+// Solver modes:
+//   use_iterative = true  → CG + AMG (default for projection method)
+//   use_iterative = false → Direct (MUMPS → KLU), via --ns-direct
 //
 // Reference: Zhang, He & Yang, SIAM J. Sci. Comput. 43(1), 2021
 // ============================================================================
@@ -16,91 +20,148 @@
 #include <deal.II/lac/solver_cg.h>
 #include <deal.II/lac/solver_control.h>
 #include <deal.II/lac/trilinos_precondition.h>
+#include <deal.II/lac/trilinos_solver.h>
 
 #include <chrono>
 #include <iostream>
 #include <iomanip>
 
 // ============================================================================
-// solve_velocity() — CG+AMG for ux and uy velocity predictor
-//
-// Solves [A_ux][ūx] = [F_x] and [A_uy][ūy] = [F_y] independently.
-// Each is SPD (mass + viscous + convection), so CG is appropriate.
+// Helper: Solve a single scalar system with CG+AMG.
+// Returns iteration count (0 if RHS was zero).
+// ============================================================================
+template <int dim>
+static unsigned int solve_scalar_cg_amg(
+    const dealii::TrilinosWrappers::SparseMatrix& matrix,
+    dealii::TrilinosWrappers::MPI::Vector& solution,
+    const dealii::TrilinosWrappers::MPI::Vector& rhs,
+    const dealii::AffineConstraints<double>& constraints,
+    double tol, unsigned int max_iter, bool higher_order)
+{
+    const double rhs_norm = rhs.l2_norm();
+    if (rhs_norm < 1e-14)
+    {
+        solution = 0;
+        return 0;
+    }
+
+    dealii::SolverControl control(max_iter, tol * rhs_norm);
+    dealii::SolverCG<dealii::TrilinosWrappers::MPI::Vector> cg(control);
+
+    dealii::TrilinosWrappers::PreconditionAMG::AdditionalData amg_data;
+    amg_data.elliptic = true;
+    amg_data.higher_order_elements = higher_order;
+    amg_data.smoother_sweeps = 2;
+    amg_data.aggregation_threshold = 0.02;
+
+    dealii::TrilinosWrappers::PreconditionAMG amg;
+    amg.initialize(matrix, amg_data);
+
+    cg.solve(matrix, solution, rhs, amg);
+    constraints.distribute(solution);
+
+    return control.last_step();
+}
+
+
+// ============================================================================
+// Helper: Solve a single scalar system with direct solver (MUMPS → KLU).
+// Returns 1 on success, 0 if RHS was zero.
+// Throws on failure (caller handles fallback).
+// ============================================================================
+static unsigned int solve_scalar_direct(
+    const dealii::TrilinosWrappers::SparseMatrix& matrix,
+    dealii::TrilinosWrappers::MPI::Vector& solution,
+    const dealii::TrilinosWrappers::MPI::Vector& rhs,
+    const dealii::AffineConstraints<double>& constraints,
+    double tol)
+{
+    const double rhs_norm = rhs.l2_norm();
+    if (rhs_norm < 1e-14)
+    {
+        solution = 0;
+        return 0;
+    }
+
+    dealii::SolverControl control(1, tol * rhs_norm);
+
+    // Try MUMPS first
+    try
+    {
+        dealii::TrilinosWrappers::SolverDirect::AdditionalData data;
+        data.solver_type = "Amesos_Mumps";
+        dealii::TrilinosWrappers::SolverDirect solver(control, data);
+        solver.solve(matrix, solution, rhs);
+    }
+    catch (std::exception&)
+    {
+        // KLU fallback
+        dealii::TrilinosWrappers::SolverDirect solver(control);
+        solver.solve(matrix, solution, rhs);
+    }
+
+    constraints.distribute(solution);
+    return 1;
+}
+
+
+// ============================================================================
+// solve_velocity() — solve ux and uy velocity predictor systems
 // ============================================================================
 template <int dim>
 SolverInfo NSSubsystem<dim>::solve_velocity()
 {
     SolverInfo info;
-    info.solver_name = "NS-Velocity-CG+AMG";
     info.matrix_size = ux_matrix_.m() + uy_matrix_.m();
     info.nnz = ux_matrix_.n_nonzero_elements() + uy_matrix_.n_nonzero_elements();
-    info.used_direct = false;
 
     auto start = std::chrono::high_resolution_clock::now();
 
     const double tol = params_.solvers.ns.rel_tolerance;
     const unsigned int max_iter = params_.solvers.ns.max_iterations;
+    const bool use_direct = !params_.solvers.ns.use_iterative;
 
-    // --- Solve ux ---
+    if (use_direct)
     {
-        const double rhs_norm = ux_rhs_.l2_norm();
-        if (rhs_norm < 1e-14)
+        // Direct solver path (--ns-direct or --all-direct)
+        info.solver_name = "NS-Velocity-Direct";
+        info.used_direct = true;
+        try
         {
-            ux_solution_ = 0;
+            info.iterations  = solve_scalar_direct(ux_matrix_, ux_solution_, ux_rhs_,
+                                                   ux_constraints_, tol);
+            info.iterations += solve_scalar_direct(uy_matrix_, uy_solution_, uy_rhs_,
+                                                   uy_constraints_, tol);
+            info.converged = true;
         }
-        else
+        catch (std::exception& e)
         {
-            dealii::SolverControl control(max_iter, tol * rhs_norm);
-            dealii::SolverCG<dealii::TrilinosWrappers::MPI::Vector> cg(control);
-
-            dealii::TrilinosWrappers::PreconditionAMG::AdditionalData amg_data;
-            amg_data.elliptic = true;
-            amg_data.higher_order_elements = true;
-            amg_data.smoother_sweeps = 2;
-            amg_data.aggregation_threshold = 0.02;
-
-            dealii::TrilinosWrappers::PreconditionAMG amg;
-            amg.initialize(ux_matrix_, amg_data);
-
-            cg.solve(ux_matrix_, ux_solution_, ux_rhs_, amg);
-            ux_constraints_.distribute(ux_solution_);
-
-            info.iterations = control.last_step();
-            info.residual = control.last_value() / rhs_norm;
+            pcout_ << "  [NS Velocity] Direct solver failed: " << e.what()
+                   << ", falling back to CG+AMG\n";
+            // Fall through to iterative
+            info.iterations  = solve_scalar_cg_amg<dim>(ux_matrix_, ux_solution_, ux_rhs_,
+                                                        ux_constraints_, tol, max_iter, true);
+            info.iterations += solve_scalar_cg_amg<dim>(uy_matrix_, uy_solution_, uy_rhs_,
+                                                        uy_constraints_, tol, max_iter, true);
+            info.solver_name = "NS-Velocity-CG+AMG(fallback)";
+            info.used_direct = false;
+            info.converged = true;
         }
     }
-
-    // --- Solve uy ---
+    else
     {
-        const double rhs_norm = uy_rhs_.l2_norm();
-        if (rhs_norm < 1e-14)
-        {
-            uy_solution_ = 0;
-        }
-        else
-        {
-            dealii::SolverControl control(max_iter, tol * rhs_norm);
-            dealii::SolverCG<dealii::TrilinosWrappers::MPI::Vector> cg(control);
-
-            dealii::TrilinosWrappers::PreconditionAMG::AdditionalData amg_data;
-            amg_data.elliptic = true;
-            amg_data.higher_order_elements = true;
-            amg_data.smoother_sweeps = 2;
-            amg_data.aggregation_threshold = 0.02;
-
-            dealii::TrilinosWrappers::PreconditionAMG amg;
-            amg.initialize(uy_matrix_, amg_data);
-
-            cg.solve(uy_matrix_, uy_solution_, uy_rhs_, amg);
-            uy_constraints_.distribute(uy_solution_);
-
-            info.iterations += control.last_step();
-        }
+        // CG+AMG path (default)
+        info.solver_name = "NS-Velocity-CG+AMG";
+        info.used_direct = false;
+        info.iterations  = solve_scalar_cg_amg<dim>(ux_matrix_, ux_solution_, ux_rhs_,
+                                                    ux_constraints_, tol, max_iter, true);
+        info.iterations += solve_scalar_cg_amg<dim>(uy_matrix_, uy_solution_, uy_rhs_,
+                                                    uy_constraints_, tol, max_iter, true);
+        info.converged = true;
     }
 
     auto end = std::chrono::high_resolution_clock::now();
     info.solve_time = std::chrono::duration<double>(end - start).count();
-    info.converged = true;
 
     // Update ghosted velocity vectors (needed for pressure Poisson div(ū))
     ux_relevant_ = ux_solution_;
@@ -108,7 +169,8 @@ SolverInfo NSSubsystem<dim>::solve_velocity()
 
     if (params_.solvers.ns.verbose)
     {
-        pcout_ << "  [NS Velocity] CG+AMG iters=" << info.iterations
+        pcout_ << "  [NS Velocity] " << (use_direct ? "Direct" : "CG+AMG")
+               << " iters=" << info.iterations
                << ", time=" << std::fixed << std::setprecision(2)
                << info.solve_time << "s\n" << std::defaultfloat;
     }
@@ -119,50 +181,51 @@ SolverInfo NSSubsystem<dim>::solve_velocity()
 
 
 // ============================================================================
-// solve_pressure() — CG+AMG for pressure Poisson
-//
-// Solves [L_p][p^n] = [G].
-// L_p = (∇p, ∇q) is SPD (after removing constant null space).
-// Pressure uniqueness via post-solve mean subtraction.
+// solve_pressure() — solve pressure Poisson system
 // ============================================================================
 template <int dim>
 SolverInfo NSSubsystem<dim>::solve_pressure()
 {
     SolverInfo info;
-    info.solver_name = "NS-Pressure-CG+AMG";
     info.matrix_size = p_matrix_.m();
     info.nnz = p_matrix_.n_nonzero_elements();
-    info.used_direct = false;
 
     auto start = std::chrono::high_resolution_clock::now();
 
-    const double rhs_norm = p_rhs_.l2_norm();
-    if (rhs_norm < 1e-14)
+    const double tol = params_.solvers.ns.rel_tolerance;
+    const unsigned int max_iter = params_.solvers.ns.max_iterations;
+    const bool use_direct = !params_.solvers.ns.use_iterative;
+
+    if (use_direct)
     {
-        p_solution_ = 0;
+        // Direct solver path
+        info.solver_name = "NS-Pressure-Direct";
+        info.used_direct = true;
+        try
+        {
+            info.iterations = solve_scalar_direct(p_matrix_, p_solution_, p_rhs_,
+                                                  p_constraints_, tol);
+            info.converged = true;
+        }
+        catch (std::exception& e)
+        {
+            pcout_ << "  [NS Pressure] Direct solver failed: " << e.what()
+                   << ", falling back to CG+AMG\n";
+            info.iterations = solve_scalar_cg_amg<dim>(p_matrix_, p_solution_, p_rhs_,
+                                                       p_constraints_, tol, max_iter, false);
+            info.solver_name = "NS-Pressure-CG+AMG(fallback)";
+            info.used_direct = false;
+            info.converged = true;
+        }
     }
     else
     {
-        const double tol = params_.solvers.ns.rel_tolerance;
-        const unsigned int max_iter = params_.solvers.ns.max_iterations;
-
-        dealii::SolverControl control(max_iter, tol * rhs_norm);
-        dealii::SolverCG<dealii::TrilinosWrappers::MPI::Vector> cg(control);
-
-        dealii::TrilinosWrappers::PreconditionAMG::AdditionalData amg_data;
-        amg_data.elliptic = true;
-        amg_data.higher_order_elements = false;  // Q1 pressure
-        amg_data.smoother_sweeps = 2;
-        amg_data.aggregation_threshold = 0.02;
-
-        dealii::TrilinosWrappers::PreconditionAMG amg;
-        amg.initialize(p_matrix_, amg_data);
-
-        cg.solve(p_matrix_, p_solution_, p_rhs_, amg);
-        p_constraints_.distribute(p_solution_);
-
-        info.iterations = control.last_step();
-        info.residual = control.last_value() / rhs_norm;
+        // CG+AMG path (default)
+        info.solver_name = "NS-Pressure-CG+AMG";
+        info.used_direct = false;
+        info.iterations = solve_scalar_cg_amg<dim>(p_matrix_, p_solution_, p_rhs_,
+                                                   p_constraints_, tol, max_iter, false);
+        info.converged = true;
     }
 
     // Mean subtraction for pressure uniqueness
@@ -170,14 +233,14 @@ SolverInfo NSSubsystem<dim>::solve_pressure()
 
     auto end = std::chrono::high_resolution_clock::now();
     info.solve_time = std::chrono::duration<double>(end - start).count();
-    info.converged = true;
 
     // Update ghosted pressure
     p_relevant_ = p_solution_;
 
     if (params_.solvers.ns.verbose)
     {
-        pcout_ << "  [NS Pressure] CG+AMG iters=" << info.iterations
+        pcout_ << "  [NS Pressure] " << (use_direct ? "Direct" : "CG+AMG")
+               << " iters=" << info.iterations
                << ", time=" << std::fixed << std::setprecision(2)
                << info.solve_time << "s\n" << std::defaultfloat;
     }

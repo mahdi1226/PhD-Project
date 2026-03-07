@@ -38,7 +38,6 @@
 #include <deal.II/lac/trilinos_sparsity_pattern.h>
 #include <deal.II/lac/trilinos_vector.h>
 #include <deal.II/base/conditional_ostream.h>
-#include <deal.II/base/index_set.h>
 
 #include "utilities/parameters.h"
 #include "utilities/solver_info.h"

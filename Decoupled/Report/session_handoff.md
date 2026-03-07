@@ -174,7 +174,7 @@ FOR each timestep:
      c. Velocity correction (consistent mass CG)
 ```
 
-### Sessions 17-18: NS Projection Method + Picard Removal (CURRENT, March 6, 2026)
+### Sessions 17-18: NS Projection Method + Picard Removal (March 6, 2026)
 
 **Stage 1: Remove Picard iteration**
 - Single forward pass replaces Picard loop (unconditionally stable per Zhang)
@@ -192,23 +192,53 @@ FOR each timestep:
 - Note: projection method splitting error O(dt) limits rates to 2.0 with dt∝h² scaling
 
 **Rosensweig validation:**
-- Uniform (r=4): 800+ steps stable, θ∈[-1.01,1.01]
-- Nonuniform (r=3): running, step ~5000, CFL=0.003, stable past old blow-up initiation zone
+- Uniform (r=4): 2000 steps to t=2.0, COMPLETE. Spikes formed, fully stable.
+- Nonuniform (r=3): BLEW UP at t=2.158 (see Sessions 19-20 below)
+
+### Sessions 19-20: Diagnostics + Code Cleanup + Direct Solver (CURRENT, March 7, 2026)
+
+**Rosensweig nonuniform blow-up diagnostics:**
+- Projection method + full physics (spin ON): blew up at t=2.158 (step ~10790)
+- Projection method + no spin-vorticity: blew up at t=2.182 (step ~10908)
+- Spin-vorticity conclusively ruled out as cause (identical blow-up time)
+- Uniform test: 2000 steps to t=2.0, perfect spikes, NO blow-up — same code, same solver
+
+**Root cause analysis:**
+- M (magnetization) explodes first: 245 → 1796 → 5.3e6 → 9.3e22 → 1.7e98 in 4 steps
+- 42 close dipoles (y=-0.5 to -1.0) create steep 1/r² field gradients near spike tips
+- Zhang et al. use FEniCS (defaults to direct solvers: MUMPS/SuperLU)
+- Paper says NOTHING about linear solvers — all parameters match exactly
+- Energy stability (Theorem 3.1) requires exact linear solves
+- Magnetization already uses direct (MUMPS) — Poisson CG+AMG suspected
+
+**Code cleanup (5 files modified):**
+- `material_properties.h`: removed dead `double_well_second_derivative()`
+- `navier_stokes_assemble.cc`: unified `compute_T_test_ux/uy` into template
+- `navier_stokes_solve.cc`: extracted `solve_scalar_cg_amg` helper
+- `magnetization_assemble.cc`: extracted face assembly lambda
+- 4 headers: removed redundant includes
+
+**Direct solver CLI flags added:**
+- `--all-direct`: forces direct solvers for Poisson + NS (Mag + CH already direct)
+- `--poisson-direct`: direct for Poisson only
+- `--ns-direct`: direct for NS (ux, uy, p) only
+- MUMPS → KLU fallback chain with CG+AMG last resort
 
 ---
 
 ## Currently Running Tests
 
-**Rosensweig nonuniform** (r=3, dt=2e-4, 42 dipoles): step ~5000/17500, t≈1.0.
-Old blow-up was at t≈2.18. ETA to blow-up zone: ~8 hours.
+None. Next test: `--rosensweig-nonuniform --all-direct` to verify solver accuracy hypothesis.
 
 ---
 
-## Nonuniform Rosensweig Blow-Up Summary (8 runs, pre-projection-method)
+## Nonuniform Rosensweig Blow-Up Summary (ALL runs)
 
-| Run | dt | Blow-up time | Strategy | Notes |
-|-----|-----|-------------|----------|-------|
-| Step6 (newest) | 2e-4 | t=2.184 | Step5+6 | Earliest blow-up |
+| Run | dt | Blow-up time | Solver | Notes |
+|-----|-----|-------------|--------|-------|
+| **Projection+spin** | 2e-4 | **t=2.158** | CG+AMG | Full physics, projection method |
+| **Projection no-spin** | 2e-4 | **t=2.182** | CG+AMG | Spin OFF (diagnostic) |
+| Step6 (pre-proj) | 2e-4 | t=2.184 | Step5+6 | Picard era |
 | 030226_230101 | 2e-4 | t=2.286 | Step5 | |
 | nonuniform.log | 2e-4 | t=2.290 | Step5 | |
 | 030326_050402 | 1e-4 | t=2.362 | unknown | Halved dt, still fails |
@@ -216,20 +246,21 @@ Old blow-up was at t≈2.18. ETA to blow-up zone: ~8 hours.
 | 030226_050447 | 2e-4 | t=2.678 | Step5 (old) | |
 
 **Cascade (identical in ALL runs):**
-1. H (magnetic field) spikes first (single step: H jumps from ~240 to ~30000)
-2. M (magnetization) follows (Poisson-Mag Picard coupling)
+1. M (magnetization) spikes first (245 -> 1796 -> 5.3e6 -> 9.3e22 -> 1.7e98 in ~4 steps)
+2. H (magnetic field) follows (Poisson drives h from diverging M)
 3. U (velocity) spikes (Kelvin force amplification)
-4. theta (phase field) breaks (convection U.grad(theta))
-5. Full NaN within 1-3 steps
+4. theta (phase field) breaks (convection)
+5. Full NaN within 3-5 steps
 
 ---
 
 ## Pending Tasks (Priority Order)
 
-1. **Nonuniform Rosensweig** -- confirm stability past t=2.18 (old blow-up point) with projection method
-2. **Full system MMS with AMR** -- verify convergence rates preserved with mesh adaptation
-3. **Extension study** (Phase C.0+) -- parametric sweeps, see `extension.md`
+1. **Test `--all-direct` on nonuniform Rosensweig** -- if it survives past t=2.18, confirms iterative solver accuracy as root cause
+2. If direct also blows: try dt=1e-4, then dipole regularization
+3. **Full system MMS with AMR** -- verify convergence rates preserved with mesh adaptation
+4. **Extension study** (Phase C.0+) -- parametric sweeps, see `extension.md`
 
 ---
 
-*Updated: March 6, 2026 (Sessions 17-18 -- Picard removal, NS projection method, coupled MMS PASS)*
+*Updated: March 7, 2026 (Sessions 19-20 -- Diagnostics, code cleanup, direct solver options)*

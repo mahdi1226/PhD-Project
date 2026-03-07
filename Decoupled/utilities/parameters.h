@@ -334,6 +334,7 @@ struct Parameters
     bool disable_bstab = false;                // diagnostic: skip b_stab in NS
     bool disable_kelvin_term2 = false;         // diagnostic: skip μ₀/2(M×H,∇×V)
     bool use_exact_kelvin = false;             // diagnostic: use exact M*,H* in assembly
+    bool disable_spin_coupling = false;        // diagnostic: skip ½(∇×u)×m in magnetization
 
     // ========================================================================
     // Sparsity analysis & DoF renumbering

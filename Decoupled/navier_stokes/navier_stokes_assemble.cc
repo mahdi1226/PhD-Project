@@ -33,29 +33,22 @@
 #include <cmath>
 
 // ============================================================================
-// Helper: T(V) for test function V = (φ_ux, 0)
+// Helper: T(V) for test function V with nonzero component `comp`
 // T(U) = ∇U + (∇U)^T  (= 2D(U), where D = ½(∇U + ∇U^T))
+//
+// comp=0 → V = (φ, 0):  T[0][0] = 2∂φ/∂x,  T[0][1] = ∂φ/∂y
+// comp=1 → V = (0, φ):  T[1][1] = 2∂φ/∂y,  T[0][1] = ∂φ/∂x
 //
 // The viscous bilinear form is (ν D(U), D(V)) = (ν/4)(T(U), T(V))
 // ============================================================================
-template <int dim>
-static dealii::SymmetricTensor<2, dim> compute_T_test_ux(
-    const dealii::Tensor<1, dim>& grad_phi_ux)
+template <int dim, unsigned int comp>
+static dealii::SymmetricTensor<2, dim> compute_T_test(
+    const dealii::Tensor<1, dim>& grad_phi)
 {
+    static_assert(comp < dim, "Component must be < dim");
     dealii::SymmetricTensor<2, dim> T;
-    T[0][0] = 2.0 * grad_phi_ux[0];
-    T[0][1] = grad_phi_ux[1];
-    return T;
-}
-
-// Helper: T(V) for test function V = (0, φ_uy)
-template <int dim>
-static dealii::SymmetricTensor<2, dim> compute_T_test_uy(
-    const dealii::Tensor<1, dim>& grad_phi_uy)
-{
-    dealii::SymmetricTensor<2, dim> T;
-    T[1][1] = 2.0 * grad_phi_uy[1];
-    T[0][1] = grad_phi_uy[0];
+    T[comp][comp] = 2.0 * grad_phi[comp];
+    T[0][1] = grad_phi[1 - comp];
     return T;
 }
 
@@ -163,8 +156,8 @@ void NSSubsystem<dim>::assemble_stokes(
                 div_U_old = ux_old_gradients[q][0] + uy_old_gradients[q][1];
 
             // Viscous cross-term: T(u_old) from old velocity field
-            auto T_ux_old = compute_T_test_ux<dim>(ux_old_gradients[q]);
-            auto T_uy_old = compute_T_test_uy<dim>(uy_old_gradients[q]);
+            auto T_ux_old = compute_T_test<dim, 0>(ux_old_gradients[q]);
+            auto T_uy_old = compute_T_test<dim, 1>(uy_old_gradients[q]);
 
             dealii::Tensor<1, dim> F_source;
             F_source = 0;
@@ -185,8 +178,8 @@ void NSSubsystem<dim>::assemble_stokes(
                 const dealii::Tensor<1, dim> grad_phi_ux_i = ux_fe_values.shape_grad(i, q);
                 const dealii::Tensor<1, dim> grad_phi_uy_i = uy_fe_values.shape_grad(i, q);
 
-                auto T_V_x = compute_T_test_ux<dim>(grad_phi_ux_i);
-                auto T_V_y = compute_T_test_uy<dim>(grad_phi_uy_i);
+                auto T_V_x = compute_T_test<dim, 0>(grad_phi_ux_i);
+                auto T_V_y = compute_T_test<dim, 1>(grad_phi_uy_i);
 
                 // RHS: body force
                 local_rhs_ux(i) += F_source[0] * phi_ux_i * JxW;
@@ -216,8 +209,8 @@ void NSSubsystem<dim>::assemble_stokes(
                     const dealii::Tensor<1, dim> grad_phi_ux_j = ux_fe_values.shape_grad(j, q);
                     const dealii::Tensor<1, dim> grad_phi_uy_j = uy_fe_values.shape_grad(j, q);
 
-                    auto T_U_x = compute_T_test_ux<dim>(grad_phi_ux_j);
-                    auto T_U_y = compute_T_test_uy<dim>(grad_phi_uy_j);
+                    auto T_U_x = compute_T_test<dim, 0>(grad_phi_ux_j);
+                    auto T_U_y = compute_T_test<dim, 1>(grad_phi_uy_j);
 
                     // LHS mass
                     if (include_time_derivative)
@@ -439,8 +432,8 @@ void NSSubsystem<dim>::assemble_coupled(
                                           params_.physics.nu_ferro);
 
             // Viscous cross-term: T(u_old) from old velocity field
-            auto T_ux_old = compute_T_test_ux<dim>(ux_old_gradients[q]);
-            auto T_uy_old = compute_T_test_uy<dim>(uy_old_gradients[q]);
+            auto T_ux_old = compute_T_test<dim, 0>(ux_old_gradients[q]);
+            auto T_uy_old = compute_T_test<dim, 1>(uy_old_gradients[q]);
 
             // Magnetization m^{n-1}
             Tensor<1, dim> M;
@@ -515,8 +508,8 @@ void NSSubsystem<dim>::assemble_coupled(
                 const Tensor<1, dim> grad_phi_ux_i = ux_fe_values.shape_grad(i, q);
                 const Tensor<1, dim> grad_phi_uy_i = uy_fe_values.shape_grad(i, q);
 
-                auto T_V_x = compute_T_test_ux<dim>(grad_phi_ux_i);
-                auto T_V_y = compute_T_test_uy<dim>(grad_phi_uy_i);
+                auto T_V_x = compute_T_test<dim, 0>(grad_phi_ux_i);
+                auto T_V_y = compute_T_test<dim, 1>(grad_phi_uy_i);
 
                 // RHS: capillary + gravity
                 local_rhs_ux(i) += (F_capillary[0] + F_gravity[0]) * phi_ux_i * JxW;
@@ -612,8 +605,8 @@ void NSSubsystem<dim>::assemble_coupled(
                     const Tensor<1, dim> grad_phi_ux_j = ux_fe_values.shape_grad(j, q);
                     const Tensor<1, dim> grad_phi_uy_j = uy_fe_values.shape_grad(j, q);
 
-                    auto T_U_x = compute_T_test_ux<dim>(grad_phi_ux_j);
-                    auto T_U_y = compute_T_test_uy<dim>(grad_phi_uy_j);
+                    auto T_U_x = compute_T_test<dim, 0>(grad_phi_ux_j);
+                    auto T_U_y = compute_T_test<dim, 1>(grad_phi_uy_j);
 
                     // LHS mass: (1/dt)(U^n, V)
                     local_ux_ux(i, j) += mass_coeff * phi_ux_j * phi_ux_i * JxW;
@@ -859,8 +852,8 @@ void NSSubsystem<dim>::assemble_coupled_algebraic_M(
                                           params_.physics.nu_water,
                                           params_.physics.nu_ferro);
 
-            auto T_ux_old = compute_T_test_ux<dim>(ux_old_gradients[q]);
-            auto T_uy_old = compute_T_test_uy<dim>(uy_old_gradients[q]);
+            auto T_ux_old = compute_T_test<dim, 0>(ux_old_gradients[q]);
+            auto T_uy_old = compute_T_test<dim, 1>(uy_old_gradients[q]);
 
             // Algebraic magnetization: m = chi(θ_old) * ∇φ
             const double chi_q = susceptibility(theta_old_q, eps, chi_0);
@@ -921,8 +914,8 @@ void NSSubsystem<dim>::assemble_coupled_algebraic_M(
                 const Tensor<1, dim> grad_phi_ux_i = ux_fe_values.shape_grad(i, q);
                 const Tensor<1, dim> grad_phi_uy_i = uy_fe_values.shape_grad(i, q);
 
-                auto T_V_x = compute_T_test_ux<dim>(grad_phi_ux_i);
-                auto T_V_y = compute_T_test_uy<dim>(grad_phi_uy_i);
+                auto T_V_x = compute_T_test<dim, 0>(grad_phi_ux_i);
+                auto T_V_y = compute_T_test<dim, 1>(grad_phi_uy_i);
 
                 local_rhs_ux(i) += (F_capillary[0] + F_gravity[0]) * phi_ux_i * JxW;
                 local_rhs_uy(i) += (F_capillary[1] + F_gravity[1]) * phi_uy_i * JxW;
@@ -1001,8 +994,8 @@ void NSSubsystem<dim>::assemble_coupled_algebraic_M(
                     const Tensor<1, dim> grad_phi_ux_j = ux_fe_values.shape_grad(j, q);
                     const Tensor<1, dim> grad_phi_uy_j = uy_fe_values.shape_grad(j, q);
 
-                    auto T_U_x = compute_T_test_ux<dim>(grad_phi_ux_j);
-                    auto T_U_y = compute_T_test_uy<dim>(grad_phi_uy_j);
+                    auto T_U_x = compute_T_test<dim, 0>(grad_phi_ux_j);
+                    auto T_U_y = compute_T_test<dim, 1>(grad_phi_uy_j);
 
                     local_ux_ux(i, j) += mass_coeff * phi_ux_j * phi_ux_i * JxW;
                     local_uy_uy(i, j) += mass_coeff * phi_uy_j * phi_uy_i * JxW;

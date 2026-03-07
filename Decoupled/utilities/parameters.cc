@@ -130,8 +130,8 @@ void Parameters::setup_rosensweig_nonuniform()
 
     // Time stepping: δt = 2e-4 (5× smaller than Section 4.3)
     time.dt = 2e-4;
-    time.t_final = 3.5;
-    time.max_steps = 17500;
+    time.t_final = 4.0;
+    time.max_steps = 20000;
 
     // Mesh: h = 1/120 (Paper: "h = 1/120")
     // Base grid 15×9 with refinement 3: 15×8=120 cells in x, 9×8=72 in y
@@ -259,6 +259,8 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
         }
         else if (std::strcmp(argv[i], "--enable_beta") == 0)
             params.physics.enable_beta_term = true;
+        else if (std::strcmp(argv[i], "--no-spin-coupling") == 0)
+            params.disable_spin_coupling = true;
 
         // ---- Cahn-Hilliard physics ----
         else if (std::strcmp(argv[i], "--mobility") == 0)
@@ -359,6 +361,19 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             if (++i >= argc) { std::cerr << "--sav_S requires a value\n"; std::exit(1); }
             params.sav.S1 = std::stod(argv[i]);
         }
+
+        // ---- Solver overrides ----
+        else if (std::strcmp(argv[i], "--all-direct") == 0)
+        {
+            // Force direct solvers for ALL subsystems (diagnostic for solver accuracy)
+            params.solvers.poisson.use_iterative = false;
+            params.solvers.ns.use_iterative = false;
+            // Magnetization and CH already default to direct
+        }
+        else if (std::strcmp(argv[i], "--poisson-direct") == 0)
+            params.solvers.poisson.use_iterative = false;
+        else if (std::strcmp(argv[i], "--ns-direct") == 0)
+            params.solvers.ns.use_iterative = false;
 
         // ---- Subsystem enables ----
         else if (std::strcmp(argv[i], "--mms") == 0)
@@ -664,6 +679,10 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             std::cout << "    --reduced_field     H = h_a only (dome setup)\n";
             std::cout << "    --no_ns             Disable Navier-Stokes\n";
             std::cout << "    --no_gravity        Disable gravity body force\n\n";
+            std::cout << "  Solvers:\n";
+            std::cout << "    --all-direct         Force direct solvers for ALL subsystems\n";
+            std::cout << "    --poisson-direct     Force direct solver for Poisson\n";
+            std::cout << "    --ns-direct          Force direct solver for NS (ux, uy, p)\n\n";
             std::cout << "  Sparsity / Renumbering:\n";
             std::cout << "    --renumber-dofs         Apply Cuthill-McKee DoF renumbering (reduces bandwidth)\n";
             std::cout << "    --no-renumber-dofs      Disable DoF renumbering (default)\n";

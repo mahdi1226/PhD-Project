@@ -297,10 +297,56 @@ NSSubsystem<dim>::compute_diagnostics(double dt) const
     diag.iterations = last_solve_info_.iterations;
     diag.residual   = last_solve_info_.residual;
 
-    // --- TODO: Full quadrature-based diagnostics ---
-    // E_kin, divU_L2, divU_Linf, p_mean, omega_L2, omega_Linf, enstrophy
-    // These require FEValues evaluation and will be implemented when needed
-    // for production monitoring.
+    // --- Quadrature-based vorticity diagnostics ---
+    // Compute max|∇×u| (omega_Linf) and enstrophy over locally owned cells.
+    // In 2D: ω_z = ∂u_y/∂x − ∂u_x/∂y
+    {
+        const dealii::QGauss<dim> quadrature(fe_velocity_.degree + 1);
+        dealii::FEValues<dim> fe_ux(fe_velocity_, quadrature,
+                                     dealii::update_gradients | dealii::update_JxW_values);
+        dealii::FEValues<dim> fe_uy(fe_velocity_, quadrature,
+                                     dealii::update_gradients);
+
+        const unsigned int n_q = quadrature.size();
+        std::vector<dealii::Tensor<1, dim>> grad_ux(n_q), grad_uy(n_q);
+
+        double local_omega_Linf = 0.0;
+        double local_enstrophy  = 0.0;
+        double local_omega_L2_sq = 0.0;
+
+        auto cell_ux = ux_dof_handler_.begin_active();
+        auto cell_uy = uy_dof_handler_.begin_active();
+        const auto end_ux = ux_dof_handler_.end();
+
+        for (; cell_ux != end_ux; ++cell_ux, ++cell_uy)
+        {
+            if (!cell_ux->is_locally_owned())
+                continue;
+
+            fe_ux.reinit(cell_ux);
+            fe_uy.reinit(cell_uy);
+
+            fe_ux.get_function_gradients(ux_relevant_, grad_ux);
+            fe_uy.get_function_gradients(uy_relevant_, grad_uy);
+
+            for (unsigned int q = 0; q < n_q; ++q)
+            {
+                // 2D vorticity: ω_z = ∂u_y/∂x − ∂u_x/∂y
+                const double omega_z = grad_uy[q][0] - grad_ux[q][1];
+                const double JxW = fe_ux.JxW(q);
+
+                local_omega_Linf = std::max(local_omega_Linf, std::abs(omega_z));
+                local_omega_L2_sq += omega_z * omega_z * JxW;
+                local_enstrophy  += 0.5 * omega_z * omega_z * JxW;
+            }
+        }
+
+        // MPI reduce across all ranks
+        const auto& mpi_comm = triangulation_.get_communicator();
+        diag.omega_Linf = dealii::Utilities::MPI::max(local_omega_Linf, mpi_comm);
+        diag.omega_L2   = std::sqrt(dealii::Utilities::MPI::sum(local_omega_L2_sq, mpi_comm));
+        diag.enstrophy  = dealii::Utilities::MPI::sum(local_enstrophy, mpi_comm);
+    }
 
     return diag;
 }

@@ -258,20 +258,4 @@ inline double double_well_derivative(double theta)
         return 0.25 * (theta * theta * theta - theta);
 }
 
-/**
- * @brief Double-well second derivative f'(θ) = F''(θ) = (3θ² - 1)/4
- *
- * Used for stability analysis and Newton linearization (if needed).
- * min f'(θ) = -1/4 at θ=0  →  S1 ≥ λ/(4ε) for SAV convexity.
- *
- * Truncated to constant (= 1/2) outside [-1, 1].
- */
-inline double double_well_second_derivative(double theta)
-{
-    if (theta <= -1.0 || theta >= 1.0)
-        return 0.5;
-    else
-        return 0.25 * (3.0 * theta * theta - 1.0);
-}
-
 #endif // MATERIAL_PROPERTIES_H

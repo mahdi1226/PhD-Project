@@ -41,7 +41,6 @@
 #include "utilities/solver_info.h"
 
 #include <deal.II/base/conditional_ostream.h>
-#include <deal.II/base/index_set.h>
 #include <deal.II/base/function.h>
 
 #include <deal.II/distributed/tria.h>

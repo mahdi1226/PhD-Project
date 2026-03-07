@@ -14,12 +14,14 @@ implemented in C++ using **deal.II 9.7.1** with Trilinos, p4est, and MPI.
 The solver decomposes the coupled PDE system into **4 independent subsystems**,
 each with its own FE space, assembly, solver, and VTK output:
 
-| Subsystem      | Field       | FE Space    | Eq.      | Solver         |
-|----------------|-------------|-------------|----------|----------------|
-| Poisson        | phi         | CG Q1       | 42d      | CG + AMG       |
-| Magnetization  | Mx, My      | DG Q1       | 42c/56-57| Direct / GMRES+ILU |
-| Cahn-Hilliard  | theta, psi  | CG Q2       | 42a-b    | Direct (MUMPS) |
-| Navier-Stokes  | ux, uy, p   | Q2 / CG-Q1  | 42e-f    | CG+AMG (projection method) |
+| Subsystem      | Field       | FE Space    | Eq.      | Solver (default)      | Direct option     |
+|----------------|-------------|-------------|----------|-----------------------|-------------------|
+| Poisson        | phi         | CG Q2       | 42d      | CG + AMG              | `--poisson-direct` |
+| Magnetization  | Mx, My      | DG Q1       | 42c/56-57| Direct (MUMPS)        | (already default)  |
+| Cahn-Hilliard  | theta, psi  | CG Q2       | 42a-b    | Direct (MUMPS)        | (already default)  |
+| Navier-Stokes  | ux, uy, p   | Q2 / CG-Q1  | 42e-f   | CG+AMG (projection)   | `--ns-direct`      |
+
+Use `--all-direct` to force direct solvers for ALL subsystems.
 
 ---
 
