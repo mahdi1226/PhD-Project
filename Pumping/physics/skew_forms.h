@@ -188,17 +188,14 @@ skew_convection_cell_value(const dealii::Tensor<1, dim>& U,
 }
 
 // ============================================================================
-//                    ANGULAR MOMENTUM CONVECTION
+//                    ANGULAR MOMENTUM / SCALAR CONVECTION
 //
-// Scalar version for angular velocity w (CG, no face terms).
+// Scalar skew-symmetric form for angular velocity, passive scalar, and
+// Cahn-Hilliard convection (CG, no face terms).
 // b_h(u, w, ξ) = Σ_T ∫_T [(u·∇)w · ξ + ½(∇·u)(w·ξ)] dx
 //
-// This is the scalar analogue of the NS convection form.
-// Used in the angular momentum equation (Eq. 1c) if convection is present.
-//
-// Note: Nochetto's angular momentum equation (Eq. 42f) does NOT include
-// convection — it's a reaction-diffusion equation. This is provided for
-// completeness (some formulations include it).
+// Algebraically identical to skew_magnetic_cell_value_scalar — single
+// implementation avoids code duplication.
 // ============================================================================
 template <int dim>
 inline double
@@ -208,7 +205,7 @@ skew_angular_convection_scalar(const dealii::Tensor<1, dim>& U,
                                const dealii::Tensor<1, dim>& grad_V,
                                double W)
 {
-    return (U * grad_V) * W + 0.5 * div_U * V * W;
+    return skew_magnetic_cell_value_scalar<dim>(U, div_U, V, grad_V, W);
 }
 
 #endif // FHD_SKEW_FORMS_H

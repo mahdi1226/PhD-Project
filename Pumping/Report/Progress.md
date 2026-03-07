@@ -93,10 +93,23 @@
 - No eps-convergence or mesh-convergence study performed
 - Sub-cell tracking essential (old cell-midpoint was grid-quantized)
 
+### Convergence Study Infrastructure (added 2026-03-07)
+- [x] `scripts/eps_convergence_sweep.sh`: runs eps = 0.04, 0.02, 0.01, 0.005 at fixed H0 and ref
+- [x] `scripts/mesh_convergence_sweep.sh`: runs ref = 5, 6, 7 at fixed H0 and eps
+- [x] `scripts/analyze_convergence.py`: auto-detects runs, computes D(eps) and D(h), plots convergence
+- [x] `params.txt` output in each run directory (epsilon, H0, chi, etc. for auto-detection)
+
+### Code Efficiency Cleanup (2026-03-07)
+- [x] Removed dead code: `compute_applied_field_gradient` from applied_field.h (never called)
+- [x] Consolidated duplicate: `skew_angular_convection_scalar` delegates to `skew_magnetic_cell_value_scalar`
+- [x] Removed duplicate M_PI definition in fhd_ch_driver.cc (already in benchmark_initial_conditions.h)
+- [x] Removed unused includes: `fe_interface_values.h` and `fe_q.h` from magnetization_assemble.cc
+- [x] Updated material_properties.h comments: documented that sigmoid (not linear) is used for chi/nu
+
 ## PROJECT STOPPED (2026-03-07)
 
 ### Not Pursued (future work)
-- [ ] eps-convergence study for deformation benchmark
-- [ ] Mesh convergence study (ref 5/6/7) at fixed eps
+- [ ] eps-convergence study for deformation benchmark (infrastructure ready, not run)
+- [ ] Mesh convergence study ref 5/6/7 at fixed eps (infrastructure ready, not run)
 - [ ] Droplet transport in pumping channel with traveling-wave field
 - [ ] Parametric study: droplet size, field frequency, intensity

@@ -85,9 +85,7 @@
 #include <cmath>
 #include <filesystem>
 
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
+// M_PI defined via physics/benchmark_initial_conditions.h
 
 constexpr int dim = 2;
 
@@ -548,6 +546,30 @@ int main(int argc, char* argv[])
 
         MPI_Bcast(dir_buf, 512, MPI_CHAR, 0, mpi_comm);
         output_dir = std::string(dir_buf);
+    }
+
+    // Save parameters for post-processing (convergence studies need epsilon, H0, etc.)
+    if (rank == 0)
+    {
+        std::ofstream pf(output_dir + "/params.txt");
+        pf << "experiment=" << params.experiment_name << "\n"
+           << "refinement=" << refinement << "\n"
+           << "dt=" << dt << "\n"
+           << "t_final=" << t_final << "\n"
+           << "epsilon=" << params.cahn_hilliard_params.epsilon << "\n"
+           << "gamma=" << params.cahn_hilliard_params.gamma << "\n"
+           << "sigma=" << params.cahn_hilliard_params.sigma << "\n"
+           << "chi_ferro=" << params.physics.chi_ferro << "\n"
+           << "nu_carrier=" << params.physics.nu_carrier << "\n"
+           << "nu_ferro=" << params.physics.nu_ferro << "\n"
+           << "mu_0=" << params.physics.mu_0 << "\n"
+           << "T_relax=" << params.physics.T_relax << "\n"
+           << "beta=" << params.physics.beta << "\n"
+           << "H_max=" << params.uniform_field.intensity_max << "\n"
+           << "ramp_time=" << params.uniform_field.ramp_time << "\n"
+           << "field_dir_x=" << params.uniform_field.direction[0] << "\n"
+           << "field_dir_y=" << params.uniform_field.direction[1] << "\n";
+        pf.close();
     }
 
     // ================================================================

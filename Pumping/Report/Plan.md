@@ -38,11 +38,17 @@ See `References/comparison_study.md` for numerical scheme decision analysis.
 - D between 2D and 3D theories; linear regime not quantitatively matched
 - Needs eps/mesh convergence study for proper validation
 
+### Convergence Study Infrastructure (added 2026-03-07)
+- Sweep scripts: `scripts/eps_convergence_sweep.sh`, `scripts/mesh_convergence_sweep.sh`
+- Analysis: `scripts/analyze_convergence.py` (auto-detects runs via params.txt)
+- Driver saves `params.txt` in each output directory for post-processing
+- NOT RUN — infrastructure only, ready for future validation
+
 ## Project Status: STOPPED (2026-03-07)
 
 Solver infrastructure established. Deformation benchmark shows qualitatively
 correct behavior. Quantitative validation requires convergence studies not
-performed here. See Progress.md for final results table and conclusions.
+performed here — infrastructure now ready. See Progress.md for results and conclusions.
 
 ## Architecture
 

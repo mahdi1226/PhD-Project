@@ -7,18 +7,21 @@
 //
 // Phase B: Two-phase ferrofluid with Cahn-Hilliard
 //   Material properties become functions of the phase field θ:
-//     χ(θ) = χ₀·H(θ/ε)         magnetic susceptibility (sigmoid)
+//     χ(θ) = χ₀·H(θ/ε)               magnetic susceptibility (sigmoid)
 //     ν(θ) = ν_w + (ν_f-ν_w)·H(θ/ε)  viscosity (sigmoid)
-//     ρ(θ) = 1 + r·H(θ/ε)      density ratio (sigmoid)
+//     ρ(θ) = 1 + r·H(θ/ε)            density ratio (sigmoid)
 //
 //   Zhang, He & Yang (2021) use sigmoid 1/(1+e^{-(2Φ-1)/ε}) for ALL
 //   material properties. In θ convention: H(θ/ε) = 1/(1+e^{-θ/ε}).
 //
 //   Convention: θ ∈ {-1, +1}. Mapping from Φ ∈ {0, 1}: Φ = (θ+1)/2.
 //
-// This file provides both:
-//   1. Phase A trivial accessors (constants from params)
-//   2. Phase B interpolation functions (for future use)
+//   NOTE (Issue B6): Linear interpolation (chi_ferro*(θ+1)/2) was tested
+//   for Rosensweig instability stability, but the current code uses sigmoid
+//   for all material properties. The deformation benchmark results were
+//   obtained with sigmoid interpolation. For small ε/R (e.g., ε=0.02,
+//   R=0.2), sigmoid acts as a sharp step — effectively identical to
+//   phase-wise constant properties.
 //
 // CRITICAL FOR ENERGY STABILITY (Phase B):
 //   All material coefficients MUST be evaluated at θ^{k-1} (the OLD value).
@@ -93,7 +96,7 @@ inline double viscosity(double theta, double nu_water, double nu_ferro,
 // ============================================================================
 // Phase B: Density ratio ρ(θ) = 1 + r·H(θ/ε)
 //
-// Sigmoid interpolation (unlike linear chi and nu).
+// Sigmoid interpolation (same as chi and nu in current implementation).
 // ============================================================================
 inline double density_ratio(double theta, double epsilon, double r)
 {

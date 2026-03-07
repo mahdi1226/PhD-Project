@@ -36,8 +36,6 @@
 #include <deal.II/base/quadrature_lib.h>
 #include <deal.II/base/timer.h>
 #include <deal.II/fe/fe_values.h>
-#include <deal.II/fe/fe_interface_values.h>
-#include <deal.II/fe/fe_q.h>
 #include <deal.II/meshworker/mesh_loop.h>
 
 template <int dim>
