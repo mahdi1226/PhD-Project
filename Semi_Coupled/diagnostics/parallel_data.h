@@ -64,9 +64,9 @@ struct ParallelStepData
     double step_total = 0.0;
 
     // ========================================================================
-    // Picard/BGS iteration counts
+    // BGS iteration counts (picard_iterations kept for CSV compatibility, always 0)
     // ========================================================================
-    unsigned int picard_iterations = 0;
+    unsigned int picard_iterations = 0;  // Legacy: monolithic system has no Picard
     unsigned int bgs_iterations = 0;
 
     // ========================================================================

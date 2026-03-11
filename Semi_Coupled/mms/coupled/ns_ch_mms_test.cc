@@ -1,5 +1,5 @@
 // ============================================================================
-// mms/coupled/ch_ns_mms_test.cc - CH + NS Coupled MMS Test
+// mms/coupled/ns_ch_mms_test.cc - NS → CH Coupled MMS Test
 //
 // Tests phase field advection by velocity:
 //   CH equation: ∂θ/∂t + U·∇θ = γΔψ + f_θ
@@ -55,7 +55,7 @@ constexpr int dim = 2;
 // ============================================================================
 // CH + NS coupled single refinement test
 // ============================================================================
-static CoupledMMSResult run_ch_ns_single(
+static CoupledMMSResult run_ns_ch_single(
     unsigned int refinement,
     const Parameters& params,
     unsigned int n_time_steps,
@@ -386,6 +386,12 @@ static CoupledMMSResult run_ch_ns_single(
     MPI_Allreduce(&local_sq, &global_sq, 1, MPI_DOUBLE, MPI_SUM, mpi_communicator);
     result.theta_H1 = std::sqrt(global_sq);
 
+    dealii::VectorTools::integrate_difference(theta_dof, theta_rel, exact_theta, cell_err, quad,
+                                              dealii::VectorTools::Linfty_norm);
+    double local_max = cell_err.linfty_norm(), global_max;
+    MPI_Allreduce(&local_max, &global_max, 1, MPI_DOUBLE, MPI_MAX, mpi_communicator);
+    result.theta_Linf = global_max;
+
     NSExactVelocityX<dim> exact_ux(current_time, L_y);
     dealii::TrilinosWrappers::MPI::Vector ux_gh(ux_owned, ux_relevant, mpi_communicator);
     ux_gh = ux_sol;
@@ -394,12 +400,17 @@ static CoupledMMSResult run_ch_ns_single(
     MPI_Allreduce(&local_sq, &global_sq, 1, MPI_DOUBLE, MPI_SUM, mpi_communicator);
     result.ux_L2 = std::sqrt(global_sq);
 
-    // ux_H1 error
     dealii::VectorTools::integrate_difference(ux_dof, ux_gh, exact_ux, cell_err, quad,
                                               dealii::VectorTools::H1_seminorm);
     local_sq = cell_err.norm_sqr();
     MPI_Allreduce(&local_sq, &global_sq, 1, MPI_DOUBLE, MPI_SUM, mpi_communicator);
     result.ux_H1 = std::sqrt(global_sq);
+
+    dealii::VectorTools::integrate_difference(ux_dof, ux_gh, exact_ux, cell_err, quad,
+                                              dealii::VectorTools::Linfty_norm);
+    local_max = cell_err.linfty_norm();
+    MPI_Allreduce(&local_max, &global_max, 1, MPI_DOUBLE, MPI_MAX, mpi_communicator);
+    result.ux_Linf = global_max;
 
     // Pressure error
     NSExactPressure<dim> exact_p(current_time, L_y);
@@ -411,6 +422,12 @@ static CoupledMMSResult run_ch_ns_single(
     MPI_Allreduce(&local_sq, &global_sq, 1, MPI_DOUBLE, MPI_SUM, mpi_communicator);
     result.p_L2 = std::sqrt(global_sq);
 
+    dealii::VectorTools::integrate_difference(p_dof, p_gh, exact_p, cell_err, quad,
+                                              dealii::VectorTools::Linfty_norm);
+    local_max = cell_err.linfty_norm();
+    MPI_Allreduce(&local_max, &global_max, 1, MPI_DOUBLE, MPI_MAX, mpi_communicator);
+    result.p_Linf = global_max;
+
     auto total_end = std::chrono::high_resolution_clock::now();
     result.total_time = std::chrono::duration<double>(total_end - total_start).count();
 
@@ -418,14 +435,14 @@ static CoupledMMSResult run_ch_ns_single(
 }
 
 // Public interface
-CoupledMMSConvergenceResult run_ch_ns_mms(
+CoupledMMSConvergenceResult run_ns_ch_mms(
     const std::vector<unsigned int>& refinements,
     const Parameters& params,
     unsigned int n_time_steps,
     MPI_Comm mpi_communicator)
 {
     CoupledMMSConvergenceResult result;
-    result.level = CoupledMMSLevel::CH_NS;
+    result.level = CoupledMMSLevel::NS_CH;
     result.expected_L2_rate = params.fe.degree_phase + 1;
     result.expected_H1_rate = params.fe.degree_phase;
 
@@ -433,14 +450,14 @@ CoupledMMSConvergenceResult run_ch_ns_mms(
 
     if (rank == 0)
     {
-        std::cout << "\n[CH_NS] Running coupled MMS test...\n";
+        std::cout << "\n[NS_CH] Running coupled MMS test...\n";
         std::cout << "  Time steps: " << n_time_steps << "\n";
     }
 
     for (unsigned int ref : refinements)
     {
         if (rank == 0) std::cout << "  Ref " << ref << "... " << std::flush;
-        CoupledMMSResult r = run_ch_ns_single(ref, params, n_time_steps, mpi_communicator);
+        CoupledMMSResult r = run_ns_ch_single(ref, params, n_time_steps, mpi_communicator);
         result.results.push_back(r);
         if (rank == 0)
             std::cout << "θ_L2=" << std::scientific << std::setprecision(2) << r.theta_L2

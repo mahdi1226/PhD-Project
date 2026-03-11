@@ -14,7 +14,7 @@
 // Subsystem test interfaces
 #include "mms/ch/ch_mms_test.h"
 #include "mms/ns/ns_mms_test.h"
-#include "mms/magnetization/magnetization_mms_test.h"
+#include "mms/magnetic/magnetic_mms_test.h"
 #include "mms/coupled/coupled_mms_test.h"
 
 #include <deal.II/base/utilities.h>
@@ -542,35 +542,25 @@ TemporalConvergenceResult run_magnetization_temporal_mms(
             std::cout << "[MAG_TEMPORAL] n_steps=" << n_steps
                       << ", dt=" << std::scientific << std::setprecision(3) << dt << "...\n";
 
-        // Run Magnetization with single refinement level
-        // Note: run_magnetization_mms_standalone uses its own hardcoded n_time_steps.
-        // For temporal convergence we need an overload that accepts n_time_steps.
-        // Use run_magnetization_mms_single_temporal() which we add as an overload.
-        std::vector<unsigned int> single_ref = {refinement};
-        MagMMSConvergenceResult mag_result = run_magnetization_mms_standalone(
-            single_ref, mutable_params, MagSolverType::Direct,
-            n_steps, mpi_communicator);
+        // Run monolithic magnetics at single refinement level
+        MagneticMMSResult r = run_magnetic_mms_single(
+            refinement, mutable_params, n_steps, mpi_communicator);
 
-        if (!mag_result.results.empty())
+        result.time_step_counts.push_back(n_steps);
+        result.dt_values.push_back(dt);
+        result.wall_times.push_back(r.total_time);
+        result.M_L2.push_back(r.M_L2);
+
+        if (result.h == 0.0)
         {
-            const auto& r = mag_result.results[0];
-
-            result.time_step_counts.push_back(n_steps);
-            result.dt_values.push_back(dt);
-            result.wall_times.push_back(r.total_time);
-            result.M_L2.push_back(r.M_L2);
-
-            if (result.h == 0.0)
-            {
-                result.h = r.h;
-                result.n_dofs = r.n_dofs;
-            }
-
-            if (this_rank == 0)
-                std::cout << "  M_L2=" << std::scientific << std::setprecision(3)
-                          << r.M_L2 << ", time=" << std::fixed << std::setprecision(1)
-                          << r.total_time << "s\n";
+            result.h = r.h;
+            result.n_dofs = r.n_dofs;
         }
+
+        if (this_rank == 0)
+            std::cout << "  M_L2=" << std::scientific << std::setprecision(3)
+                      << r.M_L2 << ", time=" << std::fixed << std::setprecision(1)
+                      << r.total_time << "s\n";
     }
 
     result.total_wall_time = 0.0;

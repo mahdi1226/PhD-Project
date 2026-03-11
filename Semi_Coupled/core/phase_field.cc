@@ -1,33 +1,23 @@
 // ============================================================================
 // core/phase_field.cc - Time Stepping and Solve Methods (PARALLEL)
 //
-// Time stepping algorithm (per Paper Section 6, p.520):
+// Time stepping algorithm:
 //   Block-Gauss-Seidel global iteration (outer loop):
 //     1. Solve CH: (θ, ψ) using current U
-//     2. Picard iteration for Poisson ↔ Magnetization (inner loop):
-//        - Solve Poisson (42d): φ depends on M
-//        - Solve Magnetization (42c): M evolves with H = ∇φ
-//        - Iterate until M converges
+//     2. Solve Magnetics: monolithic (M, φ) block system (no Picard)
 //     3. Solve NS: (U, P) using updated θ, M, H
 //     Repeat 1-3 until all fields converge.
-//
-// Paper explicitly notes (p.520): "it does not seem possible to consider
-// further uncoupling [...] plain fixed point iteration (Block-Jacobi) did
-// not yield satisfactory results."
 //
 // Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
 // ============================================================================
 
 #include "core/phase_field.h"
 #include "assembly/ch_assembler.h"
-#include "assembly/poisson_assembler.h"
-#include "assembly/magnetization_assembler.h"
+#include "assembly/magnetic_assembler.h"
 #include "assembly/ns_assembler.h"
 #include "solvers/ch_solver.h"
-#include "solvers/poisson_solver.h"
-#include "solvers/magnetization_solver.h"
+#include "solvers/magnetic_solver.h"
 #include "solvers/ns_solver.h"
-#include "physics/material_properties.h"  // susceptibility() for L2 projection
 
 // Utilities - MUST come before diagnostics/loggers that use tools.h functions
 #include "utilities/tools.h"
@@ -67,7 +57,7 @@ void PhaseFieldProblem<dim>::run()
     // ========================================================================
     pcout_ << "========================================\n";
     pcout_ << "  Ferrofluid Phase Field Solver\n";
-    pcout_ << "  (Optimized with Picard Iteration)\n";
+    pcout_ << "  (Monolithic Magnetics)\n";
     pcout_ << "========================================\n\n";
 
     pcout_ << "[1/5] Setting up mesh...\n";
@@ -81,11 +71,8 @@ void PhaseFieldProblem<dim>::run()
 
     if (params_.enable_magnetic)
     {
-        pcout_ << "[3/5] Setting up Poisson system...\n";
-        setup_poisson_system();
-
-        pcout_ << "[3/5] Setting up Magnetization system...\n";
-        setup_magnetization_system();
+        pcout_ << "[3/5] Setting up Magnetic system (monolithic M+φ)...\n";
+        setup_magnetic_system();
     }
 
     if (params_.enable_ns)
@@ -158,29 +145,16 @@ void PhaseFieldProblem<dim>::run()
             export_sparsity_pattern(ch_matrix_, "ch", output_dir, mpi_communicator_, pcout_);
         }
 
-        // Poisson matrix
+        // Monolithic magnetics matrix (M+phi)
         if (params_.enable_magnetic)
         {
-            auto a = analyze_sparsity(phi_matrix_, "Poisson");
+            auto a = analyze_sparsity(mag_matrix_, "Magnetic(M+φ)");
             unsigned int global_bw = 0;
             MPI_Reduce(&a.bandwidth, &global_bw, 1, MPI_UNSIGNED, MPI_MAX, 0, mpi_communicator_);
             if (MPIUtils::is_root(mpi_communicator_))
                 a.bandwidth = global_bw;
             all_analyses.push_back(a);
-            export_sparsity_pattern(phi_matrix_, "poisson", output_dir, mpi_communicator_, pcout_);
-        }
-
-        // Magnetization matrix (only if DG transport enabled, otherwise L2 projection)
-        if (params_.enable_magnetic && params_.use_dg_transport
-            && M_matrix_.m() > 0 && M_matrix_.n_nonzero_elements() > 0)
-        {
-            auto a = analyze_sparsity(M_matrix_, "Magnetization");
-            unsigned int global_bw = 0;
-            MPI_Reduce(&a.bandwidth, &global_bw, 1, MPI_UNSIGNED, MPI_MAX, 0, mpi_communicator_);
-            if (MPIUtils::is_root(mpi_communicator_))
-                a.bandwidth = global_bw;
-            all_analyses.push_back(a);
-            export_sparsity_pattern(M_matrix_, "magnetization", output_dir, mpi_communicator_, pcout_);
+            export_sparsity_pattern(mag_matrix_, "magnetic", output_dir, mpi_communicator_, pcout_);
         }
 
         // NS matrix (need to assemble first — it's assembled each step)
@@ -204,8 +178,7 @@ void PhaseFieldProblem<dim>::run()
             params_.physics.gravity);
         pcout_ << "\n[Rosensweig Validation Reference]\n";
         pcout_ << "  Critical wavelength λ_c = " << lambda_theory << "\n";
-        pcout_ << "  Picard iterations: " << params_.picard_iterations << "\n";
-        pcout_ << "  Picard tolerance: " << params_.picard_tolerance << "\n\n";
+        pcout_ << "  Magnetics: monolithic (no Picard)\n\n";
     }
 
     // ========================================================================
@@ -308,7 +281,7 @@ void PhaseFieldProblem<dim>::run()
         //   [CH] -> [Mag+Poisson (Picard)] -> [NS], repeat until convergence
         // ====================================================================
         {
-            const unsigned int max_bgs = params_.enable_bgs ? params_.bgs_max_iterations : 1;
+            const unsigned int max_bgs = params_.bgs_max_iterations;
             unsigned int bgs_iter = 0;
             double bgs_residual = 1.0;
 
@@ -317,20 +290,17 @@ void PhaseFieldProblem<dim>::run()
             dealii::TrilinosWrappers::MPI::Vector theta_bgs_prev;
             dealii::TrilinosWrappers::MPI::Vector ux_bgs_prev;
             dealii::TrilinosWrappers::MPI::Vector uy_bgs_prev;
-            if (params_.enable_bgs)
+            theta_bgs_prev.reinit(theta_locally_owned_, mpi_communicator_);
+            if (params_.enable_ns)
             {
-                theta_bgs_prev.reinit(theta_locally_owned_, mpi_communicator_);
-                if (params_.enable_ns)
-                {
-                    ux_bgs_prev.reinit(ux_locally_owned_, mpi_communicator_);
-                    uy_bgs_prev.reinit(uy_locally_owned_, mpi_communicator_);
-                }
+                ux_bgs_prev.reinit(ux_locally_owned_, mpi_communicator_);
+                uy_bgs_prev.reinit(uy_locally_owned_, mpi_communicator_);
             }
 
             for (bgs_iter = 0; bgs_iter < max_bgs; ++bgs_iter)
             {
                 // Store current fields for convergence check
-                if (params_.enable_bgs && bgs_iter > 0)
+                if (bgs_iter > 0)
                 {
                     theta_bgs_prev = theta_solution_;
                     if (params_.enable_ns)
@@ -349,18 +319,14 @@ void PhaseFieldProblem<dim>::run()
                     step_timing.ch_time += t.last();
                 }
 
-                // Block 2: Solve Magnetic subsystem (Picard iteration for Poisson ↔ Mag)
+                // Block 2: Solve Monolithic Magnetics (M + φ) — no Picard
                 if (params_.enable_magnetic)
                 {
                     CumulativeTimer t;
                     t.start();
-
-                    unsigned int picard_iters = solve_poisson_magnetization_picard(dt);
-                    last_picard_iterations_ = picard_iters;
-
+                    solve_magnetics(dt);
                     t.stop();
-                    step_timing.poisson_time += t.last() * 0.3;
-                    step_timing.mag_time += t.last() * 0.7;
+                    step_timing.mag_time += t.last();
                 }
 
                 // Block 3: Solve NS (U, P) using updated θ, M, H
@@ -376,7 +342,7 @@ void PhaseFieldProblem<dim>::run()
                 // ============================================================
                 // Check Block-GS convergence (skip on first iteration)
                 // ============================================================
-                if (!params_.enable_bgs || max_bgs == 1)
+                if (max_bgs == 1)
                     break;  // Single pass mode
 
                 if (bgs_iter == 0)
@@ -447,12 +413,6 @@ void PhaseFieldProblem<dim>::run()
         theta_old_solution_ = theta_solution_;
         theta_old_relevant_ = theta_relevant_;
 
-        if (params_.enable_magnetic)
-        {
-            Mx_old_solution_ = Mx_solution_;
-            My_old_solution_ = My_solution_;
-        }
-
         if (params_.enable_ns)
         {
             ux_old_solution_ = ux_solution_;
@@ -502,10 +462,8 @@ void PhaseFieldProblem<dim>::run()
                               !last_ch_info_.converged);
         if (params_.enable_magnetic)
         {
-            update_poisson_solver_info(data, last_poisson_info_.iterations,
-                                       last_poisson_info_.residual, step_timing.poisson_time);
-            update_mag_solver_info(data, last_M_info_.iterations,
-                                   last_M_info_.residual, step_timing.mag_time);
+            update_magnetic_solver_info(data, last_mag_info_.iterations,
+                                       last_mag_info_.residual, step_timing.mag_time);
         }
         if (params_.enable_ns)
             update_ns_solver_info(data, last_ns_info_.iterations, 0,
@@ -543,32 +501,30 @@ void PhaseFieldProblem<dim>::run()
             // --- Timing breakdown (from instrumented solve methods) ---
             pdata.ch_assemble_time = last_ch_assemble_time_;
             pdata.ch_solve_time = last_ch_solve_time_;
-            pdata.poisson_assemble_time = last_poisson_assemble_time_;
-            pdata.poisson_solve_time = last_poisson_solve_time_;
-            pdata.mag_time = last_mag_time_;
+            pdata.poisson_assemble_time = 0.0;  // Monolithic: no separate Poisson
+            pdata.poisson_solve_time = 0.0;
+            pdata.mag_time = last_mag_assemble_time_ + last_mag_solve_time_;
             pdata.ns_assemble_time = last_ns_assemble_time_;
             pdata.ns_solve_time = last_ns_solve_time_;
             pdata.diagnostics_time = t_diagnostics.last();
             pdata.amr_time = amr_time_this_step;
             pdata.step_total = step_timing.step_total;
 
-            // --- Picard/BGS iteration counts ---
-            pdata.picard_iterations = last_picard_iterations_;
+            // --- BGS iteration counts ---
             pdata.bgs_iterations = last_bgs_iterations_;
 
             // --- Solver iterations ---
             pdata.ch_solver_iters = last_ch_info_.iterations;
-            pdata.poisson_solver_iters = last_poisson_info_.iterations;
-            pdata.mag_solver_iters = last_M_info_.iterations;
+            pdata.poisson_solver_iters = 0;  // Monolithic: no separate Poisson
+            pdata.mag_solver_iters = last_mag_info_.iterations;
             pdata.ns_solver_iters = last_ns_info_.iterations;
 
             // --- Sparsity metrics (local nnz on this rank) ---
             pdata.ch_nnz = ch_matrix_.n_nonzero_elements();
             if (params_.enable_magnetic)
             {
-                pdata.poisson_nnz = phi_matrix_.n_nonzero_elements();
-                pdata.mag_nnz = params_.use_dg_transport ?
-                    M_matrix_.n_nonzero_elements() : 0;
+                pdata.poisson_nnz = 0;  // Monolithic: no separate Poisson matrix
+                pdata.mag_nnz = mag_matrix_.n_nonzero_elements();
             }
             if (params_.enable_ns)
                 pdata.ns_nnz = ns_matrix_.n_nonzero_elements();
@@ -601,10 +557,7 @@ void PhaseFieldProblem<dim>::run()
 
                     cached_ch_bw = compute_bandwidth(ch_matrix_);
                     if (params_.enable_magnetic)
-                        cached_poi_bw = compute_bandwidth(phi_matrix_);
-                    if (params_.enable_magnetic && params_.use_dg_transport
-                        && M_matrix_.m() > 0 && M_matrix_.n_nonzero_elements() > 0)
-                        cached_mag_bw = compute_bandwidth(M_matrix_);
+                        cached_mag_bw = compute_bandwidth(mag_matrix_);
                     if (params_.enable_ns && ns_matrix_.m() > 0
                         && ns_matrix_.n_nonzero_elements() > 0)
                         cached_ns_bw = compute_bandwidth(ns_matrix_);
@@ -624,17 +577,15 @@ void PhaseFieldProblem<dim>::run()
             pdata.ghost_cells = 0; // Not easily available; p4est ghost count is internal
             pdata.local_dofs_theta = theta_locally_owned_.n_elements();
             pdata.local_dofs_phi = params_.enable_magnetic ?
-                phi_locally_owned_.n_elements() : 0;
-            pdata.local_dofs_M = params_.enable_magnetic ?
-                M_locally_owned_.n_elements() : 0;
+                mag_locally_owned_.n_elements() : 0;  // Combined M+phi
+            pdata.local_dofs_M = 0;  // Included in mag
             pdata.local_dofs_ns = params_.enable_ns ?
                 ns_locally_owned_.n_elements() : 0;
             pdata.total_local_dofs = pdata.local_dofs_theta + pdata.local_dofs_phi
                                    + pdata.local_dofs_M + pdata.local_dofs_ns;
             pdata.global_cells = triangulation_.n_global_active_cells();
             pdata.global_dofs = theta_dof_handler_.n_dofs()
-                + (params_.enable_magnetic ? phi_dof_handler_.n_dofs() : 0)
-                + (params_.enable_magnetic ? M_dof_handler_.n_dofs() : 0)
+                + (params_.enable_magnetic ? mag_dof_handler_.n_dofs() : 0)
                 + (params_.enable_ns ?
                     (ux_dof_handler_.n_dofs() + uy_dof_handler_.n_dofs()
                      + p_dof_handler_.n_dofs()) : 0);
@@ -774,121 +725,59 @@ void PhaseFieldProblem<dim>::run()
 }
 
 // ============================================================================
-// solve_poisson_magnetization_picard() - Picard iteration for Poisson ↔ Mag
+// solve_magnetics() - Monolithic M+φ block system (no Picard)
+//
+// Single assemble + solve for the combined (M, φ) system.
+// Replaces the old Picard iteration between Poisson and Magnetization.
 // ============================================================================
 template <int dim>
-unsigned int PhaseFieldProblem<dim>::solve_poisson_magnetization_picard(double dt)
+void PhaseFieldProblem<dim>::solve_magnetics(double dt)
 {
-    // Reset accumulated Poisson timing for this step's Picard loop
-    last_poisson_assemble_time_ = 0.0;
-    last_poisson_solve_time_ = 0.0;
-    last_mag_time_ = 0.0;
+    CumulativeTimer t_assemble, t_solve;
 
-    // Update ghosted theta for magnetization (from CH solve)
+    // Update ghosted theta for assembly (from CH solve)
     theta_relevant_ = theta_solution_;
 
-    const double picard_tol = params_.picard_tolerance;
-    const double omega = params_.picard_omega;
-    const unsigned int max_picard = params_.picard_iterations;
+    // Assemble monolithic system (algebraic M = χ·∇φ, no transport)
+    t_assemble.start();
+    magnetic_assembler_->assemble(
+        mag_matrix_,
+        mag_rhs_,
+        ux_relevant_,
+        uy_relevant_,
+        theta_relevant_,
+        mag_relevant_,  // unused by assembler (kept for signature compat)
+        dt,
+        time_);
+    t_assemble.stop();
 
-    // Store previous M for convergence check
-    dealii::TrilinosWrappers::MPI::Vector Mx_prev(M_locally_owned_, mpi_communicator_);
-    dealii::TrilinosWrappers::MPI::Vector My_prev(M_locally_owned_, mpi_communicator_);
+    // Solve monolithic system
+    t_solve.start();
+    magnetic_solver_->solve(mag_matrix_, mag_solution_, mag_rhs_);
+    t_solve.stop();
 
-    unsigned int picard_iter = 0;
-    double picard_residual = 0.1;
+    // Apply constraints
+    mag_constraints_.distribute(mag_solution_);
 
-    for (picard_iter = 0; picard_iter < max_picard; ++picard_iter)
+    // Record timing
+    last_mag_assemble_time_ = t_assemble.last();
+    last_mag_solve_time_ = t_solve.last();
+    last_mag_info_.iterations = magnetic_solver_->last_n_iterations();
+    last_mag_info_.residual = 0.0;
+    last_mag_info_.converged = true;
+
+    // Update ghosted mag solution
+    mag_relevant_ = mag_solution_;
+
+    // Extract individual Mx, My, phi to auxiliary vectors
+    // (needed for NS assembly, output, diagnostics)
+    extract_magnetic_components();
+
+    if (params_.output.verbose)
     {
-        // Store current M for convergence check
-        Mx_prev = Mx_solution_;
-        My_prev = My_solution_;
-
-        // ================================================================
-        // Solve Poisson (Paper Eq. 42c): uses current M
-        //   (∇Φ^k, ∇v) = (h_a - M^{k-1}, ∇v)
-        // ================================================================
-        Mx_relevant_ = Mx_solution_;
-        My_relevant_ = My_solution_;
-
-        solve_poisson();
-        phi_relevant_ = phi_solution_;
-
-        // ================================================================
-        // Update Magnetization using new φ (hence new H = ∇φ)
-        // ================================================================
-        {
-            CumulativeTimer t_mag;
-            t_mag.start();
-            if (params_.use_dg_transport)
-            {
-                // DG transport PDE: ∂M/∂t + (u·∇)M = (1/τ)(χ(θ)H - M)
-                bool matrix_changed = (picard_iter == 0);
-                solve_magnetization(dt, matrix_changed);
-            }
-            else
-            {
-                // Paper Eq. 42d: algebraic L2 projection M = χ(θ)∇Φ
-                // Cell-local since DG mass matrix is block-diagonal
-                project_equilibrium_magnetization();
-            }
-            t_mag.stop();
-            last_mag_time_ += t_mag.last();
-        }
-
-        // ================================================================
-        // Under-relaxation for stability
-        // M_new = ω * M_computed + (1-ω) * M_prev
-        // ================================================================
-        if (omega < 1.0)
-        {
-            // Apply under-relaxation
-            Mx_solution_.sadd(omega, 1.0 - omega, Mx_prev);
-            My_solution_.sadd(omega, 1.0 - omega, My_prev);
-        }
-
-        // ================================================================
-        // Check convergence: ||M^{k} - M^{k-1}|| / ||M^{k-1}|| < tol
-        // ================================================================
-        dealii::TrilinosWrappers::MPI::Vector diff_x(M_locally_owned_, mpi_communicator_);
-        dealii::TrilinosWrappers::MPI::Vector diff_y(M_locally_owned_, mpi_communicator_);
-        diff_x = Mx_solution_;
-        diff_x -= Mx_prev;
-        diff_y = My_solution_;
-        diff_y -= My_prev;
-
-        // NOTE: l2_norm() on Trilinos MPI vectors already returns the GLOBAL norm
-        // (internal MPI_Allreduce). No additional reduce_sum needed.
-        double diff_norm_sq = diff_x.l2_norm() * diff_x.l2_norm() +
-                              diff_y.l2_norm() * diff_y.l2_norm();
-        double M_norm_sq = Mx_prev.l2_norm() * Mx_prev.l2_norm() +
-                           My_prev.l2_norm() * My_prev.l2_norm();
-
-        picard_residual = (M_norm_sq > 1e-12) ?
-            std::sqrt(diff_norm_sq / M_norm_sq) : 0.0;
-
-        last_picard_residual_ = picard_residual;
-
-        if (params_.output.verbose)
-        {
-            pcout_ << "    [Picard " << picard_iter + 1 << "] residual = "
-                   << std::scientific << picard_residual << "\n";
-        }
-
-        if (picard_residual < picard_tol)
-        {
-            if (params_.output.verbose)
-                pcout_ << "    [Picard] Converged in " << picard_iter + 1 << " iterations\n";
-            break;
-        }
+        pcout_ << "  [Mag] monolithic solve, iterations="
+               << last_mag_info_.iterations << "\n";
     }
-
-    // Update ghosted vectors for NS assembly
-    Mx_relevant_ = Mx_solution_;
-    My_relevant_ = My_solution_;
-    phi_relevant_ = phi_solution_;
-
-    return picard_iter + 1;
 }
 
 // ============================================================================
@@ -953,295 +842,8 @@ void PhaseFieldProblem<dim>::solve_ch(double dt)
     }
 }
 
-// ============================================================================
-// solve_poisson() - Magnetostatic potential solver
-// ============================================================================
-template <int dim>
-void PhaseFieldProblem<dim>::solve_poisson()
-{
-    CumulativeTimer t_assemble, t_solve;
-
-    // Assemble Poisson RHS (matrix is constant, assembled at setup)
-    t_assemble.start();
-    assemble_poisson_rhs<dim>(
-        phi_dof_handler_,
-        M_dof_handler_,
-        Mx_relevant_,
-        My_relevant_,
-        params_,
-        time_,
-        phi_constraints_,
-        phi_rhs_);
-    t_assemble.stop();
-
-    // Initialize solver if needed
-    if (!poisson_solver_)
-    {
-        poisson_solver_ = std::make_unique<PoissonSolver>(
-            params_.solvers.poisson,
-            phi_locally_owned_,
-            mpi_communicator_);
-        poisson_solver_->initialize(phi_matrix_);
-    }
-
-    // Solve
-    t_solve.start();
-    last_poisson_info_ = poisson_solver_->solve(
-        phi_rhs_,
-        phi_solution_,
-        phi_constraints_,
-        params_.output.verbose);
-    t_solve.stop();
-
-    // Record assembly/solve split for parallel diagnostics
-    last_poisson_assemble_time_ += t_assemble.last();  // += because Picard accumulates
-    last_poisson_solve_time_ += t_solve.last();
-
-    phi_relevant_ = phi_solution_;
-
-    if (params_.output.verbose)
-    {
-        pcout_ << "  [Poisson] iterations=" << last_poisson_info_.iterations
-               << ", residual=" << std::scientific << last_poisson_info_.residual << "\n";
-    }
-}
-
-// ============================================================================
-// solve_magnetization() - DG magnetization transport (full assembly)
-// ============================================================================
-template <int dim>
-void PhaseFieldProblem<dim>::solve_magnetization(double dt, bool matrix_changed)
-{
-    // Initialize assembler if needed
-    if (!magnetization_assembler_)
-    {
-        magnetization_assembler_ = std::make_unique<MagnetizationAssembler<dim>>(
-            params_,
-            M_dof_handler_,
-            ux_dof_handler_,
-            phi_dof_handler_,
-            theta_dof_handler_,
-            mpi_communicator_);
-    }
-
-    // Assemble matrix and RHS
-    if (matrix_changed)
-    {
-        magnetization_assembler_->assemble(
-            M_matrix_,
-            Mx_rhs_,
-            My_rhs_,
-            ux_relevant_,
-            uy_relevant_,
-            phi_relevant_,
-            theta_relevant_,
-            Mx_relevant_,
-            My_relevant_,
-            dt,
-            time_);
-    }
-    else
-    {
-        magnetization_assembler_->assemble_rhs_only(
-            Mx_rhs_,
-            My_rhs_,
-            ux_relevant_,
-            uy_relevant_,
-            phi_relevant_,
-            theta_relevant_,
-            Mx_relevant_,
-            My_relevant_,
-            dt,
-            time_);
-    }
-
-    // Initialize solver if needed
-    if (!magnetization_solver_)
-    {
-        magnetization_solver_ = std::make_unique<MagnetizationSolver<dim>>(
-            params_.solvers.magnetization,
-            M_locally_owned_,
-            mpi_communicator_);
-    }
-
-    // Initialize preconditioner if matrix changed
-    if (matrix_changed)
-    {
-        magnetization_solver_->initialize(M_matrix_);
-    }
-
-    // Solve Mx
-    magnetization_solver_->solve(Mx_solution_, Mx_rhs_);
-    last_M_info_.iterations = magnetization_solver_->last_n_iterations();
-    last_M_info_.residual = 0.0;  // Not available from this solver
-    last_M_info_.converged = true;
-
-    // Solve My (reuse preconditioner)
-    magnetization_solver_->solve(My_solution_, My_rhs_);
-
-    // Update ghosted vectors
-    Mx_relevant_ = Mx_solution_;
-    My_relevant_ = My_solution_;
-
-    if (params_.output.verbose)
-    {
-        pcout_ << "  [Mag] iterations=" << last_M_info_.iterations << "\n";
-    }
-}
-
-// ============================================================================
-// solve_magnetization_rhs_only() - RHS-only assembly for Picard iteration 2+
-// ============================================================================
-template <int dim>
-void PhaseFieldProblem<dim>::solve_magnetization_rhs_only(double dt)
-{
-    if (!magnetization_assembler_)
-    {
-        // Should not happen - assembler should be created in first call
-        solve_magnetization(dt, true);
-        return;
-    }
-
-    // RHS-only assembly (matrix unchanged)
-    magnetization_assembler_->assemble_rhs_only(
-        Mx_rhs_,
-        My_rhs_,
-        ux_relevant_,
-        uy_relevant_,
-        phi_relevant_,
-        theta_relevant_,
-        Mx_relevant_,
-        My_relevant_,
-        dt,
-        time_);
-
-    // Solve Mx and My (preconditioner already initialized)
-    magnetization_solver_->solve(Mx_solution_, Mx_rhs_);
-    last_M_info_.iterations = magnetization_solver_->last_n_iterations();
-
-    magnetization_solver_->solve(My_solution_, My_rhs_);
-
-    Mx_relevant_ = Mx_solution_;
-    My_relevant_ = My_solution_;
-}
-
-// ============================================================================
-// project_equilibrium_magnetization() - L2 projection M = χ(θ)∇Φ
-//
-// Paper Eq. 42d: (M^k, z) = (χ₀ f_ε(Θ^{k-1}) ∇Φ^k, z)  ∀z ∈ M_h
-//
-// Since DG mass matrix is block-diagonal (no inter-element coupling),
-// this reduces to independent cell-local L2 projections:
-//   M_mass_local * M_local = RHS_local
-// where RHS_i = ∫_K χ(θ) ∂Φ/∂x_d · z_i dx
-//
-// This is the EXACT paper formulation — algebraic, no transport PDE.
-// ============================================================================
-template <int dim>
-void PhaseFieldProblem<dim>::project_equilibrium_magnetization()
-{
-    const auto& fe_M = M_dof_handler_.get_fe();
-    const auto& fe_phi = phi_dof_handler_.get_fe();
-    const auto& fe_theta = theta_dof_handler_.get_fe();
-
-    const unsigned int dofs_per_cell_M = fe_M.n_dofs_per_cell();
-
-    // Quadrature: degree M + degree phi (grad) + 1 for accuracy
-    const unsigned int quad_degree = fe_M.degree + fe_phi.degree + 1;
-    dealii::QGauss<dim> quadrature(quad_degree);
-    const unsigned int n_q_points = quadrature.size();
-
-    dealii::FEValues<dim> fe_values_M(fe_M, quadrature,
-                                       dealii::update_values | dealii::update_JxW_values);
-    dealii::FEValues<dim> fe_values_phi(fe_phi, quadrature,
-                                         dealii::update_gradients);
-    dealii::FEValues<dim> fe_values_theta(fe_theta, quadrature,
-                                           dealii::update_values);
-
-    // Cell-local storage
-    dealii::FullMatrix<double> local_mass(dofs_per_cell_M, dofs_per_cell_M);
-    dealii::Vector<double> local_rhs_x(dofs_per_cell_M);
-    dealii::Vector<double> local_rhs_y(dofs_per_cell_M);
-    dealii::Vector<double> local_sol_x(dofs_per_cell_M);
-    dealii::Vector<double> local_sol_y(dofs_per_cell_M);
-
-    std::vector<dealii::types::global_dof_index> local_dof_indices(dofs_per_cell_M);
-
-    // Quadrature-point data
-    std::vector<dealii::Tensor<1, dim>> grad_phi_q(n_q_points);
-    std::vector<double> theta_q(n_q_points);
-
-    // Iterate over all three DoF handlers in sync (same triangulation)
-    auto cell_M     = M_dof_handler_.begin_active();
-    auto cell_phi   = phi_dof_handler_.begin_active();
-    auto cell_theta = theta_dof_handler_.begin_active();
-
-    for (; cell_M != M_dof_handler_.end(); ++cell_M, ++cell_phi, ++cell_theta)
-    {
-        if (!cell_M->is_locally_owned())
-            continue;
-
-        fe_values_M.reinit(cell_M);
-        fe_values_phi.reinit(cell_phi);
-        fe_values_theta.reinit(cell_theta);
-
-        // Get φ gradient and θ values at quadrature points
-        fe_values_phi.get_function_gradients(phi_relevant_, grad_phi_q);
-        fe_values_theta.get_function_values(theta_relevant_, theta_q);
-
-        local_mass = 0;
-        local_rhs_x = 0;
-        local_rhs_y = 0;
-
-        for (unsigned int q = 0; q < n_q_points; ++q)
-        {
-            // χ(θ) = χ₀ H(θ/ε) — susceptibility from material_properties.h
-            const double chi = susceptibility(theta_q[q],
-                                               params_.physics.epsilon,
-                                               params_.physics.chi_0);
-            const double JxW = fe_values_M.JxW(q);
-
-            for (unsigned int i = 0; i < dofs_per_cell_M; ++i)
-            {
-                const double z_i = fe_values_M.shape_value(i, q);
-
-                // RHS: (χ(θ) ∇Φ, z)
-                local_rhs_x(i) += chi * grad_phi_q[q][0] * z_i * JxW;
-                local_rhs_y(i) += chi * grad_phi_q[q][1] * z_i * JxW;
-
-                for (unsigned int j = 0; j < dofs_per_cell_M; ++j)
-                {
-                    const double z_j = fe_values_M.shape_value(j, q);
-                    // Mass matrix: (z_j, z_i)
-                    local_mass(i, j) += z_i * z_j * JxW;
-                }
-            }
-        }
-
-        // Solve cell-local system: mass * sol = rhs
-        local_mass.gauss_jordan();
-        local_mass.vmult(local_sol_x, local_rhs_x);
-        local_mass.vmult(local_sol_y, local_rhs_y);
-
-        // Distribute to global vectors
-        cell_M->get_dof_indices(local_dof_indices);
-        for (unsigned int i = 0; i < dofs_per_cell_M; ++i)
-        {
-            if (M_locally_owned_.is_element(local_dof_indices[i]))
-            {
-                Mx_solution_[local_dof_indices[i]] = local_sol_x(i);
-                My_solution_[local_dof_indices[i]] = local_sol_y(i);
-            }
-        }
-    }
-
-    Mx_solution_.compress(dealii::VectorOperation::insert);
-    My_solution_.compress(dealii::VectorOperation::insert);
-
-    // Update ghosted vectors
-    Mx_relevant_ = Mx_solution_;
-    My_relevant_ = My_solution_;
-}
+// (Old solve_poisson, solve_magnetization, project_equilibrium_magnetization
+//  have been replaced by the monolithic solve_magnetics() above)
 
 // ============================================================================
 // solve_ns() - Navier-Stokes solver with Kelvin force

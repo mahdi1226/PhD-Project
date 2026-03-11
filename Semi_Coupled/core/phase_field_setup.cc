@@ -1,25 +1,17 @@
 // ============================================================================
 // core/phase_field_setup.cc - Setup Methods (PARALLEL)
 //
-// OPTIMIZED VERSION:
-//   - Cached magnetization assembler/solver (avoid recreation each timestep)
-//   - Follows Poisson pattern for caching
-//
 // All subsystems use free functions from setup/*.h
 // CH uses DynamicSparsityPattern for MPI-safe parallel sparsity
+// Magnetics uses monolithic M+phi block system (no Picard iteration)
 //
 // Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
 // ============================================================================
 
 #include "core/phase_field.h"
 #include "setup/ch_setup.h"
-#include "setup/poisson_setup.h"
-#include "setup/magnetization_setup.h"
+#include "setup/magnetic_setup.h"
 #include "setup/ns_setup.h"
-#include "solvers/ns_solver.h"
-#include "assembly/poisson_assembler.h"
-#include "assembly/magnetization_assembler.h"
-#include "solvers/magnetization_solver.h"
 #include "solvers/ns_solver.h"
 
 #include <deal.II/grid/grid_generator.h>
@@ -28,6 +20,7 @@
 #include <deal.II/dofs/dof_renumbering.h>
 #include <deal.II/numerics/vector_tools.h>
 #include <deal.II/lac/affine_constraints.h>
+#include <deal.II/fe/fe_system.h>
 
 #include <cmath>
 
@@ -47,6 +40,7 @@ PhaseFieldProblem<dim>::PhaseFieldProblem(const Parameters& params)
     , fe_DG_(params.fe.degree_magnetization)
     , theta_dof_handler_(triangulation_)
     , psi_dof_handler_(triangulation_)
+    , mag_dof_handler_(triangulation_)
     , phi_dof_handler_(triangulation_)
     , M_dof_handler_(triangulation_)
     , ux_dof_handler_(triangulation_)
@@ -54,11 +48,16 @@ PhaseFieldProblem<dim>::PhaseFieldProblem(const Parameters& params)
     , p_dof_handler_(triangulation_)
     , time_(params.mms_t_init)
     , timestep_number_(0)
-    , last_picard_iterations_(0)
-    , last_picard_residual_(0.0)
     , last_bgs_iterations_(0)
     , last_bgs_residual_(0.0)
 {
+    // Create FESystem for monolithic magnetics: FE_DGQ(deg_M)^dim + FE_Q(deg_phi)
+    if (params_.enable_magnetic)
+    {
+        fe_mag_ = std::make_unique<dealii::FESystem<dim>>(
+            dealii::FE_DGQ<dim>(params.fe.degree_magnetization), dim,
+            dealii::FE_Q<dim>(params.fe.degree_potential), 1);
+    }
 }
 
 // ============================================================================
@@ -118,7 +117,6 @@ void PhaseFieldProblem<dim>::setup_dof_handlers()
     psi_dof_handler_.distribute_dofs(fe_Q2_);
 
     // Cuthill-McKee renumbering for CG DoFHandlers (reduces matrix bandwidth)
-    // Only applied to CG handlers; DG (M, p) has cell-local support → CM has no benefit
     if (params_.renumber_dofs)
     {
         dealii::DoFRenumbering::Cuthill_McKee(theta_dof_handler_);
@@ -131,25 +129,23 @@ void PhaseFieldProblem<dim>::setup_dof_handlers()
     psi_locally_owned_ = psi_dof_handler_.locally_owned_dofs();
     psi_locally_relevant_ = dealii::DoFTools::extract_locally_relevant_dofs(psi_dof_handler_);
 
-    // Poisson (φ)
+    // Monolithic Magnetics (M + φ) using FESystem
     if (params_.enable_magnetic)
     {
+        mag_dof_handler_.distribute_dofs(*fe_mag_);
+        // component_wise is REQUIRED before setup_magnetic_system
+        // (identifies phi DoF range for nullspace pinning)
+        dealii::DoFRenumbering::component_wise(mag_dof_handler_);
+
+        mag_locally_owned_ = mag_dof_handler_.locally_owned_dofs();
+        mag_locally_relevant_ = dealii::DoFTools::extract_locally_relevant_dofs(mag_dof_handler_);
+
+        // Auxiliary scalar DoFHandlers for NS assembly, output, diagnostics
+        // These produce separate solution vectors that downstream code expects
         phi_dof_handler_.distribute_dofs(fe_Q2_);
-        if (params_.renumber_dofs)
-        {
-            dealii::DoFRenumbering::Cuthill_McKee(phi_dof_handler_);
-            pcout_ << "[Setup] Cuthill-McKee renumbering applied to φ\n";
-        }
         phi_locally_owned_ = phi_dof_handler_.locally_owned_dofs();
         phi_locally_relevant_ = dealii::DoFTools::extract_locally_relevant_dofs(phi_dof_handler_);
-    }
 
-    // Magnetization (M) - single DoFHandler for DG
-    // Always set up when magnetic is enabled: needed for Kelvin force B_h^m
-    // and L2 projection M = χ(θ)∇Φ (Paper Eq. 42d)
-    // NOTE: DG DoFHandlers skip CM renumbering (cell-local, no inter-element coupling)
-    if (params_.enable_magnetic)
-    {
         M_dof_handler_.distribute_dofs(fe_DG_);
         M_locally_owned_ = M_dof_handler_.locally_owned_dofs();
         M_locally_relevant_ = dealii::DoFTools::extract_locally_relevant_dofs(M_dof_handler_);
@@ -160,14 +156,7 @@ void PhaseFieldProblem<dim>::setup_dof_handlers()
     {
         ux_dof_handler_.distribute_dofs(fe_Q2_);
         uy_dof_handler_.distribute_dofs(fe_Q2_);
-        // PAPER REQUIREMENT (A1): DG pressure for element-local incompressibility
-        // This ensures (Q, div U^k)_T = 0 for each element T (Eq. 70)
-        // Also satisfies M_h = [P_h]^d (A2) since magnetization uses same fe_DG_
         p_dof_handler_.distribute_dofs(fe_DG_);
-
-        // NOTE: Do NOT apply CM to individual ux/uy handlers.
-        // The monolithic NS system uses node-wise interleaving instead,
-        // which is far more effective (see setup_ns_coupled_system_parallel).
 
         ux_locally_owned_ = ux_dof_handler_.locally_owned_dofs();
         ux_locally_relevant_ = dealii::DoFTools::extract_locally_relevant_dofs(ux_dof_handler_);
@@ -179,9 +168,9 @@ void PhaseFieldProblem<dim>::setup_dof_handlers()
 
     pcout_ << "[Setup] DoFs: θ=" << theta_dof_handler_.n_dofs();
     if (params_.enable_magnetic)
-        pcout_ << ", φ=" << phi_dof_handler_.n_dofs();
-    if (params_.enable_magnetic)
-        pcout_ << ", M=" << M_dof_handler_.n_dofs();
+        pcout_ << ", mag(M+φ)=" << mag_dof_handler_.n_dofs()
+               << " (M=" << M_dof_handler_.n_dofs()
+               << ", φ=" << phi_dof_handler_.n_dofs() << ")";
     if (params_.enable_ns)
         pcout_ << ", ux=" << ux_dof_handler_.n_dofs()
                << ", p=" << p_dof_handler_.n_dofs();
@@ -229,7 +218,6 @@ void PhaseFieldProblem<dim>::setup_ch_system()
     psi_constraints_.close();
 
     // Use the MPI-safe CH setup (DynamicSparsityPattern + distribute_sparsity_pattern)
-    // This builds: index maps, combined constraints, sparsity pattern, and matrix
     setup_ch_coupled_system<dim>(
         theta_dof_handler_, psi_dof_handler_,
         theta_constraints_, psi_constraints_,
@@ -254,84 +242,144 @@ void PhaseFieldProblem<dim>::setup_ch_system()
 }
 
 // ============================================================================
-// setup_poisson_system()
-// ============================================================================
-template <int dim>
-void PhaseFieldProblem<dim>::setup_poisson_system()
-{
-    setup_poisson_constraints_and_sparsity<dim>(
-        phi_dof_handler_,
-        phi_locally_owned_,
-        phi_locally_relevant_,
-        phi_constraints_,
-        phi_matrix_,
-        mpi_communicator_,
-        pcout_);
-
-    phi_rhs_.reinit(phi_locally_owned_, mpi_communicator_);
-    phi_solution_.reinit(phi_locally_owned_, mpi_communicator_);
-    phi_relevant_.reinit(phi_locally_owned_, phi_locally_relevant_, mpi_communicator_);
-
-    // OPTIMIZATION: Assemble Laplacian matrix ONCE (it's constant)
-    assemble_poisson_matrix<dim>(phi_dof_handler_, phi_constraints_, phi_matrix_);
-
-    // OPTIMIZATION: Initialize solver with cached AMG preconditioner
-    poisson_solver_ = std::make_unique<PoissonSolver>(
-        params_.solvers.poisson, phi_locally_owned_, mpi_communicator_);
-    poisson_solver_->initialize(phi_matrix_);
-}
-
-// ============================================================================
-// setup_magnetization_system()
+// setup_magnetic_system() - Monolithic M+phi block system
 //
-// OPTIMIZED: Creates cached assembler and solver that persist across timesteps
+// Replaces old separate setup_poisson_system() + setup_magnetization_system()
+// No Picard iteration needed — single monolithic solve.
 // ============================================================================
 template <int dim>
-void PhaseFieldProblem<dim>::setup_magnetization_system()
+void PhaseFieldProblem<dim>::setup_magnetic_system()
 {
-    M_constraints_.clear();
-    M_constraints_.reinit(M_locally_owned_, M_locally_relevant_);
-    M_constraints_.close();
-
-    setup_magnetization_sparsity<dim>(
-        M_dof_handler_,
-        M_locally_owned_,
-        M_locally_relevant_,
-        M_matrix_,
+    // Step 1: Constraints and sparsity for the monolithic system
+    // Call the free function from setup/magnetic_setup.h
+    ::setup_magnetic_system<dim>(
+        mag_dof_handler_,
+        mag_locally_owned_,
+        mag_locally_relevant_,
+        mag_constraints_,
+        mag_matrix_,
         mpi_communicator_,
         pcout_);
 
-    Mx_rhs_.reinit(M_locally_owned_, mpi_communicator_);
-    My_rhs_.reinit(M_locally_owned_, mpi_communicator_);
+    // Step 2: Initialize monolithic vectors
+    mag_rhs_.reinit(mag_locally_owned_, mpi_communicator_);
+    mag_solution_.reinit(mag_locally_owned_, mpi_communicator_);
+
+    mag_relevant_.reinit(mag_locally_owned_, mag_locally_relevant_, mpi_communicator_);
+
+    // Step 3: Initialize auxiliary vectors for NS assembly / output / diagnostics
+    phi_solution_.reinit(phi_locally_owned_, mpi_communicator_);
     Mx_solution_.reinit(M_locally_owned_, mpi_communicator_);
     My_solution_.reinit(M_locally_owned_, mpi_communicator_);
-    Mx_old_solution_.reinit(M_locally_owned_, mpi_communicator_);
-    My_old_solution_.reinit(M_locally_owned_, mpi_communicator_);
 
+    phi_relevant_.reinit(phi_locally_owned_, phi_locally_relevant_, mpi_communicator_);
     Mx_relevant_.reinit(M_locally_owned_, M_locally_relevant_, mpi_communicator_);
     My_relevant_.reinit(M_locally_owned_, M_locally_relevant_, mpi_communicator_);
 
-    // ========================================================================
-    // OPTIMIZATION: Create cached assembler (avoids recreation each timestep)
-    // ========================================================================
-    magnetization_assembler_ = std::make_unique<MagnetizationAssembler<dim>>(
+    // Step 4: Create cached assembler
+    magnetic_assembler_ = std::make_unique<MagneticAssembler<dim>>(
         params_,
-        M_dof_handler_,
+        mag_dof_handler_,
         ux_dof_handler_,
-        phi_dof_handler_,
         theta_dof_handler_,
+        mag_constraints_,
         mpi_communicator_);
 
-    // ========================================================================
-    // OPTIMIZATION: Create cached solver (avoids recreation each timestep)
-    // The solver will cache MUMPS factorization between Mx/My solves
-    // ========================================================================
-    magnetization_solver_ = std::make_unique<MagnetizationSolver<dim>>(
-        params_.solvers.magnetization,
-        M_locally_owned_,
+    // Step 5: Create cached solver
+    magnetic_solver_ = std::make_unique<MagneticSolver<dim>>(
+        mag_locally_owned_,
         mpi_communicator_);
 
-    pcout_ << "[Magnetization Setup] Cached assembler and solver initialized\n";
+    pcout_ << "[Magnetic Setup] Monolithic M+φ system initialized\n";
+}
+
+// ============================================================================
+// extract_magnetic_components() - Extract Mx, My, phi from mag_solution_
+//
+// After component_wise renumbering, the monolithic solution vector has:
+//   [0, n_Mx): Mx DoFs
+//   [n_Mx, n_Mx+n_My): My DoFs
+//   [n_Mx+n_My, n_total): phi DoFs
+//
+// Cell-by-cell extraction maps from FESystem global indices to scalar global
+// indices on the auxiliary DoFHandlers.
+// ============================================================================
+template <int dim>
+void PhaseFieldProblem<dim>::extract_magnetic_components()
+{
+    const auto& fe = mag_dof_handler_.get_fe();
+    const unsigned int dofs_per_cell = fe.n_dofs_per_cell();
+
+    // Get scalar DoFs per cell for M and phi
+    const unsigned int M_dofs_per_cell = M_dof_handler_.get_fe().n_dofs_per_cell();
+    const unsigned int phi_dofs_per_cell = phi_dof_handler_.get_fe().n_dofs_per_cell();
+
+    std::vector<dealii::types::global_dof_index> mag_indices(dofs_per_cell);
+    std::vector<dealii::types::global_dof_index> M_indices(M_dofs_per_cell);
+    std::vector<dealii::types::global_dof_index> phi_indices(phi_dofs_per_cell);
+
+    // Precompute: for each FESystem local DoF, which component and local-within-component?
+    // system_to_component_index(i) = (component, index_within_component)
+    std::vector<unsigned int> comp_idx(dofs_per_cell);
+    std::vector<unsigned int> within_comp_idx(dofs_per_cell);
+    for (unsigned int i = 0; i < dofs_per_cell; ++i)
+    {
+        const auto ci = fe.system_to_component_index(i);
+        comp_idx[i] = ci.first;
+        within_comp_idx[i] = ci.second;
+    }
+
+    // Iterate cells in sync across all three DoFHandlers
+    auto cell_mag = mag_dof_handler_.begin_active();
+    auto cell_M = M_dof_handler_.begin_active();
+    auto cell_phi = phi_dof_handler_.begin_active();
+
+    for (; cell_mag != mag_dof_handler_.end(); ++cell_mag, ++cell_M, ++cell_phi)
+    {
+        if (!cell_mag->is_locally_owned())
+            continue;
+
+        cell_mag->get_dof_indices(mag_indices);
+        cell_M->get_dof_indices(M_indices);
+        cell_phi->get_dof_indices(phi_indices);
+
+        for (unsigned int i = 0; i < dofs_per_cell; ++i)
+        {
+            const unsigned int comp = comp_idx[i];
+            const unsigned int local_idx = within_comp_idx[i];
+            const auto global_mag_idx = mag_indices[i];
+
+            if (!mag_locally_owned_.is_element(global_mag_idx))
+                continue;
+
+            const double val = mag_solution_[global_mag_idx];
+
+            if (comp == 0)  // Mx
+            {
+                if (M_locally_owned_.is_element(M_indices[local_idx]))
+                    Mx_solution_[M_indices[local_idx]] = val;
+            }
+            else if (comp == 1)  // My
+            {
+                if (M_locally_owned_.is_element(M_indices[local_idx]))
+                    My_solution_[M_indices[local_idx]] = val;
+            }
+            else  // phi (comp == dim)
+            {
+                if (phi_locally_owned_.is_element(phi_indices[local_idx]))
+                    phi_solution_[phi_indices[local_idx]] = val;
+            }
+        }
+    }
+
+    Mx_solution_.compress(dealii::VectorOperation::insert);
+    My_solution_.compress(dealii::VectorOperation::insert);
+    phi_solution_.compress(dealii::VectorOperation::insert);
+
+    // Update ghosted vectors
+    Mx_relevant_ = Mx_solution_;
+    My_relevant_ = My_solution_;
+    phi_relevant_ = phi_solution_;
 }
 
 // ============================================================================
@@ -358,11 +406,8 @@ void PhaseFieldProblem<dim>::setup_ns_system()
     uy_constraints_.close();
 
     // Pressure constraints for DG pressure (Paper requirement A1)
-    // DG elements have no hanging node constraints (no inter-element continuity)
-    // Pin DoF 0 to fix pressure constant (null space of pure Neumann problem)
     p_constraints_.clear();
     p_constraints_.reinit(p_locally_owned_, p_locally_relevant_);
-    // NO hanging node constraints for DG!
     if (p_locally_owned_.is_element(0))
     {
         p_constraints_.add_line(0);
@@ -433,8 +478,6 @@ void PhaseFieldProblem<dim>::initialize_solutions()
         double value(const dealii::Point<dim>& p, unsigned int = 0) const override
         {
             const double dist = std::sqrt(std::pow(p[0] - cx_, 2) + std::pow(p[1] - cy_, 2));
-            // Inside droplet (dist < r) -> theta = +1 (ferrofluid)
-            // Outside droplet (dist > r) -> theta = -1 (non-magnetic)
             return -std::tanh((dist - r_) / (std::sqrt(2.0) * eps_));
         }
     };
@@ -448,11 +491,7 @@ void PhaseFieldProblem<dim>::initialize_solutions()
             : dealii::Function<dim>(1), cx_(cx), cy_(cy), r_(r), eps_(e) {}
         double value(const dealii::Point<dim>& p, unsigned int = 0) const override
         {
-            // L1 norm distance for diamond shape
             const double dist = std::abs(p[0] - cx_) + std::abs(p[1] - cy_);
-
-            // Inside diamond (dist < r) -> theta = +1
-            // Outside diamond (dist > r) -> theta = -1
             return -std::tanh((dist - r_) / (std::sqrt(2.0) * eps_));
         }
     };
@@ -503,10 +542,16 @@ void PhaseFieldProblem<dim>::initialize_solutions()
 
     if (params_.enable_magnetic)
     {
+        mag_solution_ = 0;
+        mag_relevant_ = 0;
+
+        // Also zero the extracted component vectors
         Mx_solution_ = 0;
         My_solution_ = 0;
-        Mx_old_solution_ = 0;
-        My_old_solution_ = 0;
+        phi_solution_ = 0;
+        Mx_relevant_ = 0;
+        My_relevant_ = 0;
+        phi_relevant_ = 0;
     }
 
     if (params_.enable_ns)

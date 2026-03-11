@@ -39,18 +39,15 @@ set(FERROFLUID_SOURCES
         core/phase_field_amr.cc
 
         assembly/ch_assembler.cc
-        assembly/poisson_assembler.cc
-        assembly/magnetization_assembler.cc
+        assembly/magnetic_assembler.cc
         assembly/ns_assembler.cc
 
         setup/ch_setup.cc
-        setup/poisson_setup.cc
-        setup/magnetization_setup.cc
+        setup/magnetic_setup.cc
         setup/ns_setup.cc
 
         solvers/ch_solver.cc
-        solvers/poisson_solver.cc
-        solvers/magnetization_solver.cc
+        solvers/magnetic_solver.cc
         solvers/ns_solver.cc
         solvers/ns_block_preconditioner.cc
 
@@ -78,35 +75,29 @@ set(MMS_TEST_SOURCES
 
         # Standalone subsystem tests
         mms/ch/ch_mms_test.cc
-        mms/poisson/poisson_mms_test.cc
         mms/ns/ns_mms_test.cc
-        mms/magnetization/magnetization_mms_test.cc
+        mms/magnetic/magnetic_mms_test.cc
 
-        # Coupled MMS tests
-        mms/coupled/poisson_mag_mms_test.cc
-        mms/coupled/ch_ns_mms_test.cc
-        mms/coupled/ns_poisson_mag_mms_test.cc
-        mms/coupled/ns_magnetization_mms_test.cc
-        mms/coupled/mag_ch_mms_test.cc
+        # Coupled MMS tests (paper's algorithm order)
+        mms/coupled/ch_magnetic_mms_test.cc
+        mms/coupled/magnetic_ns_mms_test.cc
+        mms/coupled/ns_ch_mms_test.cc
         mms/coupled/coupled_mms_test.cc
         mms/coupled/full_system_mms_test.cc
 
         # Production assembly (used by MMS tests)
         assembly/ch_assembler.cc
-        assembly/poisson_assembler.cc
-        assembly/magnetization_assembler.cc
+        assembly/magnetic_assembler.cc
         assembly/ns_assembler.cc
 
         # Production setup (used by MMS tests)
         setup/ch_setup.cc
-        setup/poisson_setup.cc
-        setup/magnetization_setup.cc
+        setup/magnetic_setup.cc
         setup/ns_setup.cc
 
         # Production solvers (used by MMS tests)
         solvers/ch_solver.cc
-        solvers/poisson_solver.cc
-        solvers/magnetization_solver.cc
+        solvers/magnetic_solver.cc
         solvers/ns_solver.cc
         solvers/ns_block_preconditioner.cc
 
@@ -172,14 +163,13 @@ message(STATUS "  mpirun -np 4 ./ferrofluid --help")
 message(STATUS "")
 message(STATUS "Run MMS tests (standalone):")
 message(STATUS "  mpirun -np 4 ./parallel_test_mms --level CH_STANDALONE --refs 3 4 5")
-message(STATUS "  mpirun -np 4 ./parallel_test_mms --level POISSON_STANDALONE --refs 3 4 5")
 message(STATUS "  mpirun -np 4 ./parallel_test_mms --level NS_STANDALONE --refs 3 4 5")
-message(STATUS "  mpirun -np 4 ./parallel_test_mms --level MAGNETIZATION_STANDALONE --refs 3 4 5")
+message(STATUS "  mpirun -np 4 ./parallel_test_mms --level MAGNETIC_STANDALONE --refs 3 4 5 --steps 10")
 message(STATUS "")
 message(STATUS "Run MMS tests (coupled):")
-message(STATUS "  mpirun -np 4 ./parallel_test_mms --level POISSON_MAGNETIZATION --refs 3 4 5 --steps 50")
-message(STATUS "  mpirun -np 4 ./parallel_test_mms --level CH_NS --refs 3 4 5 --steps 50")
-message(STATUS "  mpirun -np 4 ./parallel_test_mms --level MAG_CH --refs 3 4 5 --steps 50")
+message(STATUS "  mpirun -np 4 ./parallel_test_mms --level CH_MAGNETIC --refs 3 4 5 --steps 50")
+message(STATUS "  mpirun -np 4 ./parallel_test_mms --level MAGNETIC_NS --refs 3 4 5 --steps 50")
+message(STATUS "  mpirun -np 4 ./parallel_test_mms --level NS_CH --refs 3 4 5 --steps 50")
 message(STATUS "")
 message(STATUS "Run MMS tests (temporal convergence):")
 message(STATUS "  mpirun -np 4 ./parallel_test_mms --level CH_TEMPORAL --temporal-ref 5")

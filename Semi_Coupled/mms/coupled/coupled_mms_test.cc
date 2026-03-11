@@ -2,14 +2,10 @@
 // mms/coupled/coupled_mms_test.cc - CoupledMMSConvergenceResult Implementation
 //
 // Unified implementation for ALL coupled MMS tests:
-//   - CH_NS: Phase advection by velocity
-//   - POISSON_MAGNETIZATION: φ ↔ M Picard iteration
-//   - NS_MAGNETIZATION: NS with Kelvin force (M, H given)
-//   - NS_POISSON_MAG: 3-way coupling (φ ↔ M Picard, then NS with Kelvin)
-//   - FULL_SYSTEM: All four subsystems coupled
-//
-// This file should REPLACE the implementations currently scattered in
-// poisson_mag_mms_test.cc. Include this file in your build instead.
+//   CH_MAGNETIC:   CH → χ(θ) → Monolithic M+φ
+//   MAGNETIC_NS:   Monolithic M+φ → Kelvin force → NS
+//   NS_CH:         NS → advection → CH
+//   FULL_SYSTEM:   All subsystems coupled
 //
 // Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
 // ============================================================================
@@ -25,19 +21,17 @@
 #include <cmath>
 
 // ============================================================================
-// to_string for CoupledMMSLevel - ALL LEVELS
+// to_string for CoupledMMSLevel
 // ============================================================================
 std::string to_string(CoupledMMSLevel level)
 {
     switch (level)
     {
-    case CoupledMMSLevel::CH_NS:                 return "CH_NS";
-    case CoupledMMSLevel::POISSON_MAGNETIZATION: return "POISSON_MAGNETIZATION";
-    case CoupledMMSLevel::NS_MAGNETIZATION:      return "NS_MAGNETIZATION";
-    case CoupledMMSLevel::NS_POISSON_MAG:        return "NS_POISSON_MAG";
-    case CoupledMMSLevel::MAG_CH:                return "MAG_CH";
-    case CoupledMMSLevel::FULL_SYSTEM:           return "FULL_SYSTEM";
-    default:                                     return "UNKNOWN";
+    case CoupledMMSLevel::CH_MAGNETIC:  return "CH_MAGNETIC";
+    case CoupledMMSLevel::MAGNETIC_NS:  return "MAGNETIC_NS";
+    case CoupledMMSLevel::NS_CH:        return "NS_CH";
+    case CoupledMMSLevel::FULL_SYSTEM:  return "FULL_SYSTEM";
+    default:                            return "UNKNOWN";
     }
 }
 
@@ -64,6 +58,7 @@ void CoupledMMSConvergenceResult::compute_rates()
     phi_L2_rate.resize(n, 0.0);
     phi_H1_rate.resize(n, 0.0);
     M_L2_rate.resize(n, 0.0);
+    M_H1_rate.resize(n, 0.0);
     theta_Linf_rate.resize(n, 0.0);
     ux_Linf_rate.resize(n, 0.0);
     p_Linf_rate.resize(n, 0.0);
@@ -83,6 +78,7 @@ void CoupledMMSConvergenceResult::compute_rates()
         phi_L2_rate[i] = compute_rate(fine.phi_L2, coarse.phi_L2, fine.h, coarse.h);
         phi_H1_rate[i] = compute_rate(fine.phi_H1, coarse.phi_H1, fine.h, coarse.h);
         M_L2_rate[i] = compute_rate(fine.M_L2, coarse.M_L2, fine.h, coarse.h);
+        M_H1_rate[i] = compute_rate(fine.M_H1, coarse.M_H1, fine.h, coarse.h);
         theta_Linf_rate[i] = compute_rate(fine.theta_Linf, coarse.theta_Linf, fine.h, coarse.h);
         ux_Linf_rate[i] = compute_rate(fine.ux_Linf, coarse.ux_Linf, fine.h, coarse.h);
         p_Linf_rate[i] = compute_rate(fine.p_Linf, coarse.p_Linf, fine.h, coarse.h);
@@ -108,38 +104,30 @@ bool CoupledMMSConvergenceResult::passes(double tol) const
     {
         switch (level)
         {
-        case CoupledMMSLevel::CH_NS:
+        case CoupledMMSLevel::CH_MAGNETIC:
+            // CH → Magnetic: θ, M, φ all solved
+            if (theta_L2_rate[i] < L2_min) pass = false;
+            if (theta_H1_rate[i] < H1_min) pass = false;
+            if (phi_L2_rate[i] < L2_min) pass = false;
+            if (phi_H1_rate[i] < H1_min) pass = false;
+            if (M_L2_rate[i] < DG_min) pass = false;
+            break;
+
+        case CoupledMMSLevel::MAGNETIC_NS:
+            // Magnetic → NS: M, φ, U solved; p skipped (projection method O(dt) dominates)
+            if (ux_L2_rate[i] < L2_min) pass = false;
+            if (ux_H1_rate[i] < H1_min) pass = false;
+            if (phi_L2_rate[i] < L2_min) pass = false;
+            if (phi_H1_rate[i] < H1_min) pass = false;
+            if (M_L2_rate[i] < DG_min) pass = false;
+            break;
+
+        case CoupledMMSLevel::NS_CH:
+            // NS → CH: θ, U, p all solved
             if (theta_L2_rate[i] < L2_min) pass = false;
             if (theta_H1_rate[i] < H1_min) pass = false;
             if (ux_L2_rate[i] < L2_min) pass = false;
             if (ux_H1_rate[i] < H1_min) pass = false;
-            break;
-
-        case CoupledMMSLevel::POISSON_MAGNETIZATION:
-            if (phi_L2_rate[i] < L2_min) pass = false;
-            if (phi_H1_rate[i] < H1_min) pass = false;
-            if (M_L2_rate[i] < DG_min) pass = false;
-            break;
-
-        case CoupledMMSLevel::NS_MAGNETIZATION:
-            // NS solved, M/φ are exact (interpolated)
-            if (ux_L2_rate[i] < L2_min) pass = false;
-            if (ux_H1_rate[i] < H1_min) pass = false;
-            if (p_L2_rate[i] < P_min) pass = false;
-            break;
-
-        case CoupledMMSLevel::NS_POISSON_MAG:
-            // All three solved: NS + Poisson + Magnetization
-            if (ux_L2_rate[i] < L2_min) pass = false;
-            if (ux_H1_rate[i] < H1_min) pass = false;
-            if (p_L2_rate[i] < P_min) pass = false;
-            if (phi_L2_rate[i] < L2_min) pass = false;
-            if (phi_H1_rate[i] < H1_min) pass = false;
-            if (M_L2_rate[i] < DG_min) pass = false;
-            break;
-
-        case CoupledMMSLevel::MAG_CH:
-            if (M_L2_rate[i] < DG_min) pass = false;
             break;
 
         case CoupledMMSLevel::FULL_SYSTEM:
@@ -171,13 +159,13 @@ void CoupledMMSConvergenceResult::print() const
     std::cout << "========================================\n";
 
     // -------------------------------------------------------------------------
-    // Poisson table (POISSON_MAGNETIZATION, NS_POISSON_MAG, FULL_SYSTEM)
+    // Magnetic (φ) table
     // -------------------------------------------------------------------------
-    if (level == CoupledMMSLevel::POISSON_MAGNETIZATION ||
-        level == CoupledMMSLevel::NS_POISSON_MAG ||
+    if (level == CoupledMMSLevel::CH_MAGNETIC ||
+        level == CoupledMMSLevel::MAGNETIC_NS ||
         level == CoupledMMSLevel::FULL_SYSTEM)
     {
-        std::cout << "\n--- Poisson Errors ---\n";
+        std::cout << "\n--- Magnetic Potential (φ) Errors ---\n";
         std::cout << std::setw(5) << "Ref"
                   << std::setw(12) << "h"
                   << std::setw(12) << "φ_L2"
@@ -202,21 +190,22 @@ void CoupledMMSConvergenceResult::print() const
     }
 
     // -------------------------------------------------------------------------
-    // Magnetization table (POISSON_MAGNETIZATION, NS_POISSON_MAG, MAG_CH, FULL_SYSTEM)
+    // Magnetization (M) table
     // -------------------------------------------------------------------------
-    if (level == CoupledMMSLevel::POISSON_MAGNETIZATION ||
-        level == CoupledMMSLevel::NS_POISSON_MAG ||
-        level == CoupledMMSLevel::MAG_CH ||
+    if (level == CoupledMMSLevel::CH_MAGNETIC ||
+        level == CoupledMMSLevel::MAGNETIC_NS ||
         level == CoupledMMSLevel::FULL_SYSTEM)
     {
-        std::cout << "\n--- Magnetization Errors ---\n";
+        std::cout << "\n--- Magnetization (M) Errors ---\n";
         std::cout << std::setw(5) << "Ref"
                   << std::setw(12) << "h"
                   << std::setw(12) << "M_L2"
                   << std::setw(8) << "rate"
                   << std::setw(12) << "M_L∞"
+                  << std::setw(8) << "rate"
+                  << std::setw(12) << "M_H1"
                   << std::setw(8) << "rate" << "\n";
-        std::cout << std::string(57, '-') << "\n";
+        std::cout << std::string(77, '-') << "\n";
 
         for (size_t i = 0; i < results.size(); ++i)
         {
@@ -225,15 +214,17 @@ void CoupledMMSConvergenceResult::print() const
                       << std::setw(12) << results[i].M_L2
                       << std::setw(8) << std::fixed << std::setprecision(2) << M_L2_rate[i]
                       << std::setw(12) << std::scientific << results[i].M_Linf
-                      << std::setw(8) << std::fixed << std::setprecision(2) << M_Linf_rate[i] << "\n";
+                      << std::setw(8) << std::fixed << std::setprecision(2) << M_Linf_rate[i]
+                      << std::setw(12) << std::scientific << results[i].M_H1
+                      << std::setw(8) << std::fixed << M_H1_rate[i] << "\n";
         }
     }
 
     // -------------------------------------------------------------------------
-    // CH table (CH_NS, MAG_CH, FULL_SYSTEM)
+    // CH table
     // -------------------------------------------------------------------------
-    if (level == CoupledMMSLevel::CH_NS ||
-        level == CoupledMMSLevel::MAG_CH ||
+    if (level == CoupledMMSLevel::CH_MAGNETIC ||
+        level == CoupledMMSLevel::NS_CH ||
         level == CoupledMMSLevel::FULL_SYSTEM)
     {
         std::cout << "\n--- Cahn-Hilliard Errors ---\n";
@@ -261,11 +252,10 @@ void CoupledMMSConvergenceResult::print() const
     }
 
     // -------------------------------------------------------------------------
-    // NS table (CH_NS, NS_MAGNETIZATION, NS_POISSON_MAG, FULL_SYSTEM)
+    // NS table
     // -------------------------------------------------------------------------
-    if (level == CoupledMMSLevel::CH_NS ||
-        level == CoupledMMSLevel::NS_MAGNETIZATION ||
-        level == CoupledMMSLevel::NS_POISSON_MAG ||
+    if (level == CoupledMMSLevel::MAGNETIC_NS ||
+        level == CoupledMMSLevel::NS_CH ||
         level == CoupledMMSLevel::FULL_SYSTEM)
     {
         std::cout << "\n--- Navier-Stokes Errors ---\n";
@@ -333,32 +323,23 @@ void CoupledMMSConvergenceResult::write_csv(const std::string& filename) const
 
     switch (level)
     {
-    case CoupledMMSLevel::CH_NS:
+    case CoupledMMSLevel::CH_MAGNETIC:
         file << ",theta_L2,theta_L2_rate,theta_Linf,theta_Linf_rate,theta_H1,theta_H1_rate"
-             << ",ux_L2,ux_L2_rate,ux_Linf,ux_Linf_rate,ux_H1,ux_H1_rate"
-             << ",p_L2,p_L2_rate,p_Linf,p_Linf_rate";
+             << ",phi_L2,phi_L2_rate,phi_Linf,phi_Linf_rate,phi_H1,phi_H1_rate"
+             << ",M_L2,M_L2_rate,M_Linf,M_Linf_rate,M_H1,M_H1_rate";
         break;
 
-    case CoupledMMSLevel::POISSON_MAGNETIZATION:
-        file << ",phi_L2,phi_L2_rate,phi_Linf,phi_Linf_rate,phi_H1,phi_H1_rate"
-             << ",M_L2,M_L2_rate,M_Linf,M_Linf_rate";
-        break;
-
-    case CoupledMMSLevel::NS_MAGNETIZATION:
-        file << ",ux_L2,ux_L2_rate,ux_Linf,ux_Linf_rate,ux_H1,ux_H1_rate"
-             << ",p_L2,p_L2_rate,p_Linf,p_Linf_rate";
-        break;
-
-    case CoupledMMSLevel::NS_POISSON_MAG:
+    case CoupledMMSLevel::MAGNETIC_NS:
         file << ",ux_L2,ux_L2_rate,ux_Linf,ux_Linf_rate,ux_H1,ux_H1_rate"
              << ",p_L2,p_L2_rate,p_Linf,p_Linf_rate"
              << ",phi_L2,phi_L2_rate,phi_Linf,phi_Linf_rate,phi_H1,phi_H1_rate"
-             << ",M_L2,M_L2_rate,M_Linf,M_Linf_rate";
+             << ",M_L2,M_L2_rate,M_Linf,M_Linf_rate,M_H1,M_H1_rate";
         break;
 
-    case CoupledMMSLevel::MAG_CH:
+    case CoupledMMSLevel::NS_CH:
         file << ",theta_L2,theta_L2_rate,theta_Linf,theta_Linf_rate,theta_H1,theta_H1_rate"
-             << ",M_L2,M_L2_rate,M_Linf,M_Linf_rate";
+             << ",ux_L2,ux_L2_rate,ux_Linf,ux_Linf_rate,ux_H1,ux_H1_rate"
+             << ",p_L2,p_L2_rate,p_Linf,p_Linf_rate";
         break;
 
     case CoupledMMSLevel::FULL_SYSTEM:
@@ -366,7 +347,7 @@ void CoupledMMSConvergenceResult::write_csv(const std::string& filename) const
              << ",ux_L2,ux_L2_rate,ux_Linf,ux_Linf_rate,ux_H1,ux_H1_rate"
              << ",p_L2,p_L2_rate,p_Linf,p_Linf_rate"
              << ",phi_L2,phi_L2_rate,phi_Linf,phi_Linf_rate,phi_H1,phi_H1_rate"
-             << ",M_L2,M_L2_rate,M_Linf,M_Linf_rate";
+             << ",M_L2,M_L2_rate,M_Linf,M_Linf_rate,M_H1,M_H1_rate";
         break;
 
     default:
@@ -386,28 +367,15 @@ void CoupledMMSConvergenceResult::write_csv(const std::string& filename) const
 
         switch (level)
         {
-        case CoupledMMSLevel::CH_NS:
+        case CoupledMMSLevel::CH_MAGNETIC:
             file << "," << std::scientific << r.theta_L2
                  << "," << std::fixed << std::setprecision(2) << theta_L2_rate[i]
                  << "," << std::scientific << r.theta_Linf
                  << "," << std::fixed << theta_Linf_rate[i]
                  << "," << std::scientific << r.theta_H1
                  << "," << std::fixed << theta_H1_rate[i]
-                 << "," << std::scientific << r.ux_L2
-                 << "," << std::fixed << ux_L2_rate[i]
-                 << "," << std::scientific << r.ux_Linf
-                 << "," << std::fixed << ux_Linf_rate[i]
-                 << "," << std::scientific << r.ux_H1
-                 << "," << std::fixed << ux_H1_rate[i]
-                 << "," << std::scientific << r.p_L2
-                 << "," << std::fixed << p_L2_rate[i]
-                 << "," << std::scientific << r.p_Linf
-                 << "," << std::fixed << p_Linf_rate[i];
-            break;
-
-        case CoupledMMSLevel::POISSON_MAGNETIZATION:
-            file << "," << std::scientific << r.phi_L2
-                 << "," << std::fixed << std::setprecision(2) << phi_L2_rate[i]
+                 << "," << std::scientific << r.phi_L2
+                 << "," << std::fixed << phi_L2_rate[i]
                  << "," << std::scientific << r.phi_Linf
                  << "," << std::fixed << phi_Linf_rate[i]
                  << "," << std::scientific << r.phi_H1
@@ -415,23 +383,12 @@ void CoupledMMSConvergenceResult::write_csv(const std::string& filename) const
                  << "," << std::scientific << r.M_L2
                  << "," << std::fixed << M_L2_rate[i]
                  << "," << std::scientific << r.M_Linf
-                 << "," << std::fixed << M_Linf_rate[i];
+                 << "," << std::fixed << M_Linf_rate[i]
+                 << "," << std::scientific << r.M_H1
+                 << "," << std::fixed << M_H1_rate[i];
             break;
 
-        case CoupledMMSLevel::NS_MAGNETIZATION:
-            file << "," << std::scientific << r.ux_L2
-                 << "," << std::fixed << std::setprecision(2) << ux_L2_rate[i]
-                 << "," << std::scientific << r.ux_Linf
-                 << "," << std::fixed << ux_Linf_rate[i]
-                 << "," << std::scientific << r.ux_H1
-                 << "," << std::fixed << ux_H1_rate[i]
-                 << "," << std::scientific << r.p_L2
-                 << "," << std::fixed << p_L2_rate[i]
-                 << "," << std::scientific << r.p_Linf
-                 << "," << std::fixed << p_Linf_rate[i];
-            break;
-
-        case CoupledMMSLevel::NS_POISSON_MAG:
+        case CoupledMMSLevel::MAGNETIC_NS:
             file << "," << std::scientific << r.ux_L2
                  << "," << std::fixed << std::setprecision(2) << ux_L2_rate[i]
                  << "," << std::scientific << r.ux_Linf
@@ -451,20 +408,28 @@ void CoupledMMSConvergenceResult::write_csv(const std::string& filename) const
                  << "," << std::scientific << r.M_L2
                  << "," << std::fixed << M_L2_rate[i]
                  << "," << std::scientific << r.M_Linf
-                 << "," << std::fixed << M_Linf_rate[i];
+                 << "," << std::fixed << M_Linf_rate[i]
+                 << "," << std::scientific << r.M_H1
+                 << "," << std::fixed << M_H1_rate[i];
             break;
 
-        case CoupledMMSLevel::MAG_CH:
+        case CoupledMMSLevel::NS_CH:
             file << "," << std::scientific << r.theta_L2
                  << "," << std::fixed << std::setprecision(2) << theta_L2_rate[i]
                  << "," << std::scientific << r.theta_Linf
                  << "," << std::fixed << theta_Linf_rate[i]
                  << "," << std::scientific << r.theta_H1
                  << "," << std::fixed << theta_H1_rate[i]
-                 << "," << std::scientific << r.M_L2
-                 << "," << std::fixed << M_L2_rate[i]
-                 << "," << std::scientific << r.M_Linf
-                 << "," << std::fixed << M_Linf_rate[i];
+                 << "," << std::scientific << r.ux_L2
+                 << "," << std::fixed << ux_L2_rate[i]
+                 << "," << std::scientific << r.ux_Linf
+                 << "," << std::fixed << ux_Linf_rate[i]
+                 << "," << std::scientific << r.ux_H1
+                 << "," << std::fixed << ux_H1_rate[i]
+                 << "," << std::scientific << r.p_L2
+                 << "," << std::fixed << p_L2_rate[i]
+                 << "," << std::scientific << r.p_Linf
+                 << "," << std::fixed << p_Linf_rate[i];
             break;
 
         case CoupledMMSLevel::FULL_SYSTEM:
@@ -493,7 +458,9 @@ void CoupledMMSConvergenceResult::write_csv(const std::string& filename) const
                  << "," << std::scientific << r.M_L2
                  << "," << std::fixed << M_L2_rate[i]
                  << "," << std::scientific << r.M_Linf
-                 << "," << std::fixed << M_Linf_rate[i];
+                 << "," << std::fixed << M_Linf_rate[i]
+                 << "," << std::scientific << r.M_H1
+                 << "," << std::fixed << M_H1_rate[i];
             break;
 
         default:

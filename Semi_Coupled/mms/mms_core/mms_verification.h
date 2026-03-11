@@ -5,15 +5,15 @@
 //
 // PARALLEL STATUS:
 //   - CH_STANDALONE: CONVERTED ✓
-//   - POISSON_STANDALONE: CONVERTED ✓
 //   - NS_STANDALONE: CONVERTED ✓
-//   - MAGNETIZATION_STANDALONE: CONVERTED ✓
+//
+// Monolithic magnetics standalone: see mms/magnetic/magnetic_mms_test.h
 //
 // For coupled tests, see mms/coupled/coupled_mms_test.h:
-//   - CH_NS: Phase advection by velocity
-//   - POISSON_MAGNETIZATION: φ ↔ M Picard iteration
-//   - NS_MAGNETIZATION: Kelvin force μ₀[(M·∇)H + ½(∇·M)H] (Rosensweig)
-//   - FULL_SYSTEM: All four subsystems coupled
+//   - CH_MAGNETIC: χ(θ) coupling from CH to Monolithic M+φ
+//   - MAGNETIC_NS: Kelvin force μ₀[(M·∇)H + ½(∇·M)H]
+//   - NS_CH: Advection U·∇θ
+//   - FULL_SYSTEM: All subsystems coupled
 // ============================================================================
 #ifndef MMS_VERIFICATION_H
 #define MMS_VERIFICATION_H
@@ -29,9 +29,7 @@
 enum class MMSLevel
 {
     CH_STANDALONE,           // Cahn-Hilliard only
-    POISSON_STANDALONE,      // Poisson only
-    NS_STANDALONE,           // Navier-Stokes only
-    MAGNETIZATION_STANDALONE // Magnetization only
+    NS_STANDALONE            // Navier-Stokes only
 };
 
 std::string to_string(MMSLevel level);
@@ -62,23 +60,11 @@ struct MMSConvergenceResult
     std::vector<double> theta_Linf, psi_Linf;
     std::vector<double> theta_Linf_rate, psi_Linf_rate;
 
-    // Poisson errors
-    std::vector<double> phi_L2, phi_H1;
-    std::vector<double> phi_L2_rate, phi_H1_rate;
-    std::vector<double> phi_Linf;
-    std::vector<double> phi_Linf_rate;
-
     // NS errors
     std::vector<double> ux_L2, ux_H1, uy_L2, uy_H1, p_L2, div_u_L2;
     std::vector<double> ux_L2_rate, ux_H1_rate, uy_L2_rate, uy_H1_rate, p_L2_rate, div_u_L2_rate;
     std::vector<double> ux_Linf, uy_Linf, p_Linf;
     std::vector<double> ux_Linf_rate, uy_Linf_rate, p_Linf_rate;
-
-    // Magnetization errors
-    std::vector<double> M_L2;
-    std::vector<double> M_L2_rate;
-    std::vector<double> M_Linf;
-    std::vector<double> M_Linf_rate;
 
     void compute_rates();
     void print() const;
@@ -87,9 +73,7 @@ struct MMSConvergenceResult
 
     // Table printers
     void print_ch_table() const;
-    void print_poisson_table() const;
     void print_ns_table() const;
-    void print_magnetization_table() const;
 };
 
 // ============================================================================
@@ -109,9 +93,9 @@ struct MMSConvergenceResult
  * @return Convergence results
  *
  * For coupled tests, use functions from mms/coupled/coupled_mms_test.h:
- *   - run_ch_ns_mms()
- *   - run_poisson_magnetization_mms()
- *   - run_ns_magnetization_mms()
+ *   - run_ch_magnetic_mms()
+ *   - run_magnetic_ns_mms()
+ *   - run_ns_ch_mms()
  *   - run_full_system_mms()
  */
 MMSConvergenceResult run_mms_test(

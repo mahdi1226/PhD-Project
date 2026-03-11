@@ -232,36 +232,19 @@ void PhaseFieldProblem<dim>::refine_mesh()
         psi_trans(psi_dof_handler_);
     psi_trans.prepare_for_coarsening_and_refinement(psi_relevant_);
 
-    // --- φ on phi_dof_handler_ (if magnetic) ---
+    // --- Monolithic magnetics (M+φ) on mag_dof_handler_ ---
     std::unique_ptr<dealii::parallel::distributed::SolutionTransfer<
         dim, dealii::TrilinosWrappers::MPI::Vector>>
-        phi_trans;
+        mag_trans;
     if (params_.enable_magnetic)
     {
-        phi_trans = std::make_unique<dealii::parallel::distributed::SolutionTransfer<
-            dim, dealii::TrilinosWrappers::MPI::Vector>>(phi_dof_handler_);
-        phi_trans->prepare_for_coarsening_and_refinement(phi_relevant_);
-    }
+        mag_trans = std::make_unique<dealii::parallel::distributed::SolutionTransfer<
+            dim, dealii::TrilinosWrappers::MPI::Vector>>(mag_dof_handler_);
 
-    // --- Magnetization Mx, My, Mx_old, My_old on M_dof_handler_ ---
-    std::unique_ptr<dealii::parallel::distributed::SolutionTransfer<
-        dim, dealii::TrilinosWrappers::MPI::Vector>>
-        M_trans;
-    dealii::TrilinosWrappers::MPI::Vector Mx_old_ghost, My_old_ghost;
-    if (params_.enable_magnetic)
-    {
-        M_trans = std::make_unique<dealii::parallel::distributed::SolutionTransfer<
-            dim, dealii::TrilinosWrappers::MPI::Vector>>(M_dof_handler_);
-
-        // Create temporary ghosted copies for old solutions
-        Mx_old_ghost.reinit(M_locally_owned_, M_locally_relevant_, mpi_communicator_);
-        My_old_ghost.reinit(M_locally_owned_, M_locally_relevant_, mpi_communicator_);
-        Mx_old_ghost = Mx_old_solution_;
-        My_old_ghost = My_old_solution_;
-
-        std::vector<const dealii::TrilinosWrappers::MPI::Vector*> M_pre = {
-            &Mx_relevant_, &My_relevant_, &Mx_old_ghost, &My_old_ghost};
-        M_trans->prepare_for_coarsening_and_refinement(M_pre);
+        // mag_relevant_ is already ghosted
+        std::vector<const dealii::TrilinosWrappers::MPI::Vector*> mag_pre = {
+            &mag_relevant_};
+        mag_trans->prepare_for_coarsening_and_refinement(mag_pre);
     }
 
     // --- NS fields on separate dof handlers ---
@@ -311,10 +294,7 @@ void PhaseFieldProblem<dim>::refine_mesh()
     setup_ch_system();
 
     if (params_.enable_magnetic)
-    {
-        setup_poisson_system();
-        setup_magnetization_system();
-    }
+        setup_magnetic_system();
 
     if (params_.enable_ns)
         setup_ns_system();
@@ -336,16 +316,12 @@ void PhaseFieldProblem<dim>::refine_mesh()
     // --- ψ ---
     psi_trans.interpolate(psi_solution_);
 
-    // --- φ ---
-    if (params_.enable_magnetic)
-        phi_trans->interpolate(phi_solution_);
-
-    // --- Mx, My, Mx_old, My_old ---
+    // --- Monolithic magnetics (M+φ) ---
     if (params_.enable_magnetic)
     {
-        std::vector<dealii::TrilinosWrappers::MPI::Vector*> M_post = {
-            &Mx_solution_, &My_solution_, &Mx_old_solution_, &My_old_solution_};
-        M_trans->interpolate(M_post);
+        std::vector<dealii::TrilinosWrappers::MPI::Vector*> mag_post = {
+            &mag_solution_};
+        mag_trans->interpolate(mag_post);
     }
 
     // --- ux, ux_old ---
@@ -372,9 +348,9 @@ void PhaseFieldProblem<dim>::refine_mesh()
     psi_constraints_.distribute(psi_solution_);
 
     if (params_.enable_magnetic)
-        phi_constraints_.distribute(phi_solution_);
-
-    // DG magnetization: M_constraints_ is empty (no hanging nodes for DG)
+    {
+        mag_constraints_.distribute(mag_solution_);
+    }
 
     if (params_.enable_ns)
     {
@@ -463,12 +439,9 @@ void PhaseFieldProblem<dim>::refine_mesh()
     psi_relevant_ = psi_solution_;
 
     if (params_.enable_magnetic)
-        phi_relevant_ = phi_solution_;
-
-    if (params_.enable_magnetic)
     {
-        Mx_relevant_ = Mx_solution_;
-        My_relevant_ = My_solution_;
+        mag_relevant_ = mag_solution_;
+        extract_magnetic_components();  // fills phi/Mx/My auxiliary vectors
     }
 
     if (params_.enable_ns)

@@ -8,24 +8,15 @@
 //   - TrilinosWrappers for matrices/vectors
 //   - MPI-aware output and diagnostics
 //
-// OPTIMIZED VERSION:
-//   - Cached assemblers and solvers (avoid recreation each timestep)
-//   - Picard iteration for Poisson ↔ Magnetization coupling (Paper Algorithm 1)
-//   - RHS-only assembly for Picard iterations 2+ (matrix reuse)
-//
 // Subsystems:
 //   - Cahn-Hilliard (θ, ψ): phase separation with convection
-//   - Poisson (φ): magnetostatic potential, H = ∇φ
-//   - Magnetization (Mx, My): DG transport of M (Eq. 42c)
+//   - Monolithic Magnetics (M, φ): combined DG M + CG φ block system
 //   - Navier-Stokes (ux, uy, p): fluid flow with Kelvin force B_h^m
 //
-// Time stepping (Paper Algorithm 1):
+// Time stepping:
 //   1. Solve CH → θ^n, ψ^n (uses U^{n-1})
-//   2. Picard loop for k = 1, ..., N:
-//      a. Solve Poisson → φ^{n,k} (uses M^{n,k-1})
-//      b. Solve Magnetization → M^{n,k} (uses φ^{n,k})
-//      c. Check convergence: ||M^{n,k} - M^{n,k-1}|| < tol
-//   3. Solve NS → u^n, p^n (uses θ^{n-1}, converged H^n, M^n)
+//   2. Solve Magnetics → M^n, φ^n (monolithic block system, no Picard)
+//   3. Solve NS → u^n, p^n (uses θ^{n-1}, H^n, M^n)
 //
 // CRITICAL: θ is LAGGED in NS (θ^{n-1}) for energy stability!
 //
@@ -37,6 +28,7 @@
 #include <deal.II/dofs/dof_handler.h>
 #include <deal.II/fe/fe_q.h>
 #include <deal.II/fe/fe_dgq.h>
+#include <deal.II/fe/fe_system.h>
 #include <deal.II/lac/trilinos_sparse_matrix.h>
 #include <deal.II/lac/trilinos_sparsity_pattern.h>
 #include <deal.II/lac/trilinos_vector.h>
@@ -46,9 +38,8 @@
 
 #include "utilities/parameters.h"
 #include "solvers/solver_info.h"
-#include "solvers/poisson_solver.h"
-#include "solvers/magnetization_solver.h"
-#include "assembly/magnetization_assembler.h"
+#include "assembly/magnetic_assembler.h"
+#include "solvers/magnetic_solver.h"
 
 #include <vector>
 #include <memory>
@@ -59,12 +50,10 @@
  *
  * Implements all subsystems from the paper:
  *   - Cahn-Hilliard (θ, ψ): phase separation
- *   - Poisson (φ): magnetostatic potential
- *   - Magnetization (Mx, My): DG transport
+ *   - Monolithic Magnetics (M, φ): combined DG M + CG φ block system
  *   - Navier-Stokes (ux, uy, p): fluid flow with full Kelvin B_h^m
  *
- * OPTIMIZATION: Assemblers and solvers are cached as class members
- * to avoid recreation overhead each timestep.
+ * Assemblers and solvers are cached as class members.
  */
 template <int dim>
 class PhaseFieldProblem
@@ -82,8 +71,7 @@ private:
     void setup_mesh();
     void setup_dof_handlers();
     void setup_ch_system();
-    void setup_poisson_system();
-    void setup_magnetization_system();
+    void setup_magnetic_system();
     void setup_ns_system();
     void initialize_solutions();
 
@@ -91,22 +79,8 @@ private:
     // Solve methods
     // ========================================================================
     void solve_ch(double dt);
-    void solve_poisson();
-    void solve_magnetization(double dt, bool matrix_changed);
-    void solve_magnetization_rhs_only(double dt);
+    void solve_magnetics(double dt);
     void solve_ns(double dt);
-
-    // ========================================================================
-    // Picard iteration for Poisson ↔ Magnetization coupling
-    // Returns number of iterations used
-    // ========================================================================
-    unsigned int solve_poisson_magnetization_picard(double dt);
-
-    // ========================================================================
-    // L2 projection: M = χ(θ)∇Φ  (Paper Eq. 42d)
-    // Cell-local since DG mass matrix is block-diagonal
-    // ========================================================================
-    void project_equilibrium_magnetization();
 
     // ========================================================================
     // Output
@@ -142,8 +116,10 @@ private:
     // PAPER REQUIREMENT (A1): Discontinuous pressure for element-local
     // incompressibility. (A2): M_h = [P_h]^d (magnetization = vectorial pressure)
     // ========================================================================
-    dealii::FE_Q<dim> fe_Q2_;    // Q2 for velocity, θ, ψ, φ
-    dealii::FE_DGQ<dim> fe_DG_;  // DG for pressure (A1) and magnetization M (A2)
+    dealii::FE_Q<dim> fe_Q2_;    // Q2 for velocity, θ, ψ
+    dealii::FE_DGQ<dim> fe_DG_;  // DG for pressure (A1)
+    // FESystem for combined M+phi: FE_DGQ(deg_M)^dim + FE_Q(deg_phi)
+    std::unique_ptr<dealii::FESystem<dim>> fe_mag_;
 
     // ========================================================================
     // Cahn-Hilliard system (θ, ψ)
@@ -179,52 +155,52 @@ private:
     dealii::TrilinosWrappers::MPI::Vector psi_relevant_;
 
     // ========================================================================
-    // Poisson system (φ)
+    // Monolithic Magnetics system (M + φ)
+    //
+    // Combined FESystem: FE_DGQ(deg_M)^dim + FE_Q(deg_phi)
+    // Single DoFHandler, single matrix, single solution vector.
+    // Replaces separate Poisson + Magnetization + Picard iteration.
+    //
+    // Paper Eq. 42c-42d solved as monolithic block system.
     // ========================================================================
-    dealii::DoFHandler<dim> phi_dof_handler_;
+    dealii::DoFHandler<dim> mag_dof_handler_;
+
+    dealii::IndexSet mag_locally_owned_;
+    dealii::IndexSet mag_locally_relevant_;
+
+    dealii::AffineConstraints<double> mag_constraints_;
+
+    dealii::TrilinosWrappers::SparseMatrix mag_matrix_;
+    dealii::TrilinosWrappers::MPI::Vector mag_rhs_;
+    dealii::TrilinosWrappers::MPI::Vector mag_solution_;
+
+    // Ghosted vectors for assembly (read access to ghost values)
+    dealii::TrilinosWrappers::MPI::Vector mag_relevant_;
+
+    // Separate ghost vectors for Mx, My, phi (for NS assembly and diagnostics)
+    // These are VIEWS extracted from mag_solution_ after solve
+    dealii::TrilinosWrappers::MPI::Vector Mx_relevant_;
+    dealii::TrilinosWrappers::MPI::Vector My_relevant_;
+    dealii::TrilinosWrappers::MPI::Vector phi_relevant_;
+
+    // Separate DoFHandlers for output and NS assembly access
+    // These share the same triangulation and use individual FE elements
+    dealii::DoFHandler<dim> phi_dof_handler_;  // CG Q2, for diagnostics/output
+    dealii::DoFHandler<dim> M_dof_handler_;    // DG Q1, for diagnostics/output
 
     dealii::IndexSet phi_locally_owned_;
     dealii::IndexSet phi_locally_relevant_;
-
-    dealii::AffineConstraints<double> phi_constraints_;
-
-    dealii::TrilinosWrappers::SparseMatrix phi_matrix_;
-    dealii::TrilinosWrappers::MPI::Vector phi_rhs_;
-    dealii::TrilinosWrappers::MPI::Vector phi_solution_;
-    dealii::TrilinosWrappers::MPI::Vector phi_relevant_;
-
-    // Cached Poisson solver (AMG preconditioner reused across timesteps)
-    std::unique_ptr<PoissonSolver> poisson_solver_;
-
-    // ========================================================================
-    // Magnetization system (Mx, My) - DG transport
-    //
-    // Paper Eq. 42c: ∂M/∂t + (u·∇)M = (1/τ_M)(χ(θ)H - M)
-    // ========================================================================
-    dealii::DoFHandler<dim> M_dof_handler_;  // Single handler for both Mx, My
-
     dealii::IndexSet M_locally_owned_;
     dealii::IndexSet M_locally_relevant_;
 
-    // DG has no constraints (no hanging nodes for DG)
-    dealii::AffineConstraints<double> M_constraints_;
-
-    dealii::TrilinosWrappers::SparseMatrix M_matrix_;
-    dealii::TrilinosWrappers::MPI::Vector Mx_rhs_;
-    dealii::TrilinosWrappers::MPI::Vector My_rhs_;
-
+    // Individual solution vectors (extracted from mag_solution_ after solve)
+    dealii::TrilinosWrappers::MPI::Vector phi_solution_;
     dealii::TrilinosWrappers::MPI::Vector Mx_solution_;
     dealii::TrilinosWrappers::MPI::Vector My_solution_;
-    dealii::TrilinosWrappers::MPI::Vector Mx_old_solution_;
-    dealii::TrilinosWrappers::MPI::Vector My_old_solution_;
 
-    // Ghosted for assembly
-    dealii::TrilinosWrappers::MPI::Vector Mx_relevant_;
-    dealii::TrilinosWrappers::MPI::Vector My_relevant_;
-
-    // OPTIMIZATION: Cached magnetization assembler and solver
-    std::unique_ptr<MagnetizationAssembler<dim>> magnetization_assembler_;
-    std::unique_ptr<MagnetizationSolver<dim>> magnetization_solver_;
+    // Cached assembler and solver
+    std::unique_ptr<MagneticAssembler<dim>> magnetic_assembler_;
+    std::unique_ptr<MagneticSolver<dim>> magnetic_solver_;
 
     // ========================================================================
     // Navier-Stokes system (ux, uy, p)
@@ -277,13 +253,8 @@ private:
 
     // Solver diagnostics
     SolverInfo last_ch_info_;
-    SolverInfo last_poisson_info_;
-    SolverInfo last_M_info_;
+    SolverInfo last_mag_info_;
     SolverInfo last_ns_info_;
-
-    // Picard iteration diagnostics
-    unsigned int last_picard_iterations_;
-    double last_picard_residual_;
 
     // Block-Gauss-Seidel diagnostics
     unsigned int last_bgs_iterations_;
@@ -294,11 +265,15 @@ private:
     // ========================================================================
     double last_ch_assemble_time_ = 0.0;
     double last_ch_solve_time_ = 0.0;
-    double last_poisson_assemble_time_ = 0.0;
-    double last_poisson_solve_time_ = 0.0;
-    double last_mag_time_ = 0.0;
+    double last_mag_assemble_time_ = 0.0;
+    double last_mag_solve_time_ = 0.0;
     double last_ns_assemble_time_ = 0.0;
     double last_ns_solve_time_ = 0.0;
+
+    // ========================================================================
+    // Helper: extract individual M, phi from combined mag_solution_
+    // ========================================================================
+    void extract_magnetic_components();
 };
 
 #endif // PHASE_FIELD_H

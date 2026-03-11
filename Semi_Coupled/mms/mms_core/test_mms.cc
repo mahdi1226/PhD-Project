@@ -5,11 +5,10 @@
 // MMS verifies production code with production parameters.
 //
 // Standalone tests (mms_verification.h):
-//   CH_STANDALONE, POISSON_STANDALONE, NS_STANDALONE, MAGNETIZATION_STANDALONE
+//   CH_STANDALONE, NS_STANDALONE, MAGNETIC_STANDALONE
 //
 // Coupled tests (coupled_mms_test.h):
-//   CH_NS, POISSON_MAGNETIZATION, NS_MAGNETIZATION, NS_POISSON_MAG,
-//   MAG_CH, FULL_SYSTEM
+//   CH_MAGNETIC, MAGNETIC_NS, NS_CH, FULL_SYSTEM
 //
 // Temporal tests (temporal_convergence.h):
 //   CH_TEMPORAL, NS_TEMPORAL, MAG_TEMPORAL, FULL_TEMPORAL
@@ -19,7 +18,7 @@
 
 #include "mms_verification.h"
 #include "mms/coupled/coupled_mms_test.h"
-#include "mms/magnetization/magnetization_mms_test.h"
+#include "mms/magnetic/magnetic_mms_test.h"
 #include "temporal_convergence.h"
 #include "long_duration_mms.h"
 #include "utilities/parameters.h"
@@ -43,18 +42,13 @@ enum class TestType
 {
     // Standalone
     CH_STANDALONE,
-    POISSON_STANDALONE,
     NS_STANDALONE,
-    MAGNETIZATION_STANDALONE,
-    // Coupled
-    CH_NS,
-    POISSON_MAGNETIZATION,
-    NS_MAGNETIZATION,
-    NS_POISSON_MAG,
-    MAG_CH,
+    MAGNETIC_STANDALONE,
+    // Coupled (paper's algorithm order: source → target)
+    CH_MAGNETIC,
+    MAGNETIC_NS,
+    NS_CH,
     FULL_SYSTEM,
-    // Transport isolation test
-    MAG_TRANSPORT,
     // Temporal convergence
     CH_TEMPORAL,
     NS_TEMPORAL,
@@ -71,16 +65,12 @@ static std::string test_type_to_string(TestType type)
     switch (type)
     {
     case TestType::CH_STANDALONE: return "CH_STANDALONE";
-    case TestType::POISSON_STANDALONE: return "POISSON_STANDALONE";
     case TestType::NS_STANDALONE: return "NS_STANDALONE";
-    case TestType::MAGNETIZATION_STANDALONE: return "MAGNETIZATION_STANDALONE";
-    case TestType::CH_NS: return "CH_NS";
-    case TestType::POISSON_MAGNETIZATION: return "POISSON_MAGNETIZATION";
-    case TestType::NS_MAGNETIZATION: return "NS_MAGNETIZATION";
-    case TestType::NS_POISSON_MAG: return "NS_POISSON_MAG";
-    case TestType::MAG_CH: return "MAG_CH";
+    case TestType::MAGNETIC_STANDALONE: return "MAGNETIC_STANDALONE";
+    case TestType::CH_MAGNETIC: return "CH_MAGNETIC";
+    case TestType::MAGNETIC_NS: return "MAGNETIC_NS";
+    case TestType::NS_CH: return "NS_CH";
     case TestType::FULL_SYSTEM: return "FULL_SYSTEM";
-    case TestType::MAG_TRANSPORT: return "MAG_TRANSPORT";
     case TestType::CH_TEMPORAL: return "CH_TEMPORAL";
     case TestType::NS_TEMPORAL: return "NS_TEMPORAL";
     case TestType::MAG_TEMPORAL: return "MAG_TEMPORAL";
@@ -153,17 +143,14 @@ void print_usage(const char* program_name)
         << "\n"
         << "  Standalone tests:\n"
         << "    CH_STANDALONE           - Cahn-Hilliard only\n"
-        << "    POISSON_STANDALONE      - Poisson only\n"
         << "    NS_STANDALONE           - Navier-Stokes only\n"
-        << "    MAGNETIZATION_STANDALONE - Magnetization only\n"
+        << "    MAGNETIC_STANDALONE     - Monolithic M+phi block system\n"
         << "\n"
-        << "  Coupled tests:\n"
-        << "    CH_NS                   - CH + NS (theta advected by U)\n"
-        << "    POISSON_MAGNETIZATION   - Poisson + Magnetization (phi <-> M Picard)\n"
-        << "    NS_MAGNETIZATION        - NS + Magnetization (Kelvin force)\n"
-        << "    NS_POISSON_MAG          - NS + Poisson + Magnetization\n"
-        << "    MAG_CH                  - Magnetization + CH (chi(theta) coupling)\n"
-        << "    FULL_SYSTEM             - All four subsystems coupled\n"
+        << "  Coupled tests (paper's algorithm order):\n"
+        << "    CH_MAGNETIC             - CH → Magnetic: chi(theta) coupling\n"
+        << "    MAGNETIC_NS             - Magnetic → NS: Kelvin force coupling\n"
+        << "    NS_CH                   - NS → CH: advection coupling\n"
+        << "    FULL_SYSTEM             - All subsystems coupled\n"
         << "\n"
         << "  Temporal convergence tests (fix mesh, vary dt):\n"
         << "    CH_TEMPORAL             - CH temporal O(tau)\n"
@@ -188,18 +175,16 @@ void print_usage(const char* program_name)
         << "\n"
         << "Examples:\n"
         << "  mpirun -np 4 " << program_name << " --level CH_STANDALONE --refs 3 4 5\n"
-        << "  mpirun -np 4 " << program_name << " --level POISSON_MAGNETIZATION --refs 3 4 5 --steps 50\n"
-        << "  mpirun -np 4 " << program_name << " --level MAG_CH --refs 3 4 5 --steps 50\n"
+        << "  mpirun -np 4 " << program_name << " --level MAGNETIC_STANDALONE --refs 3 4 5 --steps 10\n"
+        << "  mpirun -np 4 " << program_name << " --level CH_MAGNETIC --refs 3 4 5 --steps 50\n"
+        << "  mpirun -np 4 " << program_name << " --level MAGNETIC_NS --refs 3 4 5 --steps 50\n"
+        << "  mpirun -np 4 " << program_name << " --level NS_CH --refs 3 4 5 --steps 50\n"
         << "  mpirun -np 4 " << program_name << " --level CH_TEMPORAL --temporal-ref 5\n"
         << "  mpirun -np 4 " << program_name << " --level FULL_TEMPORAL --temporal-ref 4 --temporal-steps 10 20 40 80\n";
 }
 
 int main(int argc, char* argv[])
 {
-    std::cout << "[STARTUP TEST] Creating Parameters...\n";
-    Parameters test1;
-    std::cout << "[STARTUP TEST] tau_M = " << test1.physics.tau_M << "\n";
-
     // Initialize MPI
     dealii::Utilities::MPI::MPI_InitFinalize mpi_init(argc, argv);
 
@@ -224,30 +209,22 @@ int main(int argc, char* argv[])
             // Standalone tests
             if (level_str == "CH_STANDALONE")
                 test_type = TestType::CH_STANDALONE;
-            else if (level_str == "POISSON_STANDALONE")
-                test_type = TestType::POISSON_STANDALONE;
             else if (level_str == "NS_STANDALONE")
                 test_type = TestType::NS_STANDALONE;
-            else if (level_str == "MAGNETIZATION_STANDALONE")
-                test_type = TestType::MAGNETIZATION_STANDALONE;
+            else if (level_str == "MAGNETIC_STANDALONE" || level_str == "MAGNETIC")
+                test_type = TestType::MAGNETIC_STANDALONE;
 
-                // Coupled tests
-            else if (level_str == "CH_NS" || level_str == "CH_NS_CAPILLARY")
-                test_type = TestType::CH_NS;
-            else if (level_str == "POISSON_MAGNETIZATION" || level_str == "POISSON_MAG")
-                test_type = TestType::POISSON_MAGNETIZATION;
-            else if (level_str == "NS_MAGNETIZATION" || level_str == "NS_MAG")
-                test_type = TestType::NS_MAGNETIZATION;
-            else if (level_str == "NS_POISSON_MAG")
-                test_type = TestType::NS_POISSON_MAG;
-            else if (level_str == "MAG_CH")
-                test_type = TestType::MAG_CH;
+            // Coupled tests (paper's algorithm order)
+            else if (level_str == "CH_MAGNETIC")
+                test_type = TestType::CH_MAGNETIC;
+            else if (level_str == "MAGNETIC_NS")
+                test_type = TestType::MAGNETIC_NS;
+            else if (level_str == "NS_CH")
+                test_type = TestType::NS_CH;
             else if (level_str == "FULL_SYSTEM" || level_str == "FULL")
                 test_type = TestType::FULL_SYSTEM;
-            else if (level_str == "MAG_TRANSPORT")
-                test_type = TestType::MAG_TRANSPORT;
 
-                // Temporal tests
+            // Temporal tests
             else if (level_str == "CH_TEMPORAL")
                 test_type = TestType::CH_TEMPORAL;
             else if (level_str == "NS_TEMPORAL")
@@ -257,7 +234,7 @@ int main(int argc, char* argv[])
             else if (level_str == "FULL_TEMPORAL")
                 test_type = TestType::FULL_TEMPORAL;
 
-                // Long-duration stability tests
+            // Long-duration stability tests
             else if (level_str == "CH_LONG")
                 test_type = TestType::CH_LONG;
             else if (level_str == "CH_NS_LONG")
@@ -365,19 +342,13 @@ int main(int argc, char* argv[])
         {
         // ====== STANDALONE TESTS ======
         case TestType::CH_STANDALONE:
-        case TestType::POISSON_STANDALONE:
         case TestType::NS_STANDALONE:
-        case TestType::MAGNETIZATION_STANDALONE:
             {
                 MMSLevel level;
                 if (test_type == TestType::CH_STANDALONE)
                     level = MMSLevel::CH_STANDALONE;
-                else if (test_type == TestType::POISSON_STANDALONE)
-                    level = MMSLevel::POISSON_STANDALONE;
-                else if (test_type == TestType::NS_STANDALONE)
-                    level = MMSLevel::NS_STANDALONE;
                 else
-                    level = MMSLevel::MAGNETIZATION_STANDALONE;
+                    level = MMSLevel::NS_STANDALONE;
 
                 MMSConvergenceResult result = run_mms_test(
                     level, refinements, params, n_time_steps, MPI_COMM_WORLD);
@@ -391,10 +362,9 @@ int main(int argc, char* argv[])
                 break;
             }
 
-        // ====== COUPLED TESTS ======
-        case TestType::CH_NS:
+        case TestType::MAGNETIC_STANDALONE:
             {
-                CoupledMMSConvergenceResult result = run_ch_ns_mms(
+                MagneticMMSConvergenceResult result = run_magnetic_mms_standalone(
                     refinements, params, n_time_steps, MPI_COMM_WORLD);
 
                 if (this_rank == 0)
@@ -406,9 +376,10 @@ int main(int argc, char* argv[])
                 break;
             }
 
-        case TestType::POISSON_MAGNETIZATION:
+        // ====== COUPLED TESTS (paper's algorithm order) ======
+        case TestType::CH_MAGNETIC:
             {
-                CoupledMMSConvergenceResult result = run_poisson_magnetization_mms(
+                CoupledMMSConvergenceResult result = run_ch_magnetic_mms(
                     refinements, params, n_time_steps, MPI_COMM_WORLD);
 
                 if (this_rank == 0)
@@ -420,9 +391,9 @@ int main(int argc, char* argv[])
                 break;
             }
 
-        case TestType::NS_MAGNETIZATION:
+        case TestType::MAGNETIC_NS:
             {
-                CoupledMMSConvergenceResult result = run_ns_magnetization_mms(
+                CoupledMMSConvergenceResult result = run_magnetic_ns_mms(
                     refinements, params, n_time_steps, MPI_COMM_WORLD);
 
                 if (this_rank == 0)
@@ -434,23 +405,9 @@ int main(int argc, char* argv[])
                 break;
             }
 
-        case TestType::NS_POISSON_MAG:
+        case TestType::NS_CH:
             {
-                CoupledMMSConvergenceResult result = run_ns_poisson_mag_mms(
-                    refinements, params, n_time_steps, MPI_COMM_WORLD);
-
-                if (this_rank == 0)
-                {
-                    result.print();
-                    result.write_csv(csv_name);
-                }
-                passed = result.passes();
-                break;
-            }
-
-        case TestType::MAG_CH:
-            {
-                CoupledMMSConvergenceResult result = run_mag_ch_mms(
+                CoupledMMSConvergenceResult result = run_ns_ch_mms(
                     refinements, params, n_time_steps, MPI_COMM_WORLD);
 
                 if (this_rank == 0)
@@ -465,20 +422,6 @@ int main(int argc, char* argv[])
         case TestType::FULL_SYSTEM:
             {
                 CoupledMMSConvergenceResult result = run_full_system_mms(
-                    refinements, params, n_time_steps, MPI_COMM_WORLD);
-
-                if (this_rank == 0)
-                {
-                    result.print();
-                    result.write_csv(csv_name);
-                }
-                passed = result.passes();
-                break;
-            }
-
-        case TestType::MAG_TRANSPORT:
-            {
-                MagMMSConvergenceResult result = run_magnetization_transport_mms(
                     refinements, params, n_time_steps, MPI_COMM_WORLD);
 
                 if (this_rank == 0)
@@ -531,8 +474,6 @@ int main(int argc, char* argv[])
                 else
                     long_level = LongDurationLevel::FULL_LONG;
 
-                // Use temporal-ref for the fixed refinement,
-                // n_time_steps for number of steps (default 10, override with --steps)
                 unsigned int long_steps = (n_time_steps == 10) ? 500 : n_time_steps;
 
                 LongDurationResult result = run_long_duration_mms_test(

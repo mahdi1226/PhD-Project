@@ -19,7 +19,7 @@
 #include "diagnostics/step_data.h"
 #include "diagnostics/ch_diagnostics.h"
 #include "diagnostics/ns_diagnostics.h"
-#include "diagnostics/poisson_diagnostics.h"
+#include "diagnostics/magnetic_diagnostics.h"
 #include "diagnostics/interface_tracking.h"
 #include "diagnostics/force_diagnostics.h"
 #include "utilities/parameters.h"
@@ -77,18 +77,18 @@ StepData compute_system_diagnostics(
     // ========================================================================
     if (params.enable_magnetic && phi_dof_handler != nullptr && phi_solution != nullptr)
     {
-        PoissonDiagnostics poisson = compute_poisson_diagnostics<dim>(
+        MagneticDiagnostics mag = compute_magnetic_diagnostics<dim>(
             *phi_dof_handler, *phi_solution,
             theta_dof_handler, theta_solution,
             params, comm);
 
-        data.phi_min = poisson.phi_min;
-        data.phi_max = poisson.phi_max;
-        data.H_max = poisson.H_max;
-        data.M_max = poisson.M_max;
-        data.E_mag = poisson.magnetic_energy;
-        data.mu_min = poisson.mu_min;
-        data.mu_max = poisson.mu_max;
+        data.phi_min = mag.phi_min;
+        data.phi_max = mag.phi_max;
+        data.H_max = mag.H_max;
+        data.M_max = mag.M_max;
+        data.E_mag = mag.magnetic_energy;
+        data.mu_min = mag.mu_min;
+        data.mu_max = mag.mu_max;
     }
 
     // ========================================================================
@@ -192,18 +192,18 @@ StepData compute_system_diagnostics(
     // Poisson diagnostics
     if (params.enable_magnetic && phi_dof_handler != nullptr && phi_solution != nullptr)
     {
-        PoissonDiagnostics poisson = compute_poisson_diagnostics<dim>(
+        MagneticDiagnostics mag = compute_magnetic_diagnostics<dim>(
             *phi_dof_handler, *phi_solution,
             theta_dof_handler, theta_solution,
             params);
 
-        data.phi_min = poisson.phi_min;
-        data.phi_max = poisson.phi_max;
-        data.H_max = poisson.H_max;
-        data.M_max = poisson.M_max;
-        data.E_mag = poisson.magnetic_energy;
-        data.mu_min = poisson.mu_min;
-        data.mu_max = poisson.mu_max;
+        data.phi_min = mag.phi_min;
+        data.phi_max = mag.phi_max;
+        data.H_max = mag.H_max;
+        data.M_max = mag.M_max;
+        data.E_mag = mag.magnetic_energy;
+        data.mu_min = mag.mu_min;
+        data.mu_max = mag.mu_max;
     }
 
     // NS diagnostics
@@ -266,20 +266,10 @@ inline void update_ch_solver_info(StepData& data,
     data.solver_fallback_used = data.solver_fallback_used || fallback_used;
 }
 
-inline void update_poisson_solver_info(StepData& data,
-                                       unsigned int iterations,
-                                       double residual,
-                                       double solve_time)
-{
-    data.poisson_iterations = iterations;
-    data.poisson_residual = residual;
-    data.poisson_time = solve_time;
-}
-
-inline void update_mag_solver_info(StepData& data,
-                                   unsigned int iterations,
-                                   double residual,
-                                   double solve_time)
+inline void update_magnetic_solver_info(StepData& data,
+                                        unsigned int iterations,
+                                        double residual,
+                                        double solve_time)
 {
     data.mag_iterations = iterations;
     data.mag_residual = residual;

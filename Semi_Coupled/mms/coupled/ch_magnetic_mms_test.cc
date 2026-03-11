@@ -1,19 +1,19 @@
 // ============================================================================
-// mms/coupled/mag_ch_mms_test.cc - Magnetization + CH Coupled MMS Test
+// mms/coupled/ch_magnetic_mms_test.cc - CH → Magnetic Coupled MMS Test
 //
-// Tests χ(θ) coupling: CH → θ → χ(θ) → Magnetization
+// Tests χ(θ) coupling: CH → θ → χ(θ) → Monolithic M+φ block
 //
 // Algorithm:
 //   1. Solve CH standalone (with MMS source, U=0)
-//   2. Use θ from CH solve in magnetization equation
-//   3. Magnetization uses exact H = -∇φ* (from poisson_mms.h)
-//   4. This isolates the χ(θ) interpolation across FE spaces
+//   2. Solve monolithic M+φ using θ from CH solve (χ(θ) coupling)
+//   3. Verify θ, M, and φ convergence rates
 //
 // Production code paths:
 //   - assemble_ch_system() with enable_mms=true
 //   - solve_ch_system()
-//   - MagnetizationAssembler with enable_mms=true (uses θ for χ(θ))
-//   - MagnetizationSolver (MUMPS direct)
+//   - setup_magnetic_system() (PRODUCTION)
+//   - MagneticAssembler with enable_mms=true (uses θ for χ(θ))
+//   - MagneticSolver (MUMPS direct)
 //
 // Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
 // ============================================================================
@@ -22,19 +22,18 @@
 
 // MMS exact solutions
 #include "mms/ch/ch_mms.h"
-#include "mms/poisson/poisson_mms.h"
-#include "mms/magnetization/magnetization_mms.h"
+#include "mms/magnetic/magnetic_mms.h"
 
 // Production setup
-#include "setup/magnetization_setup.h"
+#include "setup/magnetic_setup.h"
 
 // Production assembly
 #include "assembly/ch_assembler.h"
-#include "assembly/magnetization_assembler.h"
+#include "assembly/magnetic_assembler.h"
 
 // Production solvers
 #include "solvers/ch_solver.h"
-#include "solvers/magnetization_solver.h"
+#include "solvers/magnetic_solver.h"
 
 #include <deal.II/base/mpi.h>
 #include <deal.II/base/conditional_ostream.h>
@@ -42,12 +41,15 @@
 #include <deal.II/distributed/tria.h>
 #include <deal.II/dofs/dof_handler.h>
 #include <deal.II/dofs/dof_tools.h>
+#include <deal.II/dofs/dof_renumbering.h>
 #include <deal.II/fe/fe_q.h>
 #include <deal.II/fe/fe_dgq.h>
+#include <deal.II/fe/fe_system.h>
 #include <deal.II/fe/fe_values.h>
 #include <deal.II/grid/grid_generator.h>
 #include <deal.II/lac/trilinos_vector.h>
 #include <deal.II/lac/trilinos_sparse_matrix.h>
+#include <deal.II/lac/affine_constraints.h>
 #include <deal.II/numerics/vector_tools.h>
 
 #include <chrono>
@@ -61,7 +63,7 @@ constexpr int dim = 2;
 // ============================================================================
 // Single refinement test
 // ============================================================================
-static CoupledMMSResult run_mag_ch_single(
+static CoupledMMSResult run_ch_magnetic_single(
     unsigned int refinement,
     const Parameters& params,
     unsigned int n_time_steps,
@@ -141,14 +143,20 @@ static CoupledMMSResult run_mag_ch_single(
     const unsigned int n_ch = n_theta + n_psi;
 
     // ========================================================================
-    // Setup Magnetization DoFs (DG-Q1)
+    // Setup Monolithic Magnetics DoFs: FESystem (DG^dim + CG)
     // ========================================================================
-    dealii::FE_DGQ<dim> fe_M(params.fe.degree_magnetization);
-    dealii::DoFHandler<dim> M_dof(triangulation);
-    M_dof.distribute_dofs(fe_M);
+    dealii::FESystem<dim> fe_mag(
+        dealii::FE_DGQ<dim>(params.fe.degree_magnetization), dim,
+        dealii::FE_Q<dim>(params.fe.degree_potential), 1);
 
-    dealii::IndexSet M_owned = M_dof.locally_owned_dofs();
-    dealii::IndexSet M_relevant = dealii::DoFTools::extract_locally_relevant_dofs(M_dof);
+    dealii::DoFHandler<dim> mag_dof(triangulation);
+    mag_dof.distribute_dofs(fe_mag);
+
+    // CRITICAL: component_wise renumbering before setup_magnetic_system
+    dealii::DoFRenumbering::component_wise(mag_dof);
+
+    dealii::IndexSet mag_owned = mag_dof.locally_owned_dofs();
+    dealii::IndexSet mag_relevant = dealii::DoFTools::extract_locally_relevant_dofs(mag_dof);
 
     // Dummy velocity DoFs (U=0 for this test)
     dealii::FE_Q<dim> fe_vel(params.fe.degree_velocity);
@@ -159,15 +167,7 @@ static CoupledMMSResult run_mag_ch_single(
     dealii::IndexSet ux_owned = ux_dof.locally_owned_dofs();
     dealii::IndexSet ux_relevant = dealii::DoFTools::extract_locally_relevant_dofs(ux_dof);
 
-    // Dummy Poisson DoFs - we use exact phi
-    dealii::FE_Q<dim> fe_phi(params.fe.degree_potential);
-    dealii::DoFHandler<dim> phi_dof(triangulation);
-    phi_dof.distribute_dofs(fe_phi);
-
-    dealii::IndexSet phi_owned = phi_dof.locally_owned_dofs();
-    dealii::IndexSet phi_relevant = dealii::DoFTools::extract_locally_relevant_dofs(phi_dof);
-
-    result.n_dofs = n_ch + 2 * M_dof.n_dofs();
+    result.n_dofs = n_ch + mag_dof.n_dofs();
 
     // ========================================================================
     // Setup CH coupled system
@@ -238,18 +238,16 @@ static CoupledMMSResult run_mag_ch_single(
     dealii::TrilinosWrappers::MPI::Vector ch_rhs(ch_owned, mpi_communicator);
 
     // ========================================================================
-    // Setup Magnetization system
+    // Setup Monolithic Magnetics system (PRODUCTION)
     // ========================================================================
-    dealii::AffineConstraints<double> M_constraints;
-    M_constraints.close();
+    dealii::AffineConstraints<double> mag_constraints;
+    dealii::TrilinosWrappers::SparseMatrix mag_matrix;
 
-    dealii::TrilinosWrappers::SparseMatrix M_matrix;
-    setup_magnetization_sparsity<dim>(M_dof, M_owned, M_relevant, M_matrix, mpi_communicator, pcout);
+    setup_magnetic_system<dim>(
+        mag_dof, mag_owned, mag_relevant,
+        mag_constraints, mag_matrix, mpi_communicator, pcout);
 
-    dealii::TrilinosWrappers::MPI::Vector Mx_rhs(M_owned, mpi_communicator);
-    dealii::TrilinosWrappers::MPI::Vector My_rhs(M_owned, mpi_communicator);
-    dealii::TrilinosWrappers::MPI::Vector Mx_solution(M_owned, mpi_communicator);
-    dealii::TrilinosWrappers::MPI::Vector My_solution(M_owned, mpi_communicator);
+    dealii::TrilinosWrappers::MPI::Vector mag_rhs(mag_owned, mpi_communicator);
 
     // ========================================================================
     // Solution vectors
@@ -268,14 +266,9 @@ static CoupledMMSResult run_mag_ch_single(
     ux_zero = 0;
     uy_zero = 0;
 
-    // Exact phi (interpolated each time step)
-    dealii::TrilinosWrappers::MPI::Vector phi_vec(phi_owned, phi_relevant, mpi_communicator);
-
-    // Magnetization
-    dealii::TrilinosWrappers::MPI::Vector Mx_vec(M_owned, M_relevant, mpi_communicator);
-    dealii::TrilinosWrappers::MPI::Vector My_vec(M_owned, M_relevant, mpi_communicator);
-    dealii::TrilinosWrappers::MPI::Vector Mx_old(M_owned, M_relevant, mpi_communicator);
-    dealii::TrilinosWrappers::MPI::Vector My_old(M_owned, M_relevant, mpi_communicator);
+    // Monolithic magnetics
+    dealii::TrilinosWrappers::MPI::Vector mag_solution(mag_owned, mpi_communicator);
+    dealii::TrilinosWrappers::MPI::Vector mag_old(mag_owned, mag_relevant, mpi_communicator);
 
     // ========================================================================
     // Initialize from exact solutions at t_start
@@ -291,35 +284,22 @@ static CoupledMMSResult run_mag_ch_single(
     psi_rel = psi_vec;
     theta_old = theta_vec;
 
-    // Exact phi at t_start
-    PoissonExactSolution<dim> phi_exact_fn(t_start, L_y);
+    // Monolithic magnetics IC: combined (Mx, My, phi)
     {
-        dealii::TrilinosWrappers::MPI::Vector phi_tmp(phi_owned, mpi_communicator);
-        dealii::VectorTools::interpolate(phi_dof, phi_exact_fn, phi_tmp);
-        phi_vec = phi_tmp;
+        MagneticExactSolution<dim> mag_ic(t_start, L_y);
+        dealii::VectorTools::interpolate(mag_dof, mag_ic, mag_solution);
+        mag_constraints.distribute(mag_solution);
+        mag_old = mag_solution;
     }
 
-    // Magnetization IC (L2 projection for DG)
-    MagExactMx<dim> Mx_ic(t_start, L_y);
-    MagExactMy<dim> My_ic(t_start, L_y);
-    dealii::VectorTools::interpolate(M_dof, Mx_ic, Mx_solution);
-    dealii::VectorTools::interpolate(M_dof, My_ic, My_solution);
-    Mx_vec = Mx_solution;
-    My_vec = My_solution;
-    Mx_old = Mx_solution;
-    My_old = My_solution;
-
     // ========================================================================
-    // Create assembler and solver
+    // Create PRODUCTION assembler and solver
     // ========================================================================
-    // Note: MagnetizationAssembler takes theta_dof for chi(theta) evaluation
-    std::unique_ptr<MagnetizationAssembler<dim>> mag_assembler =
-        std::make_unique<MagnetizationAssembler<dim>>(
-            mms_params, M_dof, ux_dof, phi_dof, theta_dof, mpi_communicator);
+    MagneticAssembler<dim> mag_assembler(
+        mms_params, mag_dof, ux_dof, theta_dof,
+        mag_constraints, mpi_communicator);
 
-    std::unique_ptr<MagnetizationSolver<dim>> mag_solver =
-        std::make_unique<MagnetizationSolver<dim>>(
-            mms_params.solvers.magnetization, M_owned, mpi_communicator);
+    MagneticSolver<dim> mag_solver(mag_owned, mpi_communicator);
 
     // ========================================================================
     // Time stepping
@@ -394,40 +374,22 @@ static CoupledMMSResult run_mag_ch_single(
         psi_rel = psi_vec;
 
         // ====================================================================
-        // Step 2: Update exact phi for current time
+        // Step 2: Solve Monolithic M+φ with θ from CH (THE COUPLING!)
+        //
+        // The assembler evaluates χ(θ) from theta_rel at each quadrature point.
+        // This tests that the CH → χ(θ) → Magnetics coupling is correct.
         // ====================================================================
-        phi_exact_fn.set_time(current_time);
-        {
-            dealii::TrilinosWrappers::MPI::Vector phi_tmp(phi_owned, mpi_communicator);
-            dealii::VectorTools::interpolate(phi_dof, phi_exact_fn, phi_tmp);
-            phi_vec = phi_tmp;
-        }
+        mag_old = mag_solution;
 
-        // ====================================================================
-        // Step 3: Solve Magnetization with theta from CH and exact H
-        // ====================================================================
-        Mx_old = Mx_vec;
-        My_old = My_vec;
-
-        M_matrix = 0;
-        Mx_rhs = 0;
-        My_rhs = 0;
-
-        // The assembler uses theta_rel for chi(theta) evaluation
-        mag_assembler->assemble(
-            M_matrix, Mx_rhs, My_rhs,
+        mag_assembler.assemble(
+            mag_matrix, mag_rhs,
             ux_zero, uy_zero,   // U = 0 (no advection)
-            phi_vec,            // Exact phi (for H = h_a - grad phi)
-            theta_rel,          // theta from CH solve (THIS IS THE COUPLING!)
-            Mx_old, My_old,     // M from previous time step
+            theta_rel,          // θ from CH solve (THIS IS THE COUPLING!)
+            mag_old,            // Previous combined (M, φ) solution
             dt, current_time);
 
-        mag_solver->initialize(M_matrix);
-        mag_solver->solve(Mx_solution, Mx_rhs);
-        mag_solver->solve(My_solution, My_rhs);
-
-        Mx_vec = Mx_solution;
-        My_vec = My_solution;
+        mag_solver.solve(mag_matrix, mag_solution, mag_rhs);
+        mag_constraints.distribute(mag_solution);
     }
 
     // ========================================================================
@@ -460,14 +422,23 @@ static CoupledMMSResult run_mag_ch_single(
         result.theta_Linf = global_linf;
     }
 
-    // Magnetization errors
+    // Monolithic magnetics errors (M and φ)
     {
-        MagMMSError mag_err = compute_mag_mms_errors_parallel<dim>(
-            M_dof, Mx_vec, My_vec, current_time, L_y, mpi_communicator);
+        dealii::TrilinosWrappers::MPI::Vector mag_ghosted(
+            mag_owned, mag_relevant, mpi_communicator);
+        mag_ghosted = mag_solution;
+
+        MagneticMMSError mag_err = compute_magnetic_mms_errors_parallel<dim>(
+            mag_dof, mag_ghosted, current_time, L_y, mpi_communicator);
 
         result.Mx_L2 = mag_err.Mx_L2;
         result.My_L2 = mag_err.My_L2;
         result.M_L2 = mag_err.M_L2;
+        result.M_H1 = mag_err.M_H1;
+        result.M_Linf = mag_err.M_Linf;
+        result.phi_L2 = mag_err.phi_L2;
+        result.phi_H1 = mag_err.phi_H1;
+        result.phi_Linf = mag_err.phi_Linf;
     }
 
     auto total_end = std::chrono::high_resolution_clock::now();
@@ -479,14 +450,14 @@ static CoupledMMSResult run_mag_ch_single(
 // ============================================================================
 // Public interface
 // ============================================================================
-CoupledMMSConvergenceResult run_mag_ch_mms(
+CoupledMMSConvergenceResult run_ch_magnetic_mms(
     const std::vector<unsigned int>& refinements,
     const Parameters& params,
     unsigned int n_time_steps,
     MPI_Comm mpi_communicator)
 {
     CoupledMMSConvergenceResult result;
-    result.level = CoupledMMSLevel::MAG_CH;
+    result.level = CoupledMMSLevel::CH_MAGNETIC;
     result.expected_L2_rate = params.fe.degree_phase + 1;  // Q2 -> 3
     result.expected_H1_rate = params.fe.degree_phase;      // Q2 -> 2
     result.expected_DG_rate = 2.0;                         // DG-Q1 -> 2
@@ -496,17 +467,18 @@ CoupledMMSConvergenceResult run_mag_ch_mms(
     if (this_rank == 0)
     {
         std::cout << "\n========================================\n";
-        std::cout << "[MAG_CH] Magnetization + CH Coupled MMS Test\n";
+        std::cout << "[CH_MAGNETIC] CH → Magnetic Coupled MMS Test\n";
         std::cout << "========================================\n";
-        std::cout << "  Tests: chi(theta) coupling from CH to Magnetization\n";
+        std::cout << "  Tests: chi(theta) coupling from CH to Monolithic Magnetics\n";
         std::cout << "  Algorithm:\n";
         std::cout << "    1. Solve CH standalone (U=0)\n";
-        std::cout << "    2. Feed theta into Magnetization with exact H\n";
+        std::cout << "    2. Solve monolithic M+phi with theta from CH\n";
         std::cout << "  MPI ranks: " << dealii::Utilities::MPI::n_mpi_processes(mpi_communicator) << "\n";
         std::cout << "  Time steps: " << n_time_steps << "\n";
         std::cout << "  Expected rates:\n";
         std::cout << "    theta: L2=" << result.expected_L2_rate << ", H1=" << result.expected_H1_rate << "\n";
         std::cout << "    M: L2=" << result.expected_DG_rate << " (DG-Q1)\n";
+        std::cout << "    phi: L2=3, H1=2 (CG-Q2)\n";
         std::cout << "========================================\n\n";
     }
 
@@ -515,13 +487,14 @@ CoupledMMSConvergenceResult run_mag_ch_mms(
         if (this_rank == 0)
             std::cout << "  Ref " << ref << "... " << std::flush;
 
-        CoupledMMSResult r = run_mag_ch_single(ref, params, n_time_steps, mpi_communicator);
+        CoupledMMSResult r = run_ch_magnetic_single(ref, params, n_time_steps, mpi_communicator);
         result.results.push_back(r);
 
         if (this_rank == 0)
         {
             std::cout << "theta_L2=" << std::scientific << std::setprecision(2) << r.theta_L2
                       << ", M_L2=" << r.M_L2
+                      << ", phi_L2=" << r.phi_L2
                       << ", time=" << std::fixed << std::setprecision(1) << r.total_time << "s\n";
         }
     }

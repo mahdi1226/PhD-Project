@@ -1,134 +1,219 @@
-# Implementation Plan: Next Steps
+# Implementation Plan: Monolithic Electromagnetics Block
 
-## Project: Ferrofluid Phase-Field Model (Nochetto et al.)
-## Last Updated: March 6, 2026
-
----
-
-## Current Status (Updated March 7, 2026)
-
-- All 10 spatial MMS tests pass with optimal convergence rates
-- 13 bugs found and fixed total (4 MMS, 3 MPI/solver, 1 test harness, 1 H field, 1 viscous scaling,
-  1 CH convection explicit->implicit, 1 DG face loop after AMR, 1 AMR bulk coarsening)
-- **BGS set to single pass** (paper-like approach; iterating to convergence diverges)
-- **Code optimized**: M_PI centralized, dead code removed, memory management fixed,
-  NS assembler consolidated via NSForceData struct, mag face assembly deduplicated
-- **CH convection implicit** in theta (removes CFL constraint)
-- **AMR bulk coarsening fix** prevents oscillation cycle
-- **3 validation benchmarks running** (droplet, square, droplet-nonuniform-B)
-- **Decoupled rosensweig-nonuniform running** (4 ranks, comparison reference)
-- Long-duration MMS framework prepared (not yet run)
+## Goal
+Combine the Poisson (phi) and Magnetization (M) subsystems into a single monolithic
+block system, solving equations (42c) and (42d) from Nochetto et al. together.
 
 ---
 
-## PRIORITY 1: Validation Pyramid (IN PROGRESS)
+## Phase 1: New Magnetics Module (standalone, MMS-testable)
 
-### Step 1: Benchmark Tests (Running — March 7)
-Three tests launched to validate the basic physics before attempting Rosensweig:
+### Step 1.1: magnetic_setup.h / magnetic_setup.cc
+Create the FESystem and block infrastructure.
 
-| Test | What it validates | Expected result |
-|------|-------------------|-----------------|
-| Droplet (no mag) | CH + NS coupling, interface stability | Circle stays circular |
-| Square (no mag) | CH + NS, energy dissipation, mass conservation | Square relaxes to circle |
-| Droplet + nonuniform B | CH + NS + Mag, Kelvin force on interface | Droplet elongates into ellipse |
+**FESystem definition:**
+```cpp
+FESystem<dim>(FE_DGQ<dim>(1), dim,   // M_x, M_y (DG, vector)
+              FE_Q<dim>(2),   1)      // phi      (CG, scalar)
+```
 
-**Early observations (step ~40):** All three tests running stably.
+**Block structure:**
+- Block 0: M DoFs (DG) -- M_x and M_y components
+- Block 1: phi DoFs (CG) -- demagnetizing potential
 
-### Step 2: Dome Test (NEXT)
-- Uses `h = h_a` only (reduced magnetic field, no Poisson solve)
-- Tests gravity + magnetic force on flat interface
-- Simpler than full Rosensweig (no demagnetization field)
+**Tasks:**
+- Single DoFHandler for the combined system
+- DoFTools::count_dofs_per_block for block sizing
+- BlockSparsityPattern with flux sparsity (DG face couplings in M-M block only)
+- Constraints: hanging nodes for phi (CG), pin phi DoF 0 for Neumann nullspace,
+  unconstrained for M (DG)
+- Initialize BlockSparseMatrix and block vectors
 
-### Step 3: Rosensweig Instability (AFTER BENCHMARKS)
-- Previous runs showed BGS non-convergence at onset (t~0.5)
-- Now using BGS=1 (single pass), implicit CH convection
-- Need to verify benchmarks pass first before attempting
+**Coupling table for sparsity:**
+- Cell couplings: all blocks couple (M-M, M-phi, phi-M, phi-phi)
+- Face couplings: only M-M block (DG transport upwind flux)
 
-### BGS Investigation Conclusion
-BGS=20 tested: residual stays 0.2-0.5 at onset — iterating does NOT help.
-Paper (Section 6, p.520): "We make no attempt to prove convergence."
-Decision: BGS=1 (single pass per time step), matching paper's likely approach.
+### Step 1.2: magnetic_assembler.h / magnetic_assembler.cc
+Monolithic assembly of the 2x2 block system.
+
+**FEValuesExtractors:**
+```cpp
+const FEValuesExtractors::Vector M(0);       // components 0,1
+const FEValuesExtractors::Scalar phi(dim);   // component 2
+```
+
+**Cell loop -- the 2x2 block system:**
+
+| Block     | Term | Equation |
+|-----------|------|----------|
+| A_M (M-M) | (1/tau)(M^k, Z) + (1/T)(M^k, Z) + B_h^m(U^k, Z, M^k) | (42c) mass + relaxation + transport |
+| C_M_phi (M-phi) | -(1/T) chi(theta) (grad phi^k, Z) | (42c) equilibrium source couples phi into M |
+| C_phi_M (phi-M) | -(M^k, grad X) | (42d) magnetization as Poisson source |
+| A_phi (phi-phi) | (grad phi^k, grad X) | (42d) Laplacian |
+
+**RHS:**
+- M block: (1/tau)(M^{k-1}, Z) + (1/T) chi(theta) (h_a, Z)
+- phi block: (h_a, grad X)
+
+**Face loop (DG transport):**
+- Only contributes to M-M block
+- Keep existing upwind flux from magnetization_assembler.cc
+- Use FEValuesExtractors::Vector M to extract DG shape functions
+- phi components have zero jumps (CG) -- no face contribution
+
+**Additional inputs needed at quadrature points:**
+- theta (phase field) for chi(theta) evaluation
+- U (velocity) for transport term B_h^m
+- h_a (applied field)
+
+### Step 1.3: magnetic_solver.h / magnetic_solver.cc
+MUMPS direct solver for the monolithic block system.
+
+**Implementation:**
+- Take the assembled BlockSparseMatrix
+- Pass directly to SolverDirect (Amesos_Mumps via Trilinos)
+- No preconditioner needed -- direct solve
+- Return solver info (iterations=1 for direct, residual)
+
+**Why MUMPS:**
+- Block matrix is nonsymmetric (DG advection + skew cross-coupling)
+- 2D problem, manageable size even at AMR level 7
+- Eliminates iterative solver convergence as a debugging variable
+- Already have MUMPS working in existing magnetization_solver.cc
+
+### Step 1.4: MMS Test for Magnetics Block
+Create standalone MMS test for the monolithic magnetics system.
+
+**Location:** `mms/magnetic/magnetic_mms_test.cc`, `mms/magnetic/magnetic_mms.h`
+
+**Strategy:**
+- Manufacture exact solutions for both phi and M simultaneously
+- phi_exact: smooth function satisfying Neumann BCs (e.g., cos(pi*x)*cos(pi*y/L_y))
+- M_exact: consistent with phi_exact through the coupling
+- Compute MMS source terms for both equations (42c) and (42d)
+- Verify convergence rates:
+  - phi (CG Q2): L2 rate = 3, H1 rate = 2
+  - M (DG Q1): L2 rate = 2
+
+**Test levels:**
+1. Magnetics standalone (no flow, constant theta): verify block assembly + solve
+2. Magnetics with variable theta: verify chi(theta) coefficient handling
 
 ---
 
-## PRIORITY 2: Temporal Convergence Verification (DEFERRED)
+## Phase 2: Integration into Full System
 
-### Goal
-Verify first-order temporal convergence (backward Euler) for all subsystems.
+### Step 2.1: Modify core/phase_field.h
+- Remove: separate Poisson and Magnetization DoFHandlers, matrices, assemblers, solvers
+- Remove: Picard iteration members (picard_iterations, picard_omega, picard_tolerance)
+- Add: single magnetic DoFHandler, BlockSparseMatrix, block vectors
+- Add: MagneticSolver (MUMPS)
+- Keep: existing CH and NS subsystems unchanged
 
-### Status
-Current MMS solutions are linear in time (theta ~ t, U ~ t, M ~ t). Backward Euler
-is exact for linear-in-time solutions, so temporal tests show flat error (rate 0.0).
-This is EXPECTED, not a bug.
+### Step 2.2: Modify core/phase_field.cc
+- Replace solve_poisson_magnetization_picard() with solve_magnetics()
+- solve_magnetics() does: assemble block system -> MUMPS solve -> extract phi and M
+  from block solution vector
+- Remove: solve_poisson(), solve_magnetization(), project_equilibrium_magnetization()
+- phi and M components extracted from block solution using block indices
 
-### Implementation Needed
-- Create t^2 MMS solutions (quadratic in time) so backward Euler produces O(dt) error
-- Fix spatial mesh (fine enough to resolve), vary dt
-- Expected: O(dt) convergence for all fields
+### Step 2.3: Modify core/phase_field_setup.cc
+- Replace setup_poisson_system() + setup_magnetization_system() with setup_magnetics_system()
+- setup_magnetics_system(): FESystem, block sparsity, constraints, vector allocation
 
----
+### Step 2.4: Modify core/phase_field_amr.cc
+- Update AMR transfer to handle the combined DoFHandler
+- SolutionTransfer for the block vector (handles DG+CG mixed transfer)
 
-## PRIORITY 3: Code Cleanup (PARTIALLY COMPLETE)
+### Step 2.5: Update utilities/parameters.h/.cc
+- Remove: picard_iterations, picard_omega, picard_tolerance, use_dg_transport
+- Remove: separate magnetization solver params
+- Add/keep: magnetics solver params (type=direct, solver=mumps)
 
-Completed (Session 19):
-1. Centralized M_PI in tools.h (removed from 6 files)
-2. Removed dead fe_Q1_ member from phase_field
-3. Fixed raw new/delete -> unique_ptr in ns_block_preconditioner.cc
-4. Deduplicated magnetization face assembly (~40 lines -> lambda)
-5. Consolidated 4 NS assembler functions into unified NSForceData struct
-
-Remaining:
-1. Remove Zhang-He-Yang extension code (beta damping, spin-vorticity)
-2. Consolidate duplicated functions (applied field, Heaviside)
-3. Fix performance (FEFaceValues inside loop)
-4. Extract hardcoded values to parameters
-
----
-
-## Results Archive
-
-| Directory | Test | Date | Status |
-|-----------|------|------|--------|
-| `20260228_063736_droplet_r5_direct_amr` | Droplet (no mag) | Feb 28 | Complete |
-| `20260228_221805_droplet-uniform-B_r5_direct_Namr` | Droplet + uniform B | Feb 28 | Complete (slow instability) |
-| `20260301_052316_rosen_r4_direct_Namr` | Rosensweig r=4 noAMR DG | Mar 1 | Died t~1.0 (CFL) |
-| `20260301_214922_rosen_r4_direct_Namr` | Rosensweig r=4 noAMR | Mar 1 | Died (CFL) |
-| `20260302_174643_rosen_r4_direct_Namr` | Rosensweig r=4 noAMR | Mar 2 | Died (CFL) |
-| `20260304_065229_square_r5_direct_amr` | Square r=5 AMR | Mar 4 | Partial |
-| `20260304_232520_square_r4_direct_Namr` | Square r=4 noAMR | Mar 4 | Complete |
-| `20260305_021220_rosen_r3_direct_amr` | Rosensweig r3 AMR | Mar 5 | Partial |
-| `20260305_115128_rosen_r3_direct_amr` | Rosensweig r3 AMR explicit | Mar 5 | **Completed** t=2.0 |
-| `20260305_171805_rosen_r4_direct_amr` | Rosensweig r4 AMR explicit | Mar 5 | Died t~0.99 (CFL=1.15) |
-| `20260306_085853_rosen_r4_direct_amr` | Rosensweig r4 AMR implicit | Mar 6 | Partial (BGS issues) |
-| `20260306_171510_rosen_r4_direct_amr` | Rosensweig r4 BGS=20 | Mar 6 | Killed t=0.60 (BGS non-conv) |
-| `20260307_*_droplet_r5_direct_amr` | Droplet benchmark | Mar 7 | **Running** |
-| `20260307_*_square_r5_direct_amr` | Square benchmark | Mar 7 | **Running** |
-| `20260307_*_droplet-nonuniform-B_*` | Droplet + nonuniform B | Mar 7 | **Running** |
+### Step 2.6: Update CMakeLists.txt
+- Remove old source files: poisson_assembler.cc, magnetization_assembler.cc,
+  poisson_setup.cc, magnetization_setup.cc, poisson_solver.cc, magnetization_solver.cc
+- Add new source files: magnetic_assembler.cc, magnetic_setup.cc, magnetic_solver.cc
 
 ---
 
-## Key Files
+## Phase 3: Delete Old Files
 
-### Production Code
-| File | Purpose |
-|------|---------|
-| `assembly/ns_assembler.cc` | NS + Kelvin force assembly (Bug 9 fix here) |
-| `assembly/magnetization_assembler.cc` | DG magnetization transport |
-| `assembly/ch_assembler.cc` | Cahn-Hilliard assembly |
-| `physics/kelvin_force.h` | DG skew form Kelvin force kernels |
-| `physics/applied_field.h` | External field computation (dipoles + uniform) |
-| `core/phase_field.cc` | Main time loop + BGS iteration |
-| `utilities/parameters.cc` | CLI parsing + presets |
+After Phase 2 compiles and MMS tests pass, delete:
 
-### MMS Sources
-| File | Purpose |
-|------|---------|
-| `mms/ns/ns_mms.h` | NS + Kelvin force MMS source |
-| `mms/poisson/poisson_mms.h` | Poisson MMS + exact H |
-| `mms/magnetization/magnetization_mms.h` | Magnetization MMS source |
-| `mms/ch/ch_mms.h` | Cahn-Hilliard MMS source |
+**Assembly:**
+- assembly/poisson_assembler.h, .cc
+- assembly/magnetization_assembler.h, .cc
 
-### Reference Code
-| File | Purpose |
-|------|---------|
-| `Decoupled/navier_stokes/navier_stokes_assemble.cc` | Working 3-term Kelvin (reference) |
+**Setup:**
+- setup/poisson_setup.h, .cc
+- setup/magnetization_setup.h, .cc
+
+**Solvers:**
+- solvers/poisson_solver.h, .cc
+- solvers/magnetization_solver.h, .cc
+
+**Diagnostics:**
+- diagnostics/poisson_diagnostics.h
+- diagnostics/magnetization_diagnostics.h
+
+**Old MMS tests:**
+- mms/poisson/ (entire directory)
+- mms/magnetization/ (entire directory)
+- mms/coupled/poisson_mag_mms_test.cc (Picard coupling test)
+
+---
+
+## Phase 4: Coupled MMS Tests
+
+Update remaining coupled MMS tests to use new magnetics block:
+- mms/coupled/ns_magnetization_mms_test.cc -> ns_magnetics
+- mms/coupled/ns_poisson_mag_mms_test.cc -> ns_magnetics
+- mms/coupled/full_system_mms_test.cc -> uses new magnetics
+
+---
+
+## Phase 5: Physical Validation
+
+1. Square relaxation (CH only, h_a=0): verify CH still works
+2. Droplet no-field (CH+NS): verify NS coupling unchanged
+3. Rosensweig uniform r4: first magnetics physics test
+4. Rosensweig uniform r6: production resolution
+5. Compare with paper's Figure 1 (interface heights at t=0.9, 1.0, 1.5, 2.0)
+
+---
+
+## Key Equations Reference
+
+**Equation (42c) -- Magnetization:**
+(delta_M^k / tau, Z) - B_h^m(U^k, Z, M^k) + (1/T)(M^k, Z) = (1/T)(chi_theta H^k, Z)
+
+where H^k = grad(phi^k) + h_a, and B_h^m is the DG skew-symmetric transport form.
+
+**Equation (42d) -- Poisson:**
+(grad phi^k, grad X) = (h_a^k - M^k, grad X)
+
+**Block system [A]{x} = {b}:**
+
+| A_M        C_M_phi | | M^k   |   | f_M   |
+|                     | |       | = |       |
+| C_phi_M    A_phi   | | phi^k |   | f_phi |
+
+---
+
+## Implementation Order
+1. Start with Step 1.4 (MMS test) and Step 1.2 (assembler) in parallel
+2. Then Step 1.1 (setup) and Step 1.3 (solver)
+3. Verify with MMS standalone test
+4. Then Phase 2 (integration)
+5. Then Phase 3 (cleanup) and Phase 4 (coupled MMS)
+6. Finally Phase 5 (physical validation)
+
+---
+
+## Status
+- [ ] Phase 1: New magnetics module
+- [ ] Phase 2: Integration
+- [ ] Phase 3: Delete old files
+- [ ] Phase 4: Coupled MMS tests
+- [ ] Phase 5: Physical validation

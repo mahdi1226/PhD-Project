@@ -121,12 +121,6 @@ struct Parameters
         double rho = 1.0;           // reference density
         double r = 0.1;             // density ratio
         double gravity = 30000.0;   // non-dimensionalized gravity
-        double grad_div_stabilization = 0.0;  // Optional stabilization
-
-        // Convection treatment in Cahn-Hilliard equation
-        // true  = implicit: θ^k on LHS (unconditionally stable, no CFL limit)
-        // false = explicit: θ^{k-1} on RHS (CFL-limited, original Nochetto scheme)
-        bool implicit_ch_convection = true;
     } physics;
 
     // ========================================================================
@@ -164,7 +158,6 @@ struct Parameters
     bool enable_ns = true;
     bool enable_gravity = true;
     bool enable_mms = false;
-    bool use_dg_transport = false;  // Paper Eq. 42d: algebraic M = χ(θ)∇Φ (default)
 
     // MMS
     double mms_t_init = 0.0;
@@ -178,16 +171,8 @@ struct Parameters
     // Paper describes BGS structure but does not specify iteration count.
     // Testing shows iterating to convergence diverges at strong coupling.
     // ========================================================================
-    unsigned int bgs_max_iterations = 1;   // Single BGS pass per time step (paper-like)
+    unsigned int bgs_max_iterations = 1;   // Single BGS pass per time step
     double bgs_tolerance = 1e-2;           // Relative change tolerance for convergence
-    bool enable_bgs = true;                // Enable Block-Gauss-Seidel (paper-faithful)
-
-    // ========================================================================
-    // Picard iteration settings (inner loop for Poisson <-> Magnetization)
-    // ========================================================================
-    unsigned int picard_iterations = 7;
-    double picard_tolerance = 0.05;
-    double picard_omega = 0.35;         // Under-relaxation factor for M
 
     // ========================================================================
     // Solver parameters
@@ -199,20 +184,6 @@ struct Parameters
             LinearSolverParams::Preconditioner::AMG,
             1e-8, 1e-12, 2000, 50, 1.2, 1.2,  // ssor_omega, ilu_strengthen
             false, true, false
-        };
-
-        LinearSolverParams poisson = {
-            LinearSolverParams::Type::CG,
-            LinearSolverParams::Preconditioner::AMG,
-            1e-8, 1e-12, 2000, 50, 1.2, 1.0,  // ssor_omega, ilu_strengthen (unused for SSOR)
-            true, true, true
-        };
-
-        LinearSolverParams magnetization = {
-            LinearSolverParams::Type::Direct,
-            LinearSolverParams::Preconditioner::None,
-            1e-8, 1e-12, 1000, 50, 1.2, 1.0,  // ssor_omega, ilu_strengthen (unused for Direct)
-            false, true, false  // Direct solver for small DG system
         };
 
         // NS solver: Direct (MUMPS) is 10-50x faster than iterative for ref 3-5
@@ -233,12 +204,9 @@ struct Parameters
     void setup_hedgehog();
     void setup_droplet();
     void setup_droplet_uniform_B();                  // Droplet + uniform magnetic field
-    void setup_droplet_nonuniform_B();               // Droplet + single dipole (non-uniform)
+    void setup_elongation();                          // Ferrofluid droplet elongation in uniform field
     void setup_square();                             // Square relaxation test
     void setup_dome();                               // Dome configuration
-    bool use_reduced_magnetic_field = false;        // Dome set-up h = h_a only
-    bool skip_kelvin_face_terms = true;             // Skip Kelvin face term (CG φ → [[∇φ]] ≈ 0)
-    bool use_gradient_kelvin_force = false;         // Use CG gradient form: (μ₀/2)|H|²∇χ(θ)
 
     // ========================================================================
     // Parallel diagnostics (--parallel-diag)

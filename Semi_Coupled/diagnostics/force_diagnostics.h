@@ -73,12 +73,8 @@ ForceDiagnostics compute_force_diagnostics(
     dealii::QGauss<dim> quadrature(fe.degree + 1);
     const unsigned int n_q_points = quadrature.size();
 
-    // Need hessians for bulk term when using gradient Kelvin force
-    const bool use_gradient = params.use_gradient_kelvin_force;
     dealii::UpdateFlags update_flags = dealii::update_values |
         dealii::update_gradients | dealii::update_JxW_values;
-    if (use_gradient)
-        update_flags |= dealii::update_hessians;
 
     dealii::FEValues<dim> fe_values(fe, quadrature, update_flags);
 
@@ -86,7 +82,6 @@ ForceDiagnostics compute_force_diagnostics(
     std::vector<dealii::Tensor<1, dim>> theta_gradients(n_q_points);
     std::vector<dealii::Tensor<1, dim>> psi_gradients(n_q_points);
     std::vector<dealii::Tensor<1, dim>> phi_gradients(n_q_points);
-    std::vector<dealii::Tensor<2, dim>> phi_hessians(n_q_points);
 
     // Local accumulators
     double local_F_cap_sq = 0.0;
@@ -109,8 +104,6 @@ ForceDiagnostics compute_force_diagnostics(
         if (phi_solution != nullptr)
         {
             fe_values.get_function_gradients(*phi_solution, phi_gradients);
-            if (use_gradient)
-                fe_values.get_function_hessians(*phi_solution, phi_hessians);
         }
 
         for (unsigned int q = 0; q < n_q_points; ++q)
@@ -130,9 +123,7 @@ ForceDiagnostics compute_force_diagnostics(
             local_F_cap_max = std::max(local_F_cap_max, F_cap_mag);
 
             // ================================================================
-            // Kelvin force (full gradient form or interface-only)
-            // Gradient: f = (μ₀/2)|H|²∇χ + μ₀χ·Hess(φ)·H
-            // Legacy:   f ≈ (μ₀/2)|H|²χ'∇θ  (interface term only)
+            // Kelvin force diagnostic: (μ₀/2)|H|²χ'∇θ (interface term)
             // ================================================================
             if (phi_solution != nullptr)
             {
@@ -143,20 +134,9 @@ ForceDiagnostics compute_force_diagnostics(
                 const double H_sigmoid = force_detail::sigmoid(theta / eps);
                 const double chi_prime = (chi0 / eps) * H_sigmoid * (1.0 - H_sigmoid);
 
-                // Term 1 (interface): (μ₀/2)|H|²χ'∇θ
                 dealii::Tensor<1, dim> F_mag;
                 for (unsigned int d = 0; d < dim; ++d)
                     F_mag[d] = 0.5 * params.physics.mu_0 * chi_prime * H_sq * theta_gradients[q][d];
-
-                // Term 2 (bulk): μ₀χ·Hess(φ)·H (only for gradient Kelvin)
-                if (use_gradient)
-                {
-                    const double chi_val = chi0 * H_sigmoid;
-                    const dealii::Tensor<2, dim>& Hess_phi = phi_hessians[q];
-                    for (unsigned int d1 = 0; d1 < dim; ++d1)
-                        for (unsigned int d2 = 0; d2 < dim; ++d2)
-                            F_mag[d1] += params.physics.mu_0 * chi_val * Hess_phi[d1][d2] * H[d2];
-                }
 
                 const double F_mag_mag = F_mag.norm();
                 local_F_mag_sq += F_mag_mag * F_mag_mag * JxW;

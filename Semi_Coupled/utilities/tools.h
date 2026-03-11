@@ -212,12 +212,8 @@ inline std::string get_csv_header_stamp(const Parameters& params, MPI_Comm comm 
     ss << ",mag=" << (params.enable_magnetic ? 1 : 0);
     ss << ",ns=" << (params.enable_ns ? 1 : 0);
     ss << ",grav=" << (params.enable_gravity ? 1 : 0);
-    ss << ",reduced_h=" << (params.use_reduced_magnetic_field ? 1 : 0);
     ss << ",amr=" << (params.mesh.use_amr ? 1 : 0);
-    ss << ",dg=" << (params.use_dg_transport ? 1 : 0);
     ss << ",direct=" << (!params.solvers.ch.use_iterative ? 1 : 0);
-    ss << ",picard=" << params.picard_iterations;
-    ss << ",bgs=" << (params.enable_bgs ? 1 : 0);
     ss << ",bgs_iters=" << params.bgs_max_iterations;
 
     return ss.str();
@@ -300,9 +296,6 @@ inline void write_run_info(const std::string& output_dir,
     file << "  enable_magnetic         = " << (params.enable_magnetic ? "true" : "FALSE") << "\n";
     file << "  enable_ns               = " << (params.enable_ns ? "true" : "FALSE") << "\n";
     file << "  enable_gravity          = " << (params.enable_gravity ? "true" : "FALSE") << "\n";
-    file << "  use_dg_transport        = " << (params.use_dg_transport ? "true" : "false") << "\n";
-    file << "  use_reduced_mag_field   = " << (params.use_reduced_magnetic_field ? "TRUE (h=ha only)" : "false (h=ha+hd)") << "\n";
-    file << "  implicit_ch_convection  = " << (params.physics.implicit_ch_convection ? "true (no CFL limit)" : "false (CFL-limited)") << "\n";
     file << "\n";
 
     // Time stepping
@@ -367,15 +360,8 @@ inline void write_run_info(const std::string& output_dir,
     file << "    use_iterative = " << (params.solvers.ns.use_iterative ? "true (Schur)" : "false (DIRECT)") << "\n";
     file << "    rel_tolerance = " << std::scientific << params.solvers.ns.rel_tolerance << "\n";
     file << "    max_iter      = " << params.solvers.ns.max_iterations << "\n";
-    file << "  Poisson:\n";
-    file << "    rel_tolerance = " << std::scientific << params.solvers.poisson.rel_tolerance << "\n";
-    file << "    max_iter      = " << params.solvers.poisson.max_iterations << "\n";
-    file << "\n";
 
-    // Coupling
-    file << "COUPLING:\n";
-    file << "  picard_iterations = " << params.picard_iterations << "\n";
-    file << "\n";
+
 
     // Domain
     file << "DOMAIN:\n";

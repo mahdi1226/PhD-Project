@@ -1,5 +1,5 @@
 // ============================================================================
-// diagnostics/poisson_diagnostics.h - Magnetostatic Poisson Diagnostics (Parallel)
+// diagnostics/magnetic_diagnostics.h - Magnetic Subsystem Diagnostics (Parallel)
 //
 // Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
 //
@@ -9,10 +9,11 @@
 //   - Magnetic energy: ½∫ μ(θ)|∇φ|² dx
 //   - M magnitude (quasi-equilibrium): |χ(θ)∇φ|
 //
-// All quantities are MPI-reduced for parallel correctness.
+// Uses the auxiliary phi_dof_handler (CG scalar) extracted from the
+// monolithic M+φ system. All quantities are MPI-reduced.
 // ============================================================================
-#ifndef POISSON_DIAGNOSTICS_H
-#define POISSON_DIAGNOSTICS_H
+#ifndef MAGNETIC_DIAGNOSTICS_H
+#define MAGNETIC_DIAGNOSTICS_H
 
 #include "utilities/parameters.h"
 #include "utilities/mpi_tools.h"
@@ -28,26 +29,21 @@
 #include <limits>
 
 // ============================================================================
-// Poisson Diagnostic Data
+// Magnetic Diagnostic Data
 // ============================================================================
-struct PoissonDiagnostics
+struct MagneticDiagnostics
 {
-    // Potential bounds
     double phi_min = 0.0;
     double phi_max = 0.0;
 
-    // H field = ∇φ
     double H_L2_norm = 0.0;      // ||∇φ||_{L²}
     double H_max = 0.0;          // max |∇φ|
 
-    // Magnetization (quasi-equilibrium: M = χ(θ)∇φ)
-    double M_L2_norm = 0.0;      // ||M||_{L²}
+    double M_L2_norm = 0.0;      // ||M||_{L²} (quasi-equilibrium)
     double M_max = 0.0;          // max |M|
 
-    // Magnetic energy: ½∫ μ(θ)|∇φ|² dx
-    double magnetic_energy = 0.0;
+    double magnetic_energy = 0.0; // ½∫ μ(θ)|∇φ|² dx
 
-    // Permeability range
     double mu_min = 1.0;
     double mu_max = 1.0;
 };
@@ -71,10 +67,10 @@ namespace detail
 }
 
 // ============================================================================
-// Compute Poisson diagnostics (parallel version with Trilinos vectors)
+// Compute magnetic diagnostics (parallel version with Trilinos vectors)
 // ============================================================================
 template <int dim>
-PoissonDiagnostics compute_poisson_diagnostics(
+MagneticDiagnostics compute_magnetic_diagnostics(
     const dealii::DoFHandler<dim>& phi_dof_handler,
     const dealii::TrilinosWrappers::MPI::Vector& phi_solution,
     const dealii::DoFHandler<dim>& theta_dof_handler,
@@ -98,7 +94,6 @@ PoissonDiagnostics compute_poisson_diagnostics(
     std::vector<dealii::Tensor<1, dim>> grad_phi_values(n_q_points);
     std::vector<double> theta_values(n_q_points);
 
-    // Local accumulators
     double local_H_L2_sq = 0.0;
     double local_M_L2_sq = 0.0;
     double local_magnetic_energy = 0.0;
@@ -126,26 +121,19 @@ PoissonDiagnostics compute_poisson_diagnostics(
         for (unsigned int q = 0; q < n_q_points; ++q)
         {
             const double JxW = phi_fe_values.JxW(q);
-
-            // H = ∇φ
             const dealii::Tensor<1, dim>& H = grad_phi_values[q];
             const double H_norm = H.norm();
 
-            // θ and derived quantities
             const double theta_q = theta_values[q];
             const double chi_theta = detail::susceptibility(theta_q,
                 params.physics.epsilon, params.physics.chi_0);
             const double mu_theta = 1.0 + chi_theta;
-
-            // M = χ(θ)H (quasi-equilibrium)
             const double M_norm = chi_theta * H_norm;
 
-            // Accumulate integrals
             local_H_L2_sq += H_norm * H_norm * JxW;
             local_M_L2_sq += M_norm * M_norm * JxW;
             local_magnetic_energy += 0.5 * mu_theta * H_norm * H_norm * JxW;
 
-            // Track extrema
             local_H_max = std::max(local_H_max, H_norm);
             local_M_max = std::max(local_M_max, M_norm);
             local_mu_min = std::min(local_mu_min, mu_theta);
@@ -153,7 +141,7 @@ PoissonDiagnostics compute_poisson_diagnostics(
         }
     }
 
-    // φ bounds from solution vector (locally owned entries)
+    // φ bounds from solution vector
     for (const auto& cell : phi_dof_handler.active_cell_iterators())
     {
         if (!cell->is_locally_owned())
@@ -174,8 +162,7 @@ PoissonDiagnostics compute_poisson_diagnostics(
         }
     }
 
-    // MPI reductions
-    PoissonDiagnostics result;
+    MagneticDiagnostics result;
 
     double global_H_L2_sq = MPIUtils::reduce_sum(local_H_L2_sq, comm);
     double global_M_L2_sq = MPIUtils::reduce_sum(local_M_L2_sq, comm);
@@ -197,19 +184,18 @@ PoissonDiagnostics compute_poisson_diagnostics(
 }
 
 // ============================================================================
-// Compute Poisson diagnostics (serial version with deal.II vectors)
+// Compute magnetic diagnostics (serial version with deal.II vectors)
 // ============================================================================
 template <int dim>
-PoissonDiagnostics compute_poisson_diagnostics(
+MagneticDiagnostics compute_magnetic_diagnostics(
     const dealii::DoFHandler<dim>& phi_dof_handler,
     const dealii::Vector<double>& phi_solution,
     const dealii::DoFHandler<dim>& theta_dof_handler,
     const dealii::Vector<double>& theta_solution,
     const Parameters& params)
 {
-    PoissonDiagnostics result;
+    MagneticDiagnostics result;
 
-    // φ bounds
     result.phi_min = *std::min_element(phi_solution.begin(), phi_solution.end());
     result.phi_max = *std::max_element(phi_solution.begin(), phi_solution.end());
 
@@ -275,4 +261,4 @@ PoissonDiagnostics compute_poisson_diagnostics(
     return result;
 }
 
-#endif // POISSON_DIAGNOSTICS_H
+#endif // MAGNETIC_DIAGNOSTICS_H

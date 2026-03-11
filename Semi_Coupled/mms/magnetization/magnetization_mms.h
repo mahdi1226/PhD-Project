@@ -163,6 +163,42 @@ dealii::Tensor<1, dim> compute_mag_mms_source_standalone(
 }
 
 // ============================================================================
+// MMS source for EQUILIBRIUM limit (algebraic M = chi*grad(phi))
+//
+// In the equilibrium limit (tau_M -> 0), the M block enforces:
+//   (1/tau_M)(M, Z) - (1/tau_M) chi (grad phi, Z) = (f_M, Z)
+//
+// For MMS, we need f_M such that the exact M* and phi* are reproduced:
+//   f_M = (1/tau_M)(M* - chi * grad(phi*))
+//
+// Note: This is nonzero when M* != chi * grad(phi*), which is the case
+// for our independently-chosen exact solutions.
+// ============================================================================
+template <int dim>
+dealii::Tensor<1, dim> compute_mag_mms_source_equilibrium(
+    const dealii::Point<dim>& pt,
+    double time,
+    double tau_M,
+    double chi_val,
+    double L_y = 1.0)
+{
+    // Exact M* at this point
+    dealii::Tensor<1, dim> M_exact = mag_mms_exact_M<dim>(pt, time, L_y);
+
+    // Exact H* = grad(phi*) at this point
+    dealii::Tensor<1, dim> H_exact = poisson_mms_exact_H<dim>(pt, time, L_y);
+
+    // f_M = (1/tau_M)(M* - chi * H*)
+    const double coeff = (tau_M > 0.0) ? 1.0 / tau_M : 1.0;
+
+    dealii::Tensor<1, dim> f;
+    for (unsigned int d = 0; d < dim; ++d)
+        f[d] = coeff * (M_exact[d] - chi_val * H_exact[d]);
+
+    return f;
+}
+
+// ============================================================================
 // MMS source WITH transport (U != 0) or coupling (H != 0)
 //
 // Nochetto et al. Eq. 42c (discretized):

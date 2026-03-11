@@ -29,7 +29,7 @@ void Parameters::setup_rosensweig()
     physics.chi_0 = 0.5;          // susceptibility
     physics.nu_water = 1.0;
     physics.nu_ferro = 2.0;
-    physics.r = 0.1;              // density ratio
+    physics.r = 0.1;              // density ratio (paper value, Section 6.2)
     physics.gravity = 30000.0;    // non-dimensional gravity
 
     dipoles.positions = {
@@ -50,26 +50,22 @@ void Parameters::setup_rosensweig()
     time.use_adaptive_dt = false;  // PAPER_MATCH: Paper uses fixed dt
 
     // Mesh (Paper Section 6.2, p.522)
-    // Paper: "initial mesh has 10 elements in x, 6 in y, allow maximum refinement of 4,5,6,7 levels"
-    // The -r flag sets amr_max_level (target interface resolution), NOT initial_refinement.
-    // Start with coarse uniform mesh, let AMR refine up to target level.
-    mesh.initial_refinement = 4;      // Paper: 10×6 base + 4 levels → 160×96 = 15360 cells
+    // Paper Fig. 1: "6 refinement levels in space, 4000 time steps"
+    // Paper Fig. 3 parametric study: 4, 5, 6, 7 levels — default to 6 (Fig. 1)
+    // The -r flag overrides amr_max_level for parametric studies.
+    mesh.initial_refinement = 3;      // Start coarse, let AMR refine to target level
     mesh.use_amr = true;
-    mesh.amr_interval = 5;
-    mesh.amr_min_level = 2;           // Coarsen bulk (paper Fig. 2)
-    mesh.amr_max_level = 7;           // Target: 7 levels (paper Fig. 3, column 4)
-    mesh.amr_refine_threshold = 0.0;  // Let fixed_fraction decide (no artificial barrier)
+    mesh.amr_interval = 5;            // Every 5 steps — paper default
+    mesh.amr_min_level = 0;           // Allow coarsening to base grid in bulk
+    mesh.amr_max_level = 6;           // Paper Fig. 1 default (override with -r)
 
     // Subsystems
     enable_magnetic = true;
     enable_ns = true;
     enable_gravity = true;
 
-    // Paper Eq. 42d: algebraic M = χ(θ)∇Φ (L2 projection, NOT transport PDE)
-    use_dg_transport = false;
-
-    // Output
-    output.frequency = 10;
+    // Output every 100 steps (20 snapshots over t=0..2)
+    output.frequency = 100;
 }
 
 void Parameters::setup_hedgehog()
@@ -143,8 +139,7 @@ void Parameters::setup_hedgehog()
     enable_ns = true;
     enable_gravity = true;
 
-    // Paper Eq. 42d: algebraic M = χ(θ)∇Φ (L2 projection, NOT transport PDE)
-    use_dg_transport = false;
+
 
     // Output
     output.frequency = 10;
@@ -197,9 +192,6 @@ void Parameters::setup_dome()
     dipoles.intensity_max = 4.3;
     dipoles.ramp_time = 4.2;
 
-    // KEY DIFFERENCE: Use reduced field (h = ha only, skip Poisson for hd)
-    use_reduced_magnetic_field = true;  // NEW FLAG
-
     // Time-stepping: dt=1e-4 for CFL stability with ε=0.005
     time.dt = 1e-4;
     time.t_final = 6.0;
@@ -218,8 +210,7 @@ void Parameters::setup_dome()
     enable_ns = true;
     enable_gravity = true;
 
-    // Paper Eq. 42d: algebraic M = χ(θ)∇Φ (L2 projection, NOT transport PDE)
-    use_dg_transport = false;
+
 
     // Output
     output.frequency = 10;
@@ -320,9 +311,9 @@ void Parameters::setup_square()
     dipoles.ramp_time = 1.0;
 
     // Time-stepping
-    time.dt = 0.001;
-    time.t_final = 1.0;
-    time.max_steps = 1000;
+    time.dt = 0.002;
+    time.t_final = 0.7;
+    time.max_steps = 350;
     time.use_adaptive_dt = false;
 
     // Mesh
@@ -357,9 +348,6 @@ void Parameters::setup_droplet_uniform_B()
     physics.chi_0 = 0.5;
     physics.tau_M = 1e-6;
 
-    // Paper Eq. 42d: algebraic M = χ(θ)∇Φ
-    use_dg_transport = false;
-
     // Uniform applied field h_a = (0, 1) — vertical, instant (no ramp)
     dipoles.use_uniform_field = true;
     dipoles.uniform_field_value[0] = 0.0;
@@ -368,32 +356,60 @@ void Parameters::setup_droplet_uniform_B()
 }
 
 // ============================================================================
-// Droplet + Non-Uniform Magnetic Field (single dipole)
-// Same as setup_droplet() but with a single dipole below center
-// Tests that non-uniform field → Kelvin force → droplet elongation
+// Elongation test: ferrofluid droplet in uniform vertical magnetic field
+// Validates monolithic M+φ system in production: Kelvin force → elongation
+//
+// Base: droplet preset (ε=0.02, λ=0.1, R=0.25) — well-validated CH+NS params
+// Adds: magnetic field h_a=(0,10), χ₀=0.5, viscosity contrast ν_ferro=2
+//
+// Magnetic Bond number: Bm = μ₀ χ₀ H₀² R / (λ/ε)
+//   = 1.0 * 0.5 * 100 * 0.25 / 5.0 = 2.5  (moderate elongation)
+//
+// Interface resolution: ε/h = 0.02/(1/64) ≈ 1.3 (adequate)
+//
+// Expected: droplet elongates along vertical field direction,
+//   energy reaches quasi-steady state, mass conserved.
 // ============================================================================
-void Parameters::setup_droplet_nonuniform_B()
+void Parameters::setup_elongation()
 {
-    // Start from base droplet
     setup_droplet();
-    preset_name = "droplet-nonuniform-B";
+    preset_name = "elongation";
+
+    // R=0.2 droplet in [0,1]² — moderate size, room to elongate
+    ic.droplet_radius = 0.2;
+
+    // Viscosity contrast (tests variable-viscosity NS coupling)
+    physics.nu_ferro = 2.0;
 
     // Enable magnetic subsystem
     enable_magnetic = true;
     physics.chi_0 = 0.5;
-    physics.tau_M = 1e-6;
 
-    // Paper Eq. 42d: algebraic M = χ(θ)∇Φ
-    use_dg_transport = false;
+    // Uniform applied field h_a = (0, 45)
+    // Bm = μ₀ χ₀ H₀² R / (λ/ε) = 1.0 * 0.5 * 2025 * 0.2 / 5.0 = 40.5
+    dipoles.use_uniform_field = true;
+    dipoles.uniform_field_value[0] = 0.0;
+    dipoles.uniform_field_value[1] = 45.0;
+    dipoles.ramp_time = 0.5;  // gentle ramp over 0.5s
 
-    // Single dipole below domain center
-    dipoles.use_uniform_field = false;
-    dipoles.positions.clear();
-    dipoles.positions.push_back(dealii::Point<2>(0.5, -0.5));
-    dipoles.direction = {0.0, 1.0};
-    dipoles.intensity_max = 0.5;
-    dipoles.ramp_time = 0.0;
-    dipoles.regularization = 0.01;
+    // Mesh: 1×1 base grid, r=6 (h=1/64, 4096 cells), no AMR
+    domain.initial_cells_x = 1;
+    domain.initial_cells_y = 1;
+    mesh.initial_refinement = 6;
+    mesh.use_amr = false;
+
+    // Direct solvers (4K cells — fast on 2-4 ranks)
+    solvers.ns.use_iterative = false;
+    solvers.ch.use_iterative = false;
+
+    // Time stepping: dt overridable via --dt flag for convergence studies
+    // Default: dt=1e-3, t_final=1.0
+    time.dt = 1e-3;
+    time.t_final = 1.0;
+    time.max_steps = 10000;  // high cap — t_final controls end
+
+    // Output every 50 steps (sparse — convergence cares about final state)
+    output.frequency = 50;
 }
 
 void Parameters::finalize_run_name()
@@ -424,8 +440,8 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             params.setup_droplet();
         else if (std::strcmp(argv[i], "--droplet_uniform_B") == 0)
             params.setup_droplet_uniform_B();
-        else if (std::strcmp(argv[i], "--droplet_nonuniform_B") == 0)
-            params.setup_droplet_nonuniform_B();
+        else if (std::strcmp(argv[i], "--elongation") == 0)
+            params.setup_elongation();
         else if (std::strcmp(argv[i], "--square") == 0)
             params.setup_square();
         else if (std::strcmp(argv[i], "--dome") == 0)
@@ -463,6 +479,11 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             if (++i >= argc) { std::cerr << "--max_steps requires a value\n"; std::exit(1); }
             params.time.max_steps = std::stoul(argv[i]);
         }
+        else if (std::strcmp(argv[i], "--vtk_interval") == 0)
+        {
+            if (++i >= argc) { std::cerr << "--vtk_interval requires a value\n"; std::exit(1); }
+            params.output.frequency = std::stoul(argv[i]);
+        }
 
         // AMR
         else if (std::strcmp(argv[i], "--amr") == 0)
@@ -488,17 +509,7 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             params.solvers.ch.use_iterative = false;  // Also use direct for CH
         }
 
-        // CH convection treatment
-        else if (std::strcmp(argv[i], "--explicit_ch_convection") == 0)
-            params.physics.implicit_ch_convection = false;
-        else if (std::strcmp(argv[i], "--implicit_ch_convection") == 0)
-            params.physics.implicit_ch_convection = true;
-
         // Block-Gauss-Seidel global iteration
-        else if (std::strcmp(argv[i], "--bgs") == 0)
-            params.enable_bgs = true;
-        else if (std::strcmp(argv[i], "--no_bgs") == 0)
-            params.enable_bgs = false;
         else if (std::strcmp(argv[i], "--bgs_iters") == 0)
         {
             if (++i >= argc) { std::cerr << "--bgs_iters requires a value\n"; std::exit(1); }
@@ -510,23 +521,6 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             params.bgs_tolerance = std::stod(argv[i]);
         }
 
-        // Picard iteration settings (inner Poisson <-> Magnetization loop)
-        else if (std::strcmp(argv[i], "--picard_iters") == 0)
-        {
-            if (++i >= argc) { std::cerr << "--picard_iters requires a value\n"; std::exit(1); }
-            params.picard_iterations = std::stoul(argv[i]);
-        }
-        else if (std::strcmp(argv[i], "--picard_tol") == 0)
-        {
-            if (++i >= argc) { std::cerr << "--picard_tol requires a value\n"; std::exit(1); }
-            params.picard_tolerance = std::stod(argv[i]);
-        }
-        else if (std::strcmp(argv[i], "--picard_omega") == 0)
-        {
-            if (++i >= argc) { std::cerr << "--picard_omega requires a value\n"; std::exit(1); }
-            params.picard_omega = std::stod(argv[i]);
-        }
-
         // Dipole intensity override
         else if (std::strcmp(argv[i], "--intensity") == 0)
         {
@@ -534,22 +528,7 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             params.dipoles.intensity_max = std::stod(argv[i]);
         }
 
-        // Kelvin force options
-        else if (std::strcmp(argv[i], "--kelvin_face") == 0)
-            params.skip_kelvin_face_terms = false;
-        else if (std::strcmp(argv[i], "--no_kelvin_face") == 0)
-            params.skip_kelvin_face_terms = true;
-        else if (std::strcmp(argv[i], "--gradient_kelvin") == 0)
-            params.use_gradient_kelvin_force = true;
-        else if (std::strcmp(argv[i], "--skew_kelvin") == 0)
-            params.use_gradient_kelvin_force = false;
-
-        else if (std::strcmp(argv[i], "--dg_transport") == 0)
-            params.use_dg_transport = true;
-        else if (std::strcmp(argv[i], "--no_dg_transport") == 0)
-            params.use_dg_transport = false;
-
-        // Run name (NEW)
+        // Run name
         else if (std::strcmp(argv[i], "--run_name") == 0)
         {
             if (++i >= argc) { std::cerr << "--run_name requires a value\n"; std::exit(1); }
@@ -595,7 +574,7 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
         {
             std::cout << "Ferrofluid Phase Field Solver\n";
             std::cout << "Reference: Nochetto et al. CMAME 309 (2016) 497-531\n\n";
-            std::cout << "Usage: " << argv[0] << " --rosensweig|--hedgehog|--droplet|--square [options]\n";
+            std::cout << "Usage: " << argv[0] << " --rosensweig|--hedgehog|--droplet|--square|--elongation [options]\n";
             std::cout << "  (Presets set defaults; later options override them)\n\n";
 
             std::cout << "PRESETS (pick one):\n";
@@ -604,14 +583,15 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             std::cout << "  --dome          Hedgehog with h=ha only (Fig. 7 - dome)\n";
             std::cout << "  --droplet       Simple droplet (no magnetic, no gravity)\n";
             std::cout << "  --droplet_uniform_B     Droplet + uniform magnetic field\n";
-            std::cout << "  --droplet_nonuniform_B  Droplet + single dipole (non-uniform)\n";
+            std::cout << "  --elongation    Ferrofluid droplet elongation in uniform field\n";
             std::cout << "  --square        Square relaxation (no magnetic, no gravity)\n\n";
 
             std::cout << "OVERRIDES:\n";
             std::cout << "  --refinement N  Mesh refinement level\n";
             std::cout << "  --dt DT         Time step size\n";
             std::cout << "  --t_final T     Final simulation time\n";
-            std::cout << "  --max_steps N   Maximum number of steps\n\n";
+            std::cout << "  --max_steps N   Maximum number of steps\n";
+            std::cout << "  --vtk_interval N  VTK output every N steps\n\n";
 
             std::cout << "AMR:\n";
             std::cout << "  --amr / --no_amr      Enable/disable AMR\n";
@@ -622,21 +602,9 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             std::cout << "  --no_adaptive_dt      Disable adaptive time stepping (paper default)\n\n";
 
             std::cout << "SOLVER:\n";
-            std::cout << "  --implicit_ch_convection  Implicit CH convection (default, no CFL limit)\n";
-            std::cout << "  --explicit_ch_convection  Explicit CH convection (CFL-limited, original scheme)\n";
             std::cout << "  --direct              Use direct solver (recommended)\n";
-            std::cout << "  --bgs / --no_bgs      Enable/disable Block-Gauss-Seidel global iteration\n";
-            std::cout << "  --bgs_iters N         Max Block-GS iterations (default: 5)\n";
-            std::cout << "  --bgs_tol TOL         Block-GS convergence tolerance (default: 1e-2)\n";
-            std::cout << "  --picard_iters N      Max Picard iterations for Mag-Poisson (default: 7)\n";
-            std::cout << "  --picard_tol TOL      Picard convergence tolerance (default: 0.05)\n";
-            std::cout << "  --picard_omega W      Picard under-relaxation for M (default: 0.35)\n";
-            std::cout << "  --dg_transport        Enable DG magnetization transport\n";
-            std::cout << "  --no_dg_transport     Disable DG transport (quasi-equilibrium)\n";
-            std::cout << "  --kelvin_face         Include Kelvin force face terms\n";
-            std::cout << "  --no_kelvin_face      Skip Kelvin face terms (default, CG phi)\n";
-            std::cout << "  --gradient_kelvin     Use CG gradient Kelvin force: (mu0/2)|H|^2 grad(chi)\n";
-            std::cout << "  --skew_kelvin         Use DG skew form Kelvin force (default)\n\n";
+            std::cout << "  --bgs_iters N         Max Block-GS iterations (default: 1)\n";
+            std::cout << "  --bgs_tol TOL         Block-GS convergence tolerance (default: 1e-2)\n\n";
 
             std::cout << "OUTPUT:\n";
             std::cout << "  --run_name NAME       Custom run name (default: auto-generated)\n";
@@ -693,15 +661,8 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
         std::cout << "  Physics: epsilon=" << params.physics.epsilon
                   << ", lambda=" << params.physics.lambda
                   << ", chi_0=" << params.physics.chi_0 << "\n";
-        std::cout << "  CH convection: " << (params.physics.implicit_ch_convection ? "IMPLICIT" : "EXPLICIT") << "\n";
         std::cout << "  Solver: " << (params.solvers.ns.use_iterative ? "Iterative" : "Direct") << "\n";
-        std::cout << "  Block-GS: " << (params.enable_bgs ? "ON" : "OFF");
-        if (params.enable_bgs)
-            std::cout << " (max " << params.bgs_max_iterations << " iters, tol=" << params.bgs_tolerance << ")";
-        std::cout << "\n";
-        std::cout << "  Picard: max " << params.picard_iterations
-                  << " iters, tol=" << params.picard_tolerance
-                  << ", omega=" << params.picard_omega << "\n";
+        std::cout << "  Block-GS: max " << params.bgs_max_iterations << " iters, tol=" << params.bgs_tolerance << "\n";
         std::cout << "  Subsystems: "
                   << (params.enable_magnetic ? "Magnetic " : "")
                   << (params.enable_ns ? "NS " : "")

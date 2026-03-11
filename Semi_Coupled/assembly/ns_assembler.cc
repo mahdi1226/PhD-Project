@@ -415,20 +415,24 @@ static void assemble_ns_core(
 }
 
 // ============================================================================
-// Gradient Kelvin force (full CG form for linear media M = χH):
+// Kelvin force assembly — GRADIENT FORM (production)
 //
-//   f_mag = (μ₀/2)|H|² ∇χ(θ) + μ₀ χ(θ) ∇(|H|²/2)
-//         = (μ₀/2)|H|² χ'(θ)∇θ  +  μ₀ χ(θ) Hess(φ)·H
+// Uses the identity: χ(H·∇)H = (1/2)|H|²∇χ + χ∇(|H|²/2)
+// where ∇(|H|²/2) = Hess(φ)·H since H = ∇φ.
 //
-// Term 1 (interface): localized where χ changes (∇θ ≠ 0 at the interface)
-// Term 2 (bulk):      present wherever χ ≠ 0 and field is non-uniform
+// Term 1 (interface): (μ₀/2)|H|²∇χ(θ) = (μ₀/2)|H|²χ'(θ)∇θ
+//   - Strong at interface (where ∇θ is large)
+//   - Points normal to interface → drives Rosensweig spikes
 //
-// Together they give the full Kelvin body force f = μ₀(M·∇)H for M = χH.
-// Both terms use only CG fields (θ, ∇θ, ∇φ, Hess(φ)) — no DG M, no faces.
+// Term 2 (bulk): μ₀ χ(θ) Hess(φ)·H
+//   - Nonzero in ferrofluid bulk
+//   - Uses second derivatives (piecewise constant for Q2)
 //
-// Derivation: f = μ₀(M·∇)H = μ₀χ(H·∇)H. Using identity
-//   χ(H·∇)H = (1/2)|H|²∇χ + χ∇(|H|²/2)
-// and H = ∇φ, so (∇(|H|²/2))_i = Σ_j H_j ∂²φ/∂x_i∂x_j = (Hess(φ)·H)_i
+// This form is preferred over the DG skew form for physics runs because
+// it uses ∇θ (well-resolved on the mesh) rather than relying solely on
+// Hess(φ) (poorly resolved for Q2 elements).
+//
+// Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016), Eq. 36
 // ============================================================================
 template <int dim>
 static void assemble_kelvin_force_gradient(
@@ -525,9 +529,8 @@ static void assemble_kelvin_force_gradient(
             const double interface_coeff = 0.5 * mu_0 * H_sq * chi_prime;
 
             // Term 2 (bulk): μ₀ χ(θ) ∇(|H|²/2) = μ₀ χ(θ) Hess(φ)·H
-            const double chi_val = chi_0 * heaviside(theta_q / epsilon);
+            const double chi_val = susceptibility(theta_q, epsilon, chi_0);
             const dealii::Tensor<2, dim>& Hess_phi = phi_hessians[q];
-            // (Hess(φ)·H)_i = Σ_j Hess_phi[i][j] * H[j]
             dealii::Tensor<1, dim> Hess_phi_dot_H;
             for (unsigned int d1 = 0; d1 < dim; ++d1)
                 for (unsigned int d2 = 0; d2 < dim; ++d2)
@@ -567,13 +570,13 @@ static void assemble_kelvin_force_gradient(
 }
 
 // ============================================================================
-// Kelvin force assembly (cell + face terms from Eq. 38)
+// Kelvin force assembly — DG SKEW FORM (used by MMS tests)
 //
-// FIX: Now computes total field H = h_a + h_d, where:
-//   - h_a = applied field from dipoles
-//   - h_d = ∇φ (demagnetizing field from Poisson solve)
+// DG skew form: μ₀ B_h^m(V, H, M) = (M·∇)H·V + ½ div(V)(H·M)
+// Kept for MMS tests where theta is uniform (gradient form interface term = 0).
 //
-// Dome mode (use_reduced_magnetic_field=true): H = h_a only
+// H = ∇φ (total magnetic field from Poisson solve)
+// The Poisson equation encodes h_a via the RHS, so ∇φ IS the total field.
 // ============================================================================
 template <int dim>
 static void assemble_kelvin_force(
@@ -599,14 +602,11 @@ static void assemble_kelvin_force(
     const unsigned int dofs_per_cell_vel = fe_vel.n_dofs_per_cell();
 
     dealii::QGauss<dim> quadrature(fe_vel.degree + 2);
-    dealii::QGauss<dim - 1> quadrature_face(fe_vel.degree + 2); // ADDED for face terms
-
     const unsigned int n_q_points = quadrature.size();
-    const unsigned int n_q_face = quadrature_face.size(); // ADDED
 
     // FEValues for velocity (test functions) - need gradients for div(V) in B_h^m
     dealii::FEValues<dim> ux_fe_values(fe_vel, quadrature,
-        dealii::update_values | dealii::update_gradients | dealii::update_quadrature_points | dealii::update_JxW_values);
+        dealii::update_values | dealii::update_gradients | dealii::update_JxW_values);
     dealii::FEValues<dim> uy_fe_values(fe_vel, quadrature,
         dealii::update_values | dealii::update_gradients);
 
@@ -614,26 +614,9 @@ static void assemble_kelvin_force(
     dealii::FEValues<dim> phi_fe_values(fe_phi, quadrature,
         dealii::update_gradients | dealii::update_hessians);
 
-    // FEValues for M (DG - values only; div(M) no longer needed in cell kernel)
+    // FEValues for M (values only)
     dealii::FEValues<dim> M_fe_values(fe_M, quadrature,
         dealii::update_values);
-
-    // FEFaceValues for face terms - created ONCE, reinit per face
-    dealii::FEFaceValues<dim> ux_fe_face_values(fe_vel, quadrature_face,
-                                                dealii::update_values | dealii::update_JxW_values | dealii::update_normal_vectors);
-    dealii::FEFaceValues<dim> uy_fe_face_values(fe_vel, quadrature_face,
-                                                dealii::update_values);
-    dealii::FEFaceValues<dim> phi_face_minus(fe_phi, quadrature_face, dealii::update_gradients);
-    dealii::FEFaceValues<dim> phi_face_plus(fe_phi, quadrature_face, dealii::update_gradients);
-    dealii::FEFaceValues<dim> M_face_minus(fe_M, quadrature_face, dealii::update_values);
-    dealii::FEFaceValues<dim> M_face_plus(fe_M, quadrature_face, dealii::update_values);
-
-    // Pre-allocated face field storage
-    std::vector<dealii::Tensor<1, dim>> grad_phi_face_minus(n_q_face);
-    std::vector<dealii::Tensor<1, dim>> grad_phi_face_plus(n_q_face);
-    std::vector<double> Mx_face_minus(n_q_face), My_face_minus(n_q_face);
-    std::vector<double> Mx_face_plus(n_q_face), My_face_plus(n_q_face);
-
 
     dealii::Vector<double> local_rhs_ux(dofs_per_cell_vel);
     dealii::Vector<double> local_rhs_uy(dofs_per_cell_vel);
@@ -682,27 +665,11 @@ static void assemble_kelvin_force(
         for (unsigned int q = 0; q < n_q_points; ++q)
         {
             const double JxW = ux_fe_values.JxW(q);
-            const dealii::Point<dim>& x_q = ux_fe_values.quadrature_point(q);
 
-            // Compute applied field h_a from dipoles
-            dealii::Tensor<1, dim> h_a = compute_applied_field<dim>(x_q, params, current_time);
-
-            // Total field H = ∇φ (Nochetto CMAME 2016, Eq. 42d + p.506)
-            // The Poisson equation (∇φ, ∇X) = (h_a - M, ∇X) determines φ
-            // such that ∇φ IS the total magnetic field H.
-            // Do NOT add h_a — it is already encoded in φ via the Poisson RHS.
+            // H = ∇φ (total magnetic field from Poisson solve)
             dealii::Tensor<1, dim> H;
-            if (params.use_reduced_magnetic_field)
-            {
-                // Dome mode: skip Poisson, H ≈ h_a
-                H = h_a;
-            }
-            else
-            {
-                // Hedgehog mode: H = ∇φ
-                H[0] = phi_gradients[q][0];
-                H[1] = phi_gradients[q][1];
-            }
+            H[0] = phi_gradients[q][0];
+            H[1] = phi_gradients[q][1];
 
             // M vector
             dealii::Tensor<1, dim> M = KelvinForce::make_M_vector<dim>(Mx_values[q], My_values[q]);
@@ -725,77 +692,6 @@ static void assemble_kelvin_force(
 
                 local_rhs_ux(i) += kelvin_ux * JxW;
                 local_rhs_uy(i) += kelvin_uy * JxW;
-            }
-        }
-
-        // ====================================================================
-        // FACE CONTRIBUTIONS (interior faces only)
-        // Term: -Σ_F ∫_F (V·n⁻) [[H]] · {M} ds
-        // ====================================================================
-        for (unsigned int f = 0; f < ux_cell->n_faces(); ++f)
-        {
-            if (ux_cell->at_boundary(f))
-                continue;
-
-            const auto neighbor_phi = phi_cell->neighbor(f);
-            const auto neighbor_M = M_cell->neighbor(f);
-
-            // Only process face once
-            if (ux_cell->index() > ux_cell->neighbor(f)->index())
-                continue;
-
-            // Dome mode: H = h_a (continuous) => [[H]] = 0, face term vanishes
-            if (params.use_reduced_magnetic_field)
-                continue;
-
-            // CG φ: [[∇φ]] is O(h) numerical noise at off-node face quadrature points.
-            // The face term amplifies this → skip for CG elements (default).
-            if (params.skip_kelvin_face_terms)
-                continue;
-
-            // Reinit pre-allocated FEFaceValues
-            ux_fe_face_values.reinit(ux_cell, f);
-            uy_fe_face_values.reinit(uy_cell, f);
-            phi_face_minus.reinit(phi_cell, f);
-            phi_face_plus.reinit(neighbor_phi, phi_cell->neighbor_of_neighbor(f));
-            M_face_minus.reinit(M_cell, f);
-            M_face_plus.reinit(neighbor_M, M_cell->neighbor_of_neighbor(f));
-
-            phi_face_minus.get_function_gradients(phi_solution, grad_phi_face_minus);
-            phi_face_plus.get_function_gradients(phi_solution, grad_phi_face_plus);
-            M_face_minus.get_function_values(Mx_solution, Mx_face_minus);
-            M_face_minus.get_function_values(My_solution, My_face_minus);
-            M_face_plus.get_function_values(Mx_solution, Mx_face_plus);
-            M_face_plus.get_function_values(My_solution, My_face_plus);
-
-            for (unsigned int q = 0; q < n_q_face; ++q)
-            {
-                const double JxW = ux_fe_face_values.JxW(q);
-                const auto& normal = ux_fe_face_values.normal_vector(q);
-
-                // H = ∇φ, so [[H]] = ∇φ⁻ - ∇φ⁺
-                const dealii::Tensor<1, dim>& grad_phi_minus = grad_phi_face_minus[q];
-                const dealii::Tensor<1, dim>& grad_phi_plus = grad_phi_face_plus[q];
-
-                dealii::Tensor<1, dim> jump_H = grad_phi_minus - grad_phi_plus;
-
-                dealii::Tensor<1, dim> M_minus = KelvinForce::make_M_vector<dim>(Mx_face_minus[q], My_face_minus[q]);
-                dealii::Tensor<1, dim> M_plus = KelvinForce::make_M_vector<dim>(Mx_face_plus[q], My_face_plus[q]);
-                dealii::Tensor<1, dim> avg_M = 0.5 * (M_minus + M_plus);
-
-                // Compute kernel
-                for (unsigned int i = 0; i < dofs_per_cell_vel; ++i)
-                {
-                    const double phi_ux_i = ux_fe_face_values.shape_value(i, q);
-                    const double phi_uy_i = uy_fe_face_values.shape_value(i, q);
-
-                    double kelvin_ux, kelvin_uy;
-                    KelvinForce::face_kernel<dim>(phi_ux_i, phi_uy_i, normal, jump_H, avg_M,
-                                                   mu_0, kelvin_ux, kelvin_uy);
-
-                    local_rhs_ux(i) += kelvin_ux * JxW;
-                    local_rhs_uy(i) += kelvin_uy * JxW;
-                }
             }
         }
 
@@ -1226,21 +1122,24 @@ void assemble_ns_system_unified(
     if (forces.has_kelvin)
     {
         const Parameters& kp = *forces.kelvin_params;
-        if (kp.use_gradient_kelvin_force)
+
+        // Use gradient form when theta is available (production runs).
+        // Falls back to DG skew form for MMS-only tests (no theta).
+        if (forces.theta_cap_dof_handler != nullptr)
         {
-            // CG gradient form: f = (mu_0/2)|H|^2 grad(chi(theta))
-            // Requires theta_cap_dof_handler for chi(theta) and grad(theta)
+            // Gradient form: (μ₀/2)|H|²∇χ(θ) + μ₀χ(θ)Hess(φ)·H
+            // Uses ∇θ (well-resolved) → drives Rosensweig spikes
             assemble_kelvin_force_gradient<dim>(
                 ux_dof_handler, uy_dof_handler,
                 *forces.phi_dof_handler, *forces.theta_cap_dof_handler,
                 *forces.phi_solution, *forces.theta_cap_solution,
-                forces.mu_0, kp.physics.chi_0, forces.epsilon_cap,
+                forces.mu_0, kp.physics.chi_0, kp.physics.epsilon,
                 ux_to_ns_map, uy_to_ns_map,
                 ns_constraints, ns_rhs);
         }
         else
         {
-            // DG skew form: mu_0[(M.grad)H + 0.5(div M)H] (Eq. 38)
+            // DG skew form: μ₀[(M·∇)H·V + ½div(V)(H·M)] (MMS tests)
             assemble_kelvin_force<dim>(
                 ux_dof_handler, uy_dof_handler,
                 *forces.phi_dof_handler, *forces.M_dof_handler,
@@ -1252,6 +1151,7 @@ void assemble_ns_system_unified(
         }
 
         // MMS correction: subtract exact Kelvin force F_K(M*, H*)
+        // Only applies to DG skew form (MMS tests use uniform theta)
         if (enable_mms)
         {
             assemble_kelvin_mms_correction<dim>(

@@ -1,13 +1,18 @@
 // ============================================================================
 // mms/coupled/coupled_mms_test.h - Coupled MMS Tests (PARALLEL)
 //
-// Implements systematic coupling verification:
-//   Level 2a: CH + NS (phase advection by velocity)
-//   Level 2b: Poisson + Magnetization (h = -∇φ drives M equation, Picard iteration)
-//   Level 2c: NS + Magnetization (Kelvin force μ₀[(M·∇)H + ½(∇·M)H])
-//   Level 3:  Full system (all four subsystems coupled)
+// Systematic coupling verification following paper's algorithm order:
+//   CH → Magnetic → NS
 //
-// Key insight: Each subsystem's manufactured solution becomes forcing for others.
+// Two-way tests (paper's coupling direction):
+//   CH_MAGNETIC:   CH provides θ → χ(θ) drives Magnetic (M+φ)
+//   MAGNETIC_NS:   Magnetic provides M,H → Kelvin force drives NS
+//   NS_CH:         NS provides U → advection drives CH
+//
+// Full system:
+//   FULL_SYSTEM:   All subsystems coupled (CH + Magnetic + NS)
+//
+// All tests use PRODUCTION code paths (monolithic M+φ block system).
 //
 // Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
 // ============================================================================
@@ -20,16 +25,14 @@
 #include <string>
 
 // ============================================================================
-// Coupled test levels
+// Coupled test levels (paper's algorithm order)
 // ============================================================================
 enum class CoupledMMSLevel
 {
-    CH_NS,                   // θ advected by U (cluster A)
-    POISSON_MAGNETIZATION,   // φ ↔ M Picard iteration (cluster B)
-    NS_MAGNETIZATION,        // NS with Kelvin force from M, H (Rosensweig coupling)
-    NS_POISSON_MAG,         // 3Way Coupling
-    MAG_CH,                  // Magnetization with χ(θ) from CH solve
-    FULL_SYSTEM              // All four subsystems (bridges clusters A and B)
+    CH_MAGNETIC,    // CH → Magnetic: χ(θ) coupling
+    MAGNETIC_NS,    // Magnetic → NS: Kelvin force coupling
+    NS_CH,          // NS → CH: advection coupling
+    FULL_SYSTEM     // All subsystems coupled
 };
 
 std::string to_string(CoupledMMSLevel level);
@@ -56,16 +59,15 @@ struct CoupledMMSResult
     double p_L2 = 0.0;
     double div_U_L2 = 0.0;
 
-    // Poisson errors
+    // Magnetic errors
     double phi_L2 = 0.0;
     double phi_H1 = 0.0;
-
-    // Magnetization errors
     double Mx_L2 = 0.0;
     double My_L2 = 0.0;
     double M_L2 = 0.0;
+    double M_H1 = 0.0;
 
-    // L∞ errors
+    // L-infinity errors
     double theta_Linf = 0.0;
     double psi_Linf = 0.0;
     double ux_Linf = 0.0;
@@ -74,7 +76,6 @@ struct CoupledMMSResult
     double phi_Linf = 0.0;
     double M_Linf = 0.0;
 
-    // Timing
     double total_time = 0.0;
 };
 
@@ -92,8 +93,9 @@ struct CoupledMMSConvergenceResult
     std::vector<double> phi_L2_rate;
     std::vector<double> phi_H1_rate;
     std::vector<double> M_L2_rate;
+    std::vector<double> M_H1_rate;
 
-    // L∞ convergence rates (reported but NOT in pass/fail)
+    // L-infinity convergence rates (reported but NOT in pass/fail)
     std::vector<double> theta_Linf_rate;
     std::vector<double> ux_Linf_rate;
     std::vector<double> p_Linf_rate;
@@ -112,108 +114,80 @@ struct CoupledMMSConvergenceResult
 };
 
 // ============================================================================
-// Test runners
+// Test runners (paper's algorithm order)
 // ============================================================================
 
 /**
- * @brief Run CH + NS coupled MMS test
+ * @brief CH → Magnetic coupled MMS test
+ *
+ * Tests: χ(θ) coupling from CH to monolithic Magnetic (M+φ)
+ *   - CH solved standalone (with MMS source, U=0)
+ *   - Magnetic uses θ from CH solve for χ(θ)
+ *   - Validates θ → χ(θ) → M+φ coupling path
+ *
+ * Production code paths:
+ *   - assemble_ch_system(), solve_ch_system()
+ *   - setup_magnetic_system(), MagneticAssembler, MagneticSolver
+ *
+ * Expected: M L2 = 2 (DG-Q1), φ L2 = 3 (Q2)
+ */
+CoupledMMSConvergenceResult run_ch_magnetic_mms(
+    const std::vector<unsigned int>& refinements,
+    const Parameters& params,
+    unsigned int n_time_steps,
+    MPI_Comm mpi_communicator);
+
+/**
+ * @brief Magnetic → NS coupled MMS test (Kelvin force)
+ *
+ * Tests: Monolithic Magnetic solved, then M,H → Kelvin force → NS
+ *   1. Solve monolithic M+φ (θ=1, U=0)
+ *   2. Extract M and φ from monolithic solution
+ *   3. Solve NS with Kelvin force μ₀[(M·∇)H + ½(∇·M)H]
+ *
+ * This is the CRITICAL coupling for Rosensweig instability!
+ *
+ * Production code paths:
+ *   - setup_magnetic_system(), MagneticAssembler, MagneticSolver
+ *   - setup_ns_*_parallel(), assemble_ns_system_with_kelvin_force_parallel()
+ *   - solve_ns_system_direct_parallel(), extract_ns_solutions_parallel()
+ *
+ * Expected: U L2 = 3, U H1 = 2 (Q2), p L2 = 2 (Q1), M L2 = 2, φ L2 = 3
+ */
+CoupledMMSConvergenceResult run_magnetic_ns_mms(
+    const std::vector<unsigned int>& refinements,
+    const Parameters& params,
+    unsigned int n_time_steps,
+    MPI_Comm mpi_communicator);
+
+/**
+ * @brief NS → CH coupled MMS test
  *
  * Tests: θ advected by U (U·∇θ term in CH equation)
  *
  * Production code paths:
- *   - assemble_ns_system_parallel() with enable_mms=true
- *   - solve_ns_system_schur_parallel() (Block Schur preconditioner)
- *   - assemble_ch_system()
- *   - solve_ch_system()
+ *   - assemble_ns_system_parallel(), solve_ns_system_schur_parallel()
+ *   - assemble_ch_system(), solve_ch_system()
  *
- * Expected: Both CH and NS should maintain optimal rates
- *   - θ: L2 = 3, H1 = 2 (Q2)
- *   - U: L2 = 3, H1 = 2 (Q2)
- *   - p: L2 = 2 (Q1)
+ * Expected: θ L2 = 3, θ H1 = 2, U L2 = 3, U H1 = 2, p L2 = 2
  */
-CoupledMMSConvergenceResult run_ch_ns_mms(
+CoupledMMSConvergenceResult run_ns_ch_mms(
     const std::vector<unsigned int>& refinements,
     const Parameters& params,
     unsigned int n_time_steps,
     MPI_Comm mpi_communicator);
 
 /**
- * @brief Run Poisson + Magnetization coupled MMS test
+ * @brief Full system coupled MMS test
  *
- * Tests: φ equation with ∇·M source, M equation with h = -∇φ
- *        Uses PICARD ITERATION (matches production)
- *
- * Production code paths:
- *   - setup_poisson_constraints_and_sparsity()
- *   - assemble_poisson_matrix() ONCE
- *   - assemble_poisson_rhs() each Picard iteration
- *   - PoissonSolver with cached AMG
- *   - setup_magnetization_sparsity() (DG flux pattern)
- *   - MagnetizationAssembler (cached)
- *   - MagnetizationSolver (MUMPS direct)
- *   - Picard loop with under-relaxation ω=0.35
- *
- * Expected: Both subsystems should maintain optimal convergence rates
- *   - φ: L2 = 3, H1 = 2 (Q2)
- *   - M: L2 = 2 (DG-Q1)
- */
-CoupledMMSConvergenceResult run_poisson_magnetization_mms(
-    const std::vector<unsigned int>& refinements,
-    Parameters params,
-    unsigned int n_time_steps,
-    MPI_Comm mpi_communicator);
-
-
-
-CoupledMMSConvergenceResult run_ns_poisson_mag_mms(
-    const std::vector<unsigned int>& refinements,
-    const Parameters& params,
-    unsigned int n_time_steps,
-    MPI_Comm mpi_communicator);
-/**
- * @brief Run NS + Magnetization coupled MMS test (Kelvin force)
- *
- * Tests: Kelvin force μ₀[(M·∇)H + ½(∇·M)H] coupling to NS
- *        M and φ are set to exact solutions, NS is solved with Kelvin force
- *
- * This is the CRITICAL test for Rosensweig instability!
- * The Kelvin force drives ferrofluid spike formation.
+ * Tests: All couplings active with monolithic Magnetic
+ *   - NS → CH (advection U·∇θ)
+ *   - CH → Magnetic (χ(θ))
+ *   - Magnetic → NS (Kelvin force)
  *
  * Production code paths:
- *   - setup_ns_velocity_constraints_parallel()
- *   - setup_ns_pressure_constraints_parallel()
- *   - setup_ns_coupled_system_parallel()
- *   - assemble_ns_system_with_kelvin_force_parallel() with MMS
- *   - solve_ns_system_direct_parallel() (fast for MMS)
- *   - extract_ns_solutions_parallel()
- *
- * Expected: NS maintains optimal rates despite Kelvin force
- *   - U: L2 = 3, H1 = 2 (Q2)
- *   - p: L2 = 2 (Q1)
- *
- * Foundation for testing:
- *   - Variable viscosity ν(θ)
- */
-CoupledMMSConvergenceResult run_ns_magnetization_mms(
-    const std::vector<unsigned int>& refinements,
-    Parameters params,
-    unsigned int n_time_steps,
-    MPI_Comm mpi_communicator);
-
-/**
- * @brief Run full system coupled MMS test
- *
- * Tests: All couplings active
- *   - CH advected by NS (U·∇θ)
- *   - Poisson with ∇·M source
- *   - Magnetization relaxation to χH with advection U·∇M
- *   - NS with Kelvin force μ₀(M·∇)H + capillary + variable viscosity
- *
- * Production code paths:
- *   - Instantiates PhaseFieldProblem directly
- *   - Uses PhaseFieldProblem::time_step() with all couplings
- *   - assemble_ns_system_ferrofluid_parallel() (ALL forces)
- *   - solve_poisson_magnetization_picard() (Picard iteration)
+ *   - All subsystem assemblers and solvers
+ *   - Monolithic MagneticAssembler + MagneticSolver
  *
  * Expected: All subsystems maintain optimal rates
  *   - θ: L2 = 3, H1 = 2
@@ -222,23 +196,6 @@ CoupledMMSConvergenceResult run_ns_magnetization_mms(
  *   - M: L2 = 2
  */
 CoupledMMSConvergenceResult run_full_system_mms(
-    const std::vector<unsigned int>& refinements,
-    const Parameters& params,
-    unsigned int n_time_steps,
-    MPI_Comm mpi_communicator);
-
-/**
- * @brief Run Magnetization + CH coupled MMS test
- *
- * Tests: χ(θ) coupling from CH to Magnetization
- *   - CH solved standalone (with MMS source)
- *   - Magnetization uses θ from CH solve and exact H
- *   - Validates θ → χ(θ) → M coupling path
- *
- * Expected: M maintains optimal rates with live χ(θ)
- *   - M: L2 = 2 (DG-Q1)
- */
-CoupledMMSConvergenceResult run_mag_ch_mms(
     const std::vector<unsigned int>& refinements,
     const Parameters& params,
     unsigned int n_time_steps,

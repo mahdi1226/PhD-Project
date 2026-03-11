@@ -3,19 +3,18 @@
 //
 // STANDALONE TESTS ONLY - Coupled tests are in coupled_mms_test.h/cc
 //
-// For coupled tests including NS_MAGNETIZATION (Kelvin force), see:
-//   - mms/coupled/poisson_mag_mms_test.cc
-//   - mms/coupled/ch_ns_mms_test.cc
-//   - mms/coupled/ns_magnetization_mms_test.cc
+// Standalone: CH_STANDALONE, NS_STANDALONE
+// Monolithic magnetics: see mms/magnetic/magnetic_mms_test.h
+//
+// For coupled tests, see mms/coupled/coupled_mms_test.h:
+//   - CH_MAGNETIC, MAGNETIC_NS, NS_CH, FULL_SYSTEM
 // ============================================================================
 
 #include "mms_verification.h"
 
 // MMS test modules (each calls production code internally)
 #include "mms/ch/ch_mms_test.h"
-#include "mms/poisson/poisson_mms_test.h"
 #include "mms/ns/ns_mms_test.h"
-#include "mms/magnetization/magnetization_mms_test.h"
 
 #include <deal.II/base/utilities.h>
 #include <deal.II/base/mpi.h>
@@ -57,9 +56,6 @@ void MMSConvergenceResult::compute_rates()
     fill_rates(psi_L2, h_values, psi_L2_rate);
     fill_rates(theta_Linf, h_values, theta_Linf_rate);
     fill_rates(psi_Linf, h_values, psi_Linf_rate);
-    fill_rates(phi_L2, h_values, phi_L2_rate);
-    fill_rates(phi_H1, h_values, phi_H1_rate);
-    fill_rates(phi_Linf, h_values, phi_Linf_rate);
     fill_rates(ux_L2, h_values, ux_L2_rate);
     fill_rates(ux_H1, h_values, ux_H1_rate);
     fill_rates(uy_L2, h_values, uy_L2_rate);
@@ -68,8 +64,6 @@ void MMSConvergenceResult::compute_rates()
     fill_rates(ux_Linf, h_values, ux_Linf_rate);
     fill_rates(uy_Linf, h_values, uy_Linf_rate);
     fill_rates(p_Linf, h_values, p_Linf_rate);
-    fill_rates(M_L2, h_values, M_L2_rate);
-    fill_rates(M_Linf, h_values, M_Linf_rate);
     fill_rates(div_u_L2, h_values, div_u_L2_rate);
 }
 
@@ -87,14 +81,8 @@ void MMSConvergenceResult::print() const
     case MMSLevel::CH_STANDALONE:
         print_ch_table();
         break;
-    case MMSLevel::POISSON_STANDALONE:
-        print_poisson_table();
-        break;
     case MMSLevel::NS_STANDALONE:
         print_ns_table();
-        break;
-    case MMSLevel::MAGNETIZATION_STANDALONE:
-        print_magnetization_table();
         break;
     default:
         std::cout << "Unknown test level\n";
@@ -156,49 +144,6 @@ void MMSConvergenceResult::print_ch_table() const
     }
 }
 
-void MMSConvergenceResult::print_poisson_table() const
-{
-    std::cout << "\n--- Poisson Errors ---\n";
-    if (phi_L2.empty()) {
-        std::cout << "[WARNING] No Poisson data to display\n";
-        return;
-    }
-    std::cout << std::left
-        << std::setw(6) << "Ref"
-        << std::setw(10) << "h"
-        << std::setw(10) << "wall(s)"
-        << std::setw(10) << "phi_L2"
-        << std::setw(7) << "rate"
-        << std::setw(10) << "phi_Linf"
-        << std::setw(7) << "rate"
-        << std::setw(10) << "phi_H1"
-        << std::setw(7) << "rate"
-        << "\n";
-    std::cout << std::string(77, '-') << "\n";
-
-    for (size_t i = 0; i < refinements.size(); ++i)
-    {
-        std::cout << std::left << std::setw(6) << refinements[i]
-            << std::scientific << std::setprecision(2)
-            << std::setw(10) << h_values[i]
-            << std::fixed << std::setprecision(1)
-            << std::setw(10) << wall_times[i]
-            << std::scientific << std::setprecision(2)
-            << std::setw(10) << phi_L2[i]
-            << std::fixed << std::setprecision(2)
-            << std::setw(7) << (i > 0 ? phi_L2_rate[i - 1] : 0.0)
-            << std::scientific << std::setprecision(2)
-            << std::setw(10) << (i < phi_Linf.size() ? phi_Linf[i] : 0.0)
-            << std::fixed << std::setprecision(2)
-            << std::setw(7) << (i > 0 && !phi_Linf_rate.empty() ? phi_Linf_rate[i - 1] : 0.0)
-            << std::scientific << std::setprecision(2)
-            << std::setw(10) << phi_H1[i]
-            << std::fixed << std::setprecision(2)
-            << std::setw(7) << (i > 0 ? phi_H1_rate[i - 1] : 0.0)
-            << "\n";
-    }
-}
-
 void MMSConvergenceResult::print_ns_table() const
 {
     std::cout << "\n--- NS Errors ---\n";
@@ -254,43 +199,6 @@ void MMSConvergenceResult::print_ns_table() const
     }
 }
 
-void MMSConvergenceResult::print_magnetization_table() const
-{
-    std::cout << "\n--- Magnetization Errors ---\n";
-    if (M_L2.empty()) {
-        std::cout << "[WARNING] No Magnetization data to display\n";
-        return;
-    }
-    std::cout << std::left
-        << std::setw(6) << "Ref"
-        << std::setw(10) << "h"
-        << std::setw(10) << "wall(s)"
-        << std::setw(10) << "M_L2"
-        << std::setw(7) << "rate"
-        << std::setw(10) << "M_Linf"
-        << std::setw(7) << "rate"
-        << "\n";
-    std::cout << std::string(60, '-') << "\n";
-
-    for (size_t i = 0; i < refinements.size(); ++i)
-    {
-        std::cout << std::left << std::setw(6) << refinements[i]
-            << std::scientific << std::setprecision(2)
-            << std::setw(10) << h_values[i]
-            << std::fixed << std::setprecision(1)
-            << std::setw(10) << wall_times[i]
-            << std::scientific << std::setprecision(2)
-            << std::setw(10) << M_L2[i]
-            << std::fixed << std::setprecision(2)
-            << std::setw(7) << (i > 0 ? M_L2_rate[i - 1] : 0.0)
-            << std::scientific << std::setprecision(2)
-            << std::setw(10) << (i < M_Linf.size() ? M_Linf[i] : 0.0)
-            << std::fixed << std::setprecision(2)
-            << std::setw(7) << (i > 0 && !M_Linf_rate.empty() ? M_Linf_rate[i - 1] : 0.0)
-            << "\n";
-    }
-}
-
 bool MMSConvergenceResult::passes(double tolerance) const
 {
     if (refinements.size() < 2) return true;
@@ -310,26 +218,11 @@ bool MMSConvergenceResult::passes(double tolerance) const
         }
         break;
 
-    case MMSLevel::POISSON_STANDALONE:
-        for (size_t i = 0; i < phi_L2_rate.size(); ++i)
-        {
-            if (phi_L2_rate[i] < L2_min) pass = false;
-            if (phi_H1_rate[i] < H1_min) pass = false;
-        }
-        break;
-
     case MMSLevel::NS_STANDALONE:
         for (size_t i = 0; i < ux_L2_rate.size(); ++i)
         {
             if (ux_L2_rate[i] < L2_min) pass = false;
             if (ux_H1_rate[i] < H1_min) pass = false;
-        }
-        break;
-
-    case MMSLevel::MAGNETIZATION_STANDALONE:
-        for (size_t i = 0; i < M_L2_rate.size(); ++i)
-        {
-            if (M_L2_rate[i] < 2.0 - tolerance) pass = false;
         }
         break;
 
@@ -384,44 +277,6 @@ static MMSConvergenceResult run_ch_standalone(
     return result;
 }
 
-static MMSConvergenceResult run_poisson_standalone(
-    const std::vector<unsigned int>& refinements,
-    Parameters params,
-    MPI_Comm mpi_communicator)
-{
-    params.enable_mms = true;
-
-    // Pass solver type (use AMG as default)
-    PoissonMMSConvergenceResult poisson_result = run_poisson_mms_standalone(
-        refinements, params, PoissonSolverType::AMG, mpi_communicator);
-
-    MMSConvergenceResult result;
-    result.level = MMSLevel::POISSON_STANDALONE;
-    result.fe_degree = params.fe.degree_potential;
-    result.n_time_steps = 1;
-    result.expected_L2_rate = params.fe.degree_potential + 1;
-    result.expected_H1_rate = params.fe.degree_potential;
-
-    for (const auto& r : poisson_result.results)
-    {
-        result.refinements.push_back(r.refinement);
-        result.h_values.push_back(r.h);
-        result.n_dofs.push_back(r.n_dofs);
-        result.wall_times.push_back(r.solve_time);
-        result.phi_L2.push_back(r.L2_error);
-        result.phi_H1.push_back(r.H1_error);
-        result.phi_Linf.push_back(r.Linf_error);
-    }
-
-    result.n_mpi_ranks = dealii::Utilities::MPI::n_mpi_processes(mpi_communicator);
-    result.total_wall_time = 0.0;
-    for (const auto& t : result.wall_times)
-        result.total_wall_time += t;
-
-    result.compute_rates();
-    return result;
-}
-
 static MMSConvergenceResult run_ns_standalone(
     const std::vector<unsigned int>& refinements,
     Parameters params,
@@ -451,47 +306,10 @@ static MMSConvergenceResult run_ns_standalone(
         result.uy_L2.push_back(r.uy_L2);
         result.uy_H1.push_back(r.uy_H1);
         result.p_L2.push_back(r.p_L2);
-        result.div_u_L2.push_back(r.div_U_L2);  // Note: capital U in struct
+        result.div_u_L2.push_back(r.div_U_L2);
         result.ux_Linf.push_back(r.ux_Linf);
         result.uy_Linf.push_back(r.uy_Linf);
         result.p_Linf.push_back(r.p_Linf);
-    }
-
-    result.n_mpi_ranks = dealii::Utilities::MPI::n_mpi_processes(mpi_communicator);
-    result.total_wall_time = 0.0;
-    for (const auto& t : result.wall_times)
-        result.total_wall_time += t;
-
-    result.compute_rates();
-    return result;
-}
-
-static MMSConvergenceResult run_magnetization_standalone(
-    const std::vector<unsigned int>& refinements,
-    Parameters params,
-    MPI_Comm mpi_communicator)
-{
-    params.enable_mms = true;
-
-    // Pass solver type (use Direct as default for magnetization)
-    MagMMSConvergenceResult mag_result = run_magnetization_mms_standalone(
-    refinements, params, MagSolverType::Direct, mpi_communicator);
-
-    MMSConvergenceResult result;
-    result.level = MMSLevel::MAGNETIZATION_STANDALONE;
-    result.fe_degree = 1;  // DG-Q1
-    result.n_time_steps = 10;
-    result.expected_L2_rate = 2.0;
-    result.expected_H1_rate = 1.0;
-
-    for (const auto& r : mag_result.results)
-    {
-        result.refinements.push_back(r.refinement);
-        result.h_values.push_back(r.h);
-        result.n_dofs.push_back(r.n_dofs);
-        result.wall_times.push_back(r.total_time);
-        result.M_L2.push_back(r.M_L2);
-        result.M_Linf.push_back(r.M_Linf);
     }
 
     result.n_mpi_ranks = dealii::Utilities::MPI::n_mpi_processes(mpi_communicator);
@@ -521,14 +339,8 @@ MMSConvergenceResult run_mms_test(
     case MMSLevel::CH_STANDALONE:
         return run_ch_standalone(refinements, mutable_params, n_time_steps, mpi_communicator);
 
-    case MMSLevel::POISSON_STANDALONE:
-        return run_poisson_standalone(refinements, mutable_params, mpi_communicator);
-
     case MMSLevel::NS_STANDALONE:
         return run_ns_standalone(refinements, mutable_params, n_time_steps, mpi_communicator);
-
-    case MMSLevel::MAGNETIZATION_STANDALONE:
-        return run_magnetization_standalone(refinements, mutable_params, mpi_communicator);
 
     default:
         std::cerr << "[ERROR] Unknown MMS level: " << static_cast<int>(level) << "\n";
@@ -557,15 +369,9 @@ void MMSConvergenceResult::write_csv(const std::string& filename) const
         file << ",theta_L2,theta_L2_rate,theta_Linf,theta_Linf_rate"
              << ",theta_H1,theta_H1_rate,psi_L2,psi_L2_rate";
         break;
-    case MMSLevel::POISSON_STANDALONE:
-        file << ",phi_L2,phi_L2_rate,phi_Linf,phi_Linf_rate,phi_H1,phi_H1_rate";
-        break;
     case MMSLevel::NS_STANDALONE:
         file << ",ux_L2,ux_L2_rate,ux_Linf,ux_Linf_rate"
              << ",ux_H1,ux_H1_rate,p_L2,p_L2_rate,p_Linf,p_Linf_rate,div_u_L2";
-        break;
-    case MMSLevel::MAGNETIZATION_STANDALONE:
-        file << ",M_L2,M_L2_rate,M_Linf,M_Linf_rate";
         break;
     default:
         break;
@@ -596,14 +402,6 @@ void MMSConvergenceResult::write_csv(const std::string& filename) const
                 << "," << std::scientific << psi_L2[i]
                 << "," << std::fixed << safe_rate(psi_L2_rate, i);
             break;
-        case MMSLevel::POISSON_STANDALONE:
-            file << "," << std::scientific << phi_L2[i]
-                << "," << std::fixed << safe_rate(phi_L2_rate, i)
-                << "," << std::scientific << (i < phi_Linf.size() ? phi_Linf[i] : 0.0)
-                << "," << std::fixed << safe_rate(phi_Linf_rate, i)
-                << "," << std::scientific << phi_H1[i]
-                << "," << std::fixed << safe_rate(phi_H1_rate, i);
-            break;
         case MMSLevel::NS_STANDALONE:
             file << "," << std::scientific << ux_L2[i]
                 << "," << std::fixed << safe_rate(ux_L2_rate, i)
@@ -616,12 +414,6 @@ void MMSConvergenceResult::write_csv(const std::string& filename) const
                 << "," << std::scientific << (i < p_Linf.size() ? p_Linf[i] : 0.0)
                 << "," << std::fixed << safe_rate(p_Linf_rate, i)
                 << "," << std::scientific << div_u_L2[i];
-            break;
-        case MMSLevel::MAGNETIZATION_STANDALONE:
-            file << "," << std::scientific << M_L2[i]
-                << "," << std::fixed << safe_rate(M_L2_rate, i)
-                << "," << std::scientific << (i < M_Linf.size() ? M_Linf[i] : 0.0)
-                << "," << std::fixed << safe_rate(M_Linf_rate, i);
             break;
         default:
             break;
@@ -642,9 +434,7 @@ std::string to_string(MMSLevel level)
     switch (level)
     {
     case MMSLevel::CH_STANDALONE:           return "CH_STANDALONE";
-    case MMSLevel::POISSON_STANDALONE:      return "POISSON_STANDALONE";
     case MMSLevel::NS_STANDALONE:           return "NS_STANDALONE";
-    case MMSLevel::MAGNETIZATION_STANDALONE: return "MAGNETIZATION_STANDALONE";
     default:                                return "UNKNOWN";
     }
 }
