@@ -1,26 +1,24 @@
 // ============================================================================
-// magnetization/magnetization_assemble.cc — DG Cell + Face Assembly
+// magnetization/magnetization_assemble.cc — CG Cell Assembly
 //
 // Private methods:
 //   assemble_system_internal()  — unified matrix+RHS or RHS-only
 //   initialize_preconditioner() — ILU from current matrix
 //
-// CELL INTEGRALS (Zhang Eq 3.14):
+// CELL INTEGRALS (Zhang Eq 3.14/3.17):
 //   LHS:  (1/τ + 1/τ_M)(M^k, Z) + (U·∇M^k)·Z + ½(∇·U)(M^k·Z)
 //   RHS:  (1/τ_M)(χ(θ)H^k, Z) + (1/τ)(M^{n-1}, Z)
 //         + ½(∇×U × M^{n-1}, Z)     (spin-vorticity coupling, explicit)
 //         + β[M(M·H) - H|M|²]·Z     (Landau-Lifshitz, explicit)
 //         + (F_mms, Z)               (MMS source, testing only)
 //
-// FACE INTEGRALS (Eq. 57, second line):
-//   LHS:  -Σ_F ∫_F (U·n⁻)[[Z]]·{M^k} dS       (central/skew flux)
+// CG: No face integrals needed (continuity enforced by FE space).
 //
 // β-TERM (Zhang-He-Yang 2021, 2D identity):
 //   β M×(M×H) = β[M(M·H) - H|M|²]
 //   Explicit treatment using M^{n-1}, H^k on RHS.
 //
-// Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
-//            Zhang, He & Yang, SIAM J. Sci. Comput. 43(1) (2021) B167-B193
+// Reference: Zhang, He & Yang, SIAM J. Sci. Comput. 43(1) (2021) B167-B193
 // ============================================================================
 
 #include "magnetization/magnetization.h"
@@ -30,7 +28,6 @@
 
 #include <deal.II/base/quadrature_lib.h>
 #include <deal.II/fe/fe_values.h>
-#include <deal.II/fe/fe_interface_values.h>
 #include <deal.II/lac/full_matrix.h>
 
 using namespace dealii;
@@ -44,18 +41,9 @@ using namespace dealii;
 // explicit_transport:
 //   true  = Step 5 (Zhang Eq 3.14): mass-only matrix, explicit transport on RHS.
 //           Transport uses FULL divergence: -[(U·∇)M_old + (∇·U)M_old]·Z
-//           (coefficient 1, not ½ as in DG skew form). No face integrals.
-//           The transport contribution is cached for Picard RHS-only reuse.
-//   false = Step 6 (Zhang Eq 3.17): full DG transport matrix (implicit).
-//           Standard bilinear form b_h^m(U, M, Z) on LHS + face integrals.
-//           This is the default and matches the original code behavior.
-//
-// When RHS-only:
-//   - Skip matrix zeroing and all matrix writes
-//   - Skip face loop (face terms are matrix-only)
-//   - Skip U evaluation (U unchanged within Picard, already in matrix)
-//   - Skip MMS source (MMS tests don't use Picard sub-iterations)
-//   - If explicit_transport: add cached transport RHS at the end
+//           (coefficient 1, not ½ as in skew form). No implicit transport.
+//   false = Step 6 (Zhang Eq 3.17): full CG transport matrix (implicit).
+//           Standard bilinear form b(U, M, Z) on LHS.
 // ============================================================================
 template <int dim>
 void MagnetizationSubsystem<dim>::assemble_system_internal(
@@ -85,11 +73,8 @@ void MagnetizationSubsystem<dim>::assemble_system_internal(
     const unsigned int dofs_per_cell = fe_M.n_dofs_per_cell();
 
     // Quadrature
-    QGauss<dim>     quadrature_cell(fe_M.degree + 2);
-    QGauss<dim - 1> quadrature_face(fe_M.degree + 2);
-
+    QGauss<dim> quadrature_cell(fe_M.degree + 2);
     const unsigned int n_q_cell = quadrature_cell.size();
-    const unsigned int n_q_face = quadrature_face.size();
 
     // ========================================================================
     // FEValues — cell integrals
@@ -128,41 +113,6 @@ void MagnetizationSubsystem<dim>::assemble_system_internal(
     }
 
     // ========================================================================
-    // FEInterfaceValues + face scratch (only for full assembly)
-    // ========================================================================
-    std::unique_ptr<FEInterfaceValues<dim>> fe_interface_M_ptr;
-    std::unique_ptr<FEFaceValues<dim>>      fe_face_U_ptr;
-    std::vector<double>                     Ux_face(n_q_face);
-    std::vector<double>                     Uy_face(n_q_face);
-
-    FullMatrix<double> face_hh(dofs_per_cell, dofs_per_cell);
-    FullMatrix<double> face_ht(dofs_per_cell, dofs_per_cell);
-    FullMatrix<double> face_th(dofs_per_cell, dofs_per_cell);
-    FullMatrix<double> face_tt(dofs_per_cell, dofs_per_cell);
-    std::vector<types::global_dof_index> dofs_here(dofs_per_cell);
-    std::vector<types::global_dof_index> dofs_there(dofs_per_cell);
-
-    const bool face_mms_active = static_cast<bool>(mms_M_exact_);
-
-    if (matrix_and_rhs)
-    {
-        fe_interface_M_ptr = std::make_unique<FEInterfaceValues<dim>>(
-            fe_M, quadrature_face,
-            update_values | update_JxW_values | update_normal_vectors
-            | (face_mms_active ? update_quadrature_points : UpdateFlags(0)));
-
-        const FiniteElement<dim>& fe_U = u_dof_handler.get_fe();
-        fe_face_U_ptr = std::make_unique<FEFaceValues<dim>>(
-            fe_U, quadrature_face, update_values);
-    }
-
-    // Face RHS correction vectors (for MMS face flux consistency)
-    Vector<double> face_rhs_x_here(dofs_per_cell);
-    Vector<double> face_rhs_y_here(dofs_per_cell);
-    Vector<double> face_rhs_x_there(dofs_per_cell);
-    Vector<double> face_rhs_y_there(dofs_per_cell);
-
-    // ========================================================================
     // Local contributions
     // ========================================================================
     FullMatrix<double> local_matrix(dofs_per_cell, dofs_per_cell);
@@ -189,7 +139,7 @@ void MagnetizationSubsystem<dim>::assemble_system_internal(
                           && (std::abs(params_.physics.beta) > 1e-14);
     const double beta_val  = params_.physics.beta;
 
-const bool mms_active = static_cast<bool>(mms_source_);
+    const bool mms_active = static_cast<bool>(mms_source_);
 
     // ========================================================================
     // Zero outputs
@@ -210,11 +160,6 @@ const bool mms_active = static_cast<bool>(mms_source_);
 
     // ========================================================================
     // CELL LOOP — synchronized iteration across DoFHandlers
-    //
-    // All iterators advance in lockstep.  cell_U always advances but is
-    // only dereferenced when matrix_and_rhs == true.  In RHS-only mode
-    // u_dof_handler is a dummy (phi_dof_handler) sharing the same
-    // triangulation, so the iteration count matches.
     // ========================================================================
     auto cell_M     = dof_handler_.begin_active();
     auto cell_phi   = phi_dof_handler.begin_active();
@@ -275,15 +220,10 @@ const bool mms_active = static_cast<bool>(mms_source_);
             const double JxW = fe_values_M.JxW(q);
             const Point<dim>& x_q = fe_values_M.quadrature_point(q);
 
-            // h̃ = ∇φ — Zhang Eq 3.14: uses h̃^n = ∇φ^n
-            // CRITICAL: Do NOT add h_a here! The Poisson equation
-            //   (∇φ, ∇χ) = (h_a - m, ∇χ)
-            // means φ already encodes the applied field effect.
-            // Adding h_a would double-count the applied field.
+            // H = ∇φ (total field — Poisson encodes h_a via natural BCs)
             Tensor<1, dim> H;
             if (params_.use_reduced_magnetic_field)
             {
-                // Reduced mode: H = h_a only (no Poisson, for testing)
                 H = compute_applied_field<dim>(x_q, params_, current_time);
             }
             else
@@ -311,20 +251,10 @@ const bool mms_active = static_cast<bool>(mms_source_);
 
             // ================================================================
             // Spin-vorticity: +½(∇×U × M^{n-1}, Z)  (explicit, RHS)
-            //
-            // Zhang Eq 3.14 has −½(∇×ũ^n × m^{n-1}, n) on the LHS.
-            // Moving to RHS: +½(∇×ũ^n × m^{n-1}, Z).
-            //
-            // In 2D: ω_z = ∂u_y/∂x − ∂u_x/∂y
-            //         (∇×u) × m = ω_z(-m_y, m_x)
-            //
-            // Uses U^n (fixed per timestep) and M^{n-1} (old time).
-            // Computed only during full assembly; cached in spin_vort_rhs_
-            // vectors for reuse during Picard RHS-only iterations.
             // ================================================================
             double spin_vort_x = 0.0;
             double spin_vort_y = 0.0;
-            if (matrix_and_rhs && !params_.disable_spin_coupling)
+            if (matrix_and_rhs)
             {
                 const double omega_z = grad_Uy[q][0] - grad_Ux[q][1];
                 const double Mx = Mx_old_vals[q];
@@ -336,9 +266,6 @@ const bool mms_active = static_cast<bool>(mms_source_);
 
             // ================================================================
             // β-term: β M×(M×H) = β[M(M·H) - H|M|²]  (explicit, RHS)
-            //
-            // Uses M^{n-1} (old time), H^k (current Picard iterate)
-            // Reference: Zhang-He-Yang 2021, Eq. 2.8
             // ================================================================
             Tensor<1, dim> beta_term;
             if (beta_active)
@@ -349,7 +276,6 @@ const bool mms_active = static_cast<bool>(mms_source_);
                     + ((dim > 1) ? My * H[1] : 0.0);
                 const double M_sq = Mx * Mx + My * My;
 
-                // β[M(M·H) - H|M|²]
                 beta_term[0] = beta_val * (Mx * MdotH - H[0] * M_sq);
                 if constexpr (dim > 1)
                     beta_term[1] = beta_val * (My * MdotH - H[1] * M_sq);
@@ -367,33 +293,28 @@ const bool mms_active = static_cast<bool>(mms_source_);
             }
 
             // ================================================================
-            // Assemble cell contributions
-            // ================================================================
-            // ================================================================
             // Explicit transport: -[(U·∇)M_old + (∇·U)M_old]
             //
-            // Zhang Eq 3.14: ((ũ·∇)m^{n-1}, n) + ((∇·ũ)m^{n-1}, n) on LHS
-            // Moved to RHS with negative sign.
-            //
-            // Note: coefficient of (∇·U) is 1 (FULL divergence), NOT ½
-            // as in the DG skew bilinear form. This specific form is
-            // required for the energy stability proof (Remark 3.2).
+            // Zhang Eq 3.14: coefficient of (∇·U) is 1 (FULL divergence),
+            // NOT ½ as in the CG skew form. Required for energy stability.
             // ================================================================
             double et_x = 0.0, et_y = 0.0;
             if (explicit_transport && matrix_and_rhs)
             {
-                // (U·∇)Mx_old + (∇·U)*Mx_old
                 et_x = -(U_q * grad_Mx_old[q] + div_U_q * Mx_old_vals[q]);
                 if constexpr (dim > 1)
                     et_y = -(U_q * grad_My_old[q] + div_U_q * My_old_vals[q]);
             }
 
+            // ================================================================
+            // Assemble cell contributions
+            // ================================================================
             for (unsigned int i = 0; i < dofs_per_cell; ++i)
             {
                 const double Z_i = fe_values_M.shape_value(i, q);
                 const Tensor<1, dim>& grad_Z_i = fe_values_M.shape_grad(i, q);
 
-                // -- Matrix: mass + optional DG cell transport --
+                // -- Matrix: mass + optional CG cell transport --
                 if (matrix_and_rhs)
                 {
                     for (unsigned int j = 0; j < dofs_per_cell; ++j)
@@ -403,12 +324,10 @@ const bool mms_active = static_cast<bool>(mms_source_);
                         // Mass: (1/τ + 1/τ_M)(M_j, Z_i)
                         double val = mass_coeff * M_j * Z_i;
 
-                        // Transport cell: -B_h^m cell term (Step 6 only)
-                        // When explicit_transport=true (Step 5): mass-only matrix,
-                        // transport goes to RHS as explicit term.
+                        // CG skew transport (Step 6 only):
+                        // b(U, M, Z) = (U·∇M)Z + ½(∇·U)(MZ)
                         if (!explicit_transport)
                         {
-                            // B_h^m(U, M, Z) = (U·∇M)Z + ½(∇·U)(MZ)
                             val += -skew_magnetic_cell_value_scalar<dim>(
                                 U_q, div_U_q, Z_i, grad_Z_i, M_j);
                         }
@@ -418,7 +337,6 @@ const bool mms_active = static_cast<bool>(mms_source_);
                 }
 
                 // -- RHS: relaxation + old-time + β-term + MMS --
-                // (1/τ_M)(χH, Z) + (1/τ)(M^old, Z) + β[...] + F_mms
                 double rhs_x_val = relax_coeff * chi_theta * H[0]
                     + old_coeff * Mx_old_vals[q];
                 double rhs_y_val = (dim > 1)
@@ -426,8 +344,7 @@ const bool mms_active = static_cast<bool>(mms_source_);
                       + old_coeff * My_old_vals[q]
                     : 0.0;
 
-                // Explicit transport: -[(U·∇)M_old + (∇·U)M_old]·Z on RHS
-                // Add to main RHS and also cache for Picard RHS-only reuse
+                // Explicit transport on RHS (Step 5 only)
                 if (explicit_transport && matrix_and_rhs)
                 {
                     rhs_x_val += et_x;
@@ -439,8 +356,7 @@ const bool mms_active = static_cast<bool>(mms_source_);
                     }
                 }
 
-                // Spin-vorticity: +½(∇×U × M^{n-1}, Z) on RHS
-                // Add to main RHS and also cache separately for Picard reuse
+                // Spin-vorticity on RHS
                 if (matrix_and_rhs)
                 {
                     rhs_x_val += spin_vort_x;
@@ -472,233 +388,45 @@ const bool mms_active = static_cast<bool>(mms_source_);
         }
 
         // ====================================================================
-        // Distribute cell contributions to global vectors/matrix
+        // Distribute cell contributions via constraints
         // ====================================================================
         cell_M->get_dof_indices(local_dofs);
 
-        for (unsigned int i = 0; i < dofs_per_cell; ++i)
+        if (matrix_and_rhs)
         {
-            Mx_rhs_[local_dofs[i]] += local_rhs_x(i);
-            My_rhs_[local_dofs[i]] += local_rhs_y(i);
+            // Matrix + Mx RHS together (constraints modify both consistently)
+            constraints_.distribute_local_to_global(
+                local_matrix, local_rhs_x, local_dofs,
+                system_matrix_, Mx_rhs_);
 
-            if (matrix_and_rhs)
+            // My RHS separately (same constraints, RHS-only distribution)
+            constraints_.distribute_local_to_global(
+                local_rhs_y, local_dofs, My_rhs_);
+
+            // Distribute spin-vorticity cache (unconstrained — just add)
+            for (unsigned int i = 0; i < dofs_per_cell; ++i)
             {
-                // Distribute spin-vorticity cache
                 spin_vort_rhs_x_[local_dofs[i]] += local_sv_x(i);
                 spin_vort_rhs_y_[local_dofs[i]] += local_sv_y(i);
+            }
 
-                // Distribute explicit transport cache (Step 5 only)
-                if (explicit_transport)
+            // Distribute explicit transport cache (Step 5 only)
+            if (explicit_transport)
+            {
+                for (unsigned int i = 0; i < dofs_per_cell; ++i)
                 {
                     explicit_transport_rhs_x_[local_dofs[i]] += local_et_x(i);
                     explicit_transport_rhs_y_[local_dofs[i]] += local_et_y(i);
                 }
-
-                for (unsigned int j = 0; j < dofs_per_cell; ++j)
-                    system_matrix_.add(local_dofs[i], local_dofs[j],
-                                       local_matrix(i, j));
             }
         }
-
-        // ====================================================================
-        // FACE CONTRIBUTIONS (interior faces only, matrix_and_rhs only)
-        //
-        // Eq. 57 second line: -Σ_F ∫_F (U·n⁻)[[Z]]·{M} dS
-        //
-        // Face terms are matrix-only (bilinear in M^k, Z).
-        // When RHS-only, the matrix is frozen → skip entirely.
-        // ====================================================================
-        if (!matrix_and_rhs || explicit_transport)
-            continue;  // skip face loop for RHS-only mode or explicit transport (Step 5)
-
-        for (unsigned int f = 0; f < cell_M->n_faces(); ++f)
+        else
         {
-            if (cell_M->at_boundary(f))
-                continue;
-
-            const auto neighbor_M = cell_M->neighbor(f);
-
-            // Parallel: skip if neighbor not locally owned and we're higher index
-            if (!neighbor_M->is_locally_owned()
-                && cell_M->index() > neighbor_M->index())
-                continue;
-
-            // ================================================================
-            // Face assembly helper — shared by AMR Case 1 and Case 2
-            //
-            // Computes central/skew + upwind face matrices, distributes
-            // to system_matrix_, and applies MMS face RHS correction.
-            // Assumes fe_interface_M_ptr and fe_face_U_ptr are already
-            // reinit'd for this face.
-            // ================================================================
-            auto assemble_face = [&]()
-            {
-                fe_face_U_ptr->get_function_values(ux_relevant, Ux_face);
-                fe_face_U_ptr->get_function_values(uy_relevant, Uy_face);
-
-                cell_M->get_dof_indices(dofs_here);
-                neighbor_M->get_dof_indices(dofs_there);
-
-                face_hh = 0; face_ht = 0; face_th = 0; face_tt = 0;
-
-                for (unsigned int q = 0; q < n_q_face; ++q)
-                {
-                    const double JxW = fe_interface_M_ptr->JxW(q);
-                    const Tensor<1, dim>& normal =
-                        fe_interface_M_ptr->normal(q);
-                    double U_dot_n = Ux_face[q] * normal[0];
-                    if constexpr (dim > 1)
-                        U_dot_n += Uy_face[q] * normal[1];
-
-                    for (unsigned int i = 0; i < dofs_per_cell; ++i)
-                    {
-                        const double Z_i_here =
-                            fe_interface_M_ptr->shape_value(true, i, q);
-                        const double Z_i_there =
-                            fe_interface_M_ptr->shape_value(
-                                false, i + dofs_per_cell, q);
-
-                        for (unsigned int j = 0; j < dofs_per_cell; ++j)
-                        {
-                            const double M_j_here =
-                                fe_interface_M_ptr->shape_value(true, j, q);
-                            const double M_j_there =
-                                fe_interface_M_ptr->shape_value(
-                                    false, j + dofs_per_cell, q);
-
-                            // Central/skew flux: -(U·n)[[Z]]{M}
-                            const double central_hh =
-                                -skew_magnetic_face_value_scalar_interface(
-                                    U_dot_n, Z_i_here, 0.0,
-                                    M_j_here, 0.0) * JxW;
-                            const double central_ht =
-                                -skew_magnetic_face_value_scalar_interface(
-                                    U_dot_n, Z_i_here, 0.0,
-                                    0.0, M_j_there) * JxW;
-                            const double central_th =
-                                -skew_magnetic_face_value_scalar_interface(
-                                    U_dot_n, 0.0, Z_i_there,
-                                    M_j_here, 0.0) * JxW;
-                            const double central_tt =
-                                -skew_magnetic_face_value_scalar_interface(
-                                    U_dot_n, 0.0, Z_i_there,
-                                    0.0, M_j_there) * JxW;
-
-                            // Upwind penalty: +½|U·n|[[Z]][[M]]
-                            const double abs_Udn = std::abs(U_dot_n);
-                            const double upw_hh = 0.5 * abs_Udn
-                                * Z_i_here * M_j_here * JxW;
-                            const double upw_ht = 0.5 * abs_Udn
-                                * Z_i_here * (-M_j_there) * JxW;
-                            const double upw_th = 0.5 * abs_Udn
-                                * (-Z_i_there) * M_j_here * JxW;
-                            const double upw_tt = 0.5 * abs_Udn
-                                * (-Z_i_there) * (-M_j_there) * JxW;
-
-                            face_hh(i, j) += central_hh + upw_hh;
-                            face_ht(i, j) += central_ht + upw_ht;
-                            face_th(i, j) += central_th + upw_th;
-                            face_tt(i, j) += central_tt + upw_tt;
-                        }
-                    }
-                }
-
-                // Distribute 4-block face contributions
-                for (unsigned int i = 0; i < dofs_per_cell; ++i)
-                    for (unsigned int j = 0; j < dofs_per_cell; ++j)
-                    {
-                        system_matrix_.add(dofs_here[i],  dofs_here[j],
-                                           face_hh(i, j));
-                        system_matrix_.add(dofs_here[i],  dofs_there[j],
-                                           face_ht(i, j));
-                        system_matrix_.add(dofs_there[i], dofs_here[j],
-                                           face_th(i, j));
-                        system_matrix_.add(dofs_there[i], dofs_there[j],
-                                           face_tt(i, j));
-                    }
-
-                // Face MMS RHS correction
-                if (face_mms_active)
-                {
-                    face_rhs_x_here  = 0; face_rhs_y_here  = 0;
-                    face_rhs_x_there = 0; face_rhs_y_there = 0;
-
-                    for (unsigned int q = 0; q < n_q_face; ++q)
-                    {
-                        const double JxW = fe_interface_M_ptr->JxW(q);
-                        const Tensor<1, dim>& normal =
-                            fe_interface_M_ptr->normal(q);
-                        const Point<dim>& x_q =
-                            fe_interface_M_ptr->quadrature_point(q);
-
-                        double U_dot_n = Ux_face[q] * normal[0];
-                        if constexpr (dim > 1)
-                            U_dot_n += Uy_face[q] * normal[1];
-
-                        const Tensor<1, dim> M_exact =
-                            mms_M_exact_(x_q, current_time);
-
-                        for (unsigned int i = 0; i < dofs_per_cell; ++i)
-                        {
-                            const double Z_i_here =
-                                fe_interface_M_ptr->shape_value(true, i, q);
-                            const double Z_i_there =
-                                fe_interface_M_ptr->shape_value(
-                                    false, i + dofs_per_cell, q);
-
-                            face_rhs_x_here(i)  +=  U_dot_n * Z_i_here  * M_exact[0] * JxW;
-                            face_rhs_y_here(i)  +=  U_dot_n * Z_i_here  * M_exact[1] * JxW;
-                            face_rhs_x_there(i) += -U_dot_n * Z_i_there * M_exact[0] * JxW;
-                            face_rhs_y_there(i) += -U_dot_n * Z_i_there * M_exact[1] * JxW;
-                        }
-                    }
-
-                    for (unsigned int i = 0; i < dofs_per_cell; ++i)
-                    {
-                        Mx_rhs_[dofs_here[i]]  += face_rhs_x_here(i);
-                        My_rhs_[dofs_here[i]]   += face_rhs_y_here(i);
-                        Mx_rhs_[dofs_there[i]] += face_rhs_x_there(i);
-                        My_rhs_[dofs_there[i]]  += face_rhs_y_there(i);
-                    }
-                }
-            };
-
-            // ================================================================
-            // AMR Case 1: Neighbor is coarser — handle from fine side
-            // ================================================================
-            if (cell_M->neighbor_is_coarser(f))
-            {
-                const auto neighbor_info =
-                    cell_M->neighbor_of_coarser_neighbor(f);
-                const unsigned int neighbor_face    = neighbor_info.first;
-                const unsigned int neighbor_subface = neighbor_info.second;
-
-                fe_interface_M_ptr->reinit(
-                    cell_M, f, numbers::invalid_unsigned_int,
-                    neighbor_M, neighbor_face, neighbor_subface);
-                fe_face_U_ptr->reinit(cell_U, f);
-
-                assemble_face();
-            }
-            // ================================================================
-            // AMR Case 2: Neighbor at same level
-            // ================================================================
-            else if (neighbor_M->is_active())
-            {
-                // Process each face once: lower index handles it
-                if (cell_M->index() > neighbor_M->index())
-                    continue;
-
-                const unsigned int nf = cell_M->neighbor_of_neighbor(f);
-
-                fe_interface_M_ptr->reinit(
-                    cell_M, f, numbers::invalid_unsigned_int,
-                    neighbor_M, nf, numbers::invalid_unsigned_int);
-                fe_face_U_ptr->reinit(cell_U, f);
-
-                assemble_face();
-            }
-            // AMR Case 3: Neighbor is finer — skip, handled by fine cells
+            // RHS-only mode: distribute both RHS vectors via constraints
+            constraints_.distribute_local_to_global(
+                local_rhs_x, local_dofs, Mx_rhs_);
+            constraints_.distribute_local_to_global(
+                local_rhs_y, local_dofs, My_rhs_);
         }
     }
 
@@ -720,10 +448,7 @@ const bool mms_active = static_cast<bool>(mms_source_);
     My_rhs_.compress(VectorOperation::add);
 
     // ========================================================================
-    // In RHS-only mode (Picard), add cached spin-vorticity contribution.
-    // The spin_vort_rhs_ vectors were computed and cached during the full
-    // assembly (matrix_and_rhs=true) at the start of this timestep.
-    // They are constant within a timestep (depend only on U^n, M^{n-1}).
+    // In RHS-only mode, add cached spin-vorticity and transport contributions.
     // ========================================================================
     if (!matrix_and_rhs)
     {
@@ -746,14 +471,12 @@ const bool mms_active = static_cast<bool>(mms_source_);
 
 // ============================================================================
 // initialize_preconditioner() — ILU from current matrix
-//
-// Called once after full assembly. Reused for both Mx and My solves.
 // ============================================================================
 template <int dim>
 void MagnetizationSubsystem<dim>::initialize_preconditioner()
 {
     TrilinosWrappers::PreconditionILU::AdditionalData ilu_data;
-    ilu_data.ilu_fill = 1;      // ILU(1) for DG transport
+    ilu_data.ilu_fill = 1;
     ilu_data.ilu_atol = 1e-12;
     ilu_data.ilu_rtol = 1.0;
 

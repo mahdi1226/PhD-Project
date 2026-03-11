@@ -36,11 +36,9 @@ void Parameters::setup_rosensweig()
     domain.x_max = 1.0;
     domain.y_min = 0.0;
     domain.y_max = 0.6;
-    // Base mesh: r=4 gives h ≈ 1/160 (finer than paper's h=1/100)
-    //   x: 10*16 = 160 cells, h_x = 1/160 = 0.00625
-    //   y: 6*16 = 96  cells, h_y = 0.6/96 = 0.00625
-    domain.initial_cells_x = 10;
-    domain.initial_cells_y = 6;
+    // Zhang Eq 4.4: h = 1e-2 → 100×60 square cells
+    domain.initial_cells_x = 100;
+    domain.initial_cells_y = 60;
 
     // Physics — Zhang Eq 4.4 (SIAM J. Sci. Comput. 43(1), 2021, p.B186)
     physics.epsilon = 5e-3;        // ε = 5e-3
@@ -85,9 +83,8 @@ void Parameters::setup_rosensweig()
     time.t_final = 2.0;
     time.max_steps = 2000;
 
-    // Mesh — Zhang Eq 4.4: h = 1e-2 (paper), we use h ≈ 1/160
-    // r=4: 10*16=160 cells in x (h_x=1/160≈0.006), finer than paper
-    mesh.initial_refinement = 4;
+    // Mesh — Zhang Eq 4.4: h = 1e-2, no global refinement needed
+    mesh.initial_refinement = 0;
 
     // Subsystems
     enable_magnetic = true;
@@ -95,13 +92,8 @@ void Parameters::setup_rosensweig()
     enable_gravity = true;
     use_reduced_magnetic_field = false;
 
-    // Picard sub-iteration for Poisson-Magnetization coupling
-    picard_iterations = 7;
-    picard_tolerance = 0.01;
-
     // Zhang's SAV scheme — use FULL magnetization PDE (not algebraic)
     use_algebraic_magnetization = false;  // Zhang solves mag PDE (Eq 3.15-3.16)
-    use_sav = true;
     sav.S1 = 0.0;   // auto-computed: S = lambda_theta/(4*epsilon) = 12.5
 }
 
@@ -117,8 +109,10 @@ void Parameters::setup_rosensweig()
 //   - α ramps with slope 1.2 (much slower than Section 4.3's 5000)
 //   - Figures shown up to t = 3.5
 // ============================================================================
-void Parameters::setup_rosensweig_nonuniform()
+void Parameters::setup_hedgehog()
 {
+    // Zhang Section 4.4: Rosensweig instability under nonuniformly applied
+    // magnetic field. 42 dipoles arranged as bar magnet → hedgehog pattern.
     // Start from uniform Rosensweig as base
     setup_rosensweig();
 
@@ -133,11 +127,10 @@ void Parameters::setup_rosensweig_nonuniform()
     time.t_final = 4.0;
     time.max_steps = 20000;
 
-    // Mesh: h = 1/120 (Paper: "h = 1/120")
-    // Base grid 15×9 with refinement 3: 15×8=120 cells in x, 9×8=72 in y
-    domain.initial_cells_x = 15;
-    domain.initial_cells_y = 9;
-    mesh.initial_refinement = 3;   // 120×72 cells, h = 1/120
+    // Mesh: h = 1/120 (Paper: "h = 1/120") → 120×72 square cells
+    domain.initial_cells_x = 120;
+    domain.initial_cells_y = 72;
+    mesh.initial_refinement = 0;
 
     // 42 dipoles: 3 rows at y = -0.5, -0.75, -1.0
     // 14 per row, equidistributed in x over [0.3, 0.7] (bar magnet width 0.4)
@@ -161,9 +154,18 @@ void Parameters::setup_rosensweig_nonuniform()
     dipoles.ramp_time    = 0.0;
     dipoles.intensity_max = 0.0;       // no cap mentioned
 
-    // More Picard iterations — nonuniform field is harder to resolve
-    picard_iterations = 15;
-    picard_tolerance = 1e-4;
+}
+
+void Parameters::setup_dome()
+{
+    // Dome test: same dipole setup as hedgehog, but uses H = h_a only
+    // (no demagnetizing field from Poisson). Without demagnetizing feedback,
+    // the interface forms a smooth dome instead of spikes.
+    // Matches Nochetto et al. Fig. 7 / Semi_Coupled dome preset.
+    setup_hedgehog();
+
+    // Key difference: H = h_a only (skip Poisson for demagnetizing field)
+    use_reduced_magnetic_field = true;
 }
 
 // ============================================================================
@@ -173,16 +175,9 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
 {
     Parameters params;
 
-    // Track which flags were explicitly set (for post-processing)
-    bool got_alpha_max = false;
-    bool got_Lx = false;
-    bool got_Ly = false;
-    double new_Lx = 0.0;
-    double new_Ly = 0.0;
-
     for (int i = 1; i < argc; ++i)
     {
-        // ---- Run mode / multi-ref / steps ----
+        // ---- Run mode (standalone subsystem drivers only) ----
         if (std::strcmp(argv[i], "--mode") == 0)
         {
             if (++i >= argc) { std::cerr << "--mode requires a value\n"; std::exit(1); }
@@ -201,11 +196,13 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             params.run.steps = std::stoi(argv[i]);
         }
 
-        // ---- Presets ----
+        // ---- Presets (all physics hardcoded inside) ----
         else if (std::strcmp(argv[i], "--rosensweig") == 0)
             params.setup_rosensweig();
-        else if (std::strcmp(argv[i], "--rosensweig-nonuniform") == 0)
-            params.setup_rosensweig_nonuniform();
+        else if (std::strcmp(argv[i], "--hedgehog") == 0)
+            params.setup_hedgehog();
+        else if (std::strcmp(argv[i], "--dome") == 0)
+            params.setup_dome();
 
         // ---- Mesh ----
         else if (std::strcmp(argv[i], "--refinement") == 0 ||
@@ -215,160 +212,18 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             params.mesh.initial_refinement = std::stoul(argv[i]);
         }
 
-        // ---- Time stepping ----
+        // ---- Time stepping (override preset) ----
         else if (std::strcmp(argv[i], "--dt") == 0)
         {
             if (++i >= argc) { std::cerr << "--dt requires a value\n"; std::exit(1); }
             params.time.dt = std::stod(argv[i]);
         }
-        else if (std::strcmp(argv[i], "--t_final") == 0)
-        {
-            if (++i >= argc) { std::cerr << "--t_final requires a value\n"; std::exit(1); }
-            params.time.t_final = std::stod(argv[i]);
-        }
-        else if (std::strcmp(argv[i], "--max_steps") == 0)
-        {
-            if (++i >= argc) { std::cerr << "--max_steps requires a value\n"; std::exit(1); }
-            params.time.max_steps = std::stoul(argv[i]);
-        }
-
-        // ---- Uniform applied field ----
-        else if (std::strcmp(argv[i], "--uniform_field") == 0)
-        {
-            if (++i >= argc) { std::cerr << "--uniform_field requires intensity value\n"; std::exit(1); }
-            params.uniform_field.enabled = true;
-            params.uniform_field.intensity_max = std::stod(argv[i]);
-        }
-        else if (std::strcmp(argv[i], "--field_ramp_time") == 0)
-        {
-            if (++i >= argc) { std::cerr << "--field_ramp_time requires a value\n"; std::exit(1); }
-            params.uniform_field.ramp_time = std::stod(argv[i]);
-        }
-
-        // ---- Magnetization physics ----
-        else if (std::strcmp(argv[i], "--tau_M") == 0)
-        {
-            if (++i >= argc) { std::cerr << "--tau_M requires a value\n"; std::exit(1); }
-            params.physics.tau_M = std::stod(argv[i]);
-        }
-        else if (std::strcmp(argv[i], "--beta") == 0)
-        {
-            if (++i >= argc) { std::cerr << "--beta requires a value\n"; std::exit(1); }
-            params.physics.beta = std::stod(argv[i]);
-            params.physics.enable_beta_term = (params.physics.beta != 0.0);
-        }
-        else if (std::strcmp(argv[i], "--enable_beta") == 0)
-            params.physics.enable_beta_term = true;
-        else if (std::strcmp(argv[i], "--no-spin-coupling") == 0)
-            params.disable_spin_coupling = true;
-
-        // ---- Cahn-Hilliard physics ----
-        else if (std::strcmp(argv[i], "--mobility") == 0)
-        {
-            if (++i >= argc) { std::cerr << "--mobility requires a value\n"; std::exit(1); }
-            params.physics.mobility = std::stod(argv[i]);
-        }
-        else if (std::strcmp(argv[i], "--lambda") == 0)
-        {
-            if (++i >= argc) { std::cerr << "--lambda requires a value\n"; std::exit(1); }
-            params.physics.lambda = std::stod(argv[i]);
-        }
-
-        // ---- Susceptibility / field strength ----
-        else if (std::strcmp(argv[i], "--chi0") == 0)
-        {
-            if (++i >= argc) { std::cerr << "--chi0 requires a value\n"; std::exit(1); }
-            params.physics.chi_0 = std::stod(argv[i]);
-        }
-        else if (std::strcmp(argv[i], "--alpha_max") == 0)
-        {
-            if (++i >= argc) { std::cerr << "--alpha_max requires a value\n"; std::exit(1); }
-            params.dipoles.intensity_max = std::stod(argv[i]);
-            got_alpha_max = true;
-        }
-        else if (std::strcmp(argv[i], "--epsilon") == 0)
-        {
-            if (++i >= argc) { std::cerr << "--epsilon requires a value\n"; std::exit(1); }
-            params.physics.epsilon = std::stod(argv[i]);
-        }
-        else if (std::strcmp(argv[i], "--y_interface") == 0)
-        {
-            if (++i >= argc) { std::cerr << "--y_interface requires a value\n"; std::exit(1); }
-            params.flat_interface_y = std::stod(argv[i]);
-        }
-
-        // ---- Domain geometry ----
-        else if (std::strcmp(argv[i], "--Lx") == 0)
-        {
-            if (++i >= argc) { std::cerr << "--Lx requires a value\n"; std::exit(1); }
-            got_Lx = true;
-            new_Lx = std::stod(argv[i]);
-        }
-        else if (std::strcmp(argv[i], "--Ly") == 0)
-        {
-            if (++i >= argc) { std::cerr << "--Ly requires a value\n"; std::exit(1); }
-            got_Ly = true;
-            new_Ly = std::stod(argv[i]);
-        }
-
-        // ---- Navier-Stokes physics ----
-        else if (std::strcmp(argv[i], "--nu_water") == 0)
-        {
-            if (++i >= argc) { std::cerr << "--nu_water requires a value\n"; std::exit(1); }
-            params.physics.nu_water = std::stod(argv[i]);
-        }
-        else if (std::strcmp(argv[i], "--nu_ferro") == 0)
-        {
-            if (++i >= argc) { std::cerr << "--nu_ferro requires a value\n"; std::exit(1); }
-            params.physics.nu_ferro = std::stod(argv[i]);
-        }
-        else if (std::strcmp(argv[i], "--density_ratio") == 0)
-        {
-            if (++i >= argc) { std::cerr << "--density_ratio requires a value\n"; std::exit(1); }
-            params.physics.r = std::stod(argv[i]);
-        }
-        else if (std::strcmp(argv[i], "--gravity") == 0)
-        {
-            if (++i >= argc) { std::cerr << "--gravity requires a value\n"; std::exit(1); }
-            params.physics.gravity_magnitude = std::stod(argv[i]);
-        }
-
-        // ---- Picard (DEPRECATED: Zhang single-pass scheme, no iteration) ----
-        else if (std::strcmp(argv[i], "--picard_iters") == 0)
-        {
-            if (++i >= argc) { std::cerr << "--picard_iters requires a value\n"; std::exit(1); }
-            // Deprecated: value parsed but ignored (Zhang single-pass)
-            std::cerr << "Warning: --picard_iters deprecated (Zhang single-pass scheme)\n";
-        }
-        else if (std::strcmp(argv[i], "--picard_omega") == 0)
-        {
-            if (++i >= argc) { std::cerr << "--picard_omega requires a value\n"; std::exit(1); }
-            // Deprecated: value parsed but ignored (Zhang single-pass)
-            std::cerr << "Warning: --picard_omega deprecated (Zhang single-pass scheme)\n";
-        }
-
-        // ---- SAV + Algebraic Magnetization ----
-        else if (std::strcmp(argv[i], "--algebraic_M") == 0)
-            params.use_algebraic_magnetization = true;
-        else if (std::strcmp(argv[i], "--no_algebraic_M") == 0)
-            params.use_algebraic_magnetization = false;
-        else if (std::strcmp(argv[i], "--sav") == 0)
-            params.use_sav = true;
-        else if (std::strcmp(argv[i], "--no_sav") == 0)
-            params.use_sav = false;
-        else if (std::strcmp(argv[i], "--sav_S") == 0 || std::strcmp(argv[i], "--sav_S1") == 0)
-        {
-            if (++i >= argc) { std::cerr << "--sav_S requires a value\n"; std::exit(1); }
-            params.sav.S1 = std::stod(argv[i]);
-        }
 
         // ---- Solver overrides ----
         else if (std::strcmp(argv[i], "--all-direct") == 0)
         {
-            // Force direct solvers for ALL subsystems (diagnostic for solver accuracy)
             params.solvers.poisson.use_iterative = false;
             params.solvers.ns.use_iterative = false;
-            // Magnetization and CH already default to direct
         }
         else if (std::strcmp(argv[i], "--poisson-direct") == 0)
             params.solvers.poisson.use_iterative = false;
@@ -386,8 +241,20 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             params.enable_ns = false;
         else if (std::strcmp(argv[i], "--no_gravity") == 0)
             params.enable_gravity = false;
+        else if (std::strcmp(argv[i], "--uniform-field") == 0)
+        {
+            // Override dipole field with truly uniform h_a.
+            // Use AFTER a preset (e.g., --rosensweig --uniform-field).
+            // Copies ramp/intensity from dipoles config, then disables dipoles.
+            params.uniform_field.enabled = true;
+            params.uniform_field.direction = {0.0, 1.0};  // vertical
+            params.uniform_field.intensity_max = params.dipoles.intensity_max;
+            params.uniform_field.ramp_slope    = params.dipoles.ramp_slope;
+            params.uniform_field.ramp_time     = params.dipoles.ramp_time;
+            params.dipoles.positions.clear();  // disable dipoles
+        }
 
-        // ---- Validation presets (Zhang, He & Yang, CMAME 371 (2020)) ----
+        // ---- Validation presets (Zhang, He & Yang, SIAM J. Sci. Comput. 43 (2021)) ----
         else if (std::strcmp(argv[i], "--validation") == 0)
         {
             if (++i >= argc) { std::cerr << "--validation requires a value (square|droplet)\n"; std::exit(1); }
@@ -448,7 +315,6 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
                 params.mesh.initial_refinement = 6;  // h = 2π/64 ≈ 0.098
 
                 params.use_algebraic_magnetization = false;
-                params.use_sav = true;
                 params.sav.S1 = 0.0;   // auto-computed: S = lambda_theta/(4*epsilon) = 1.25
             }
             else if (params.validation_test == "droplet")
@@ -516,7 +382,6 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
 
                 // Zhang's SAV scheme — use FULL magnetization PDE
                 params.use_algebraic_magnetization = false;
-                params.use_sav = true;
                 params.sav.S1 = 0.0;   // auto-computed: S = lambda_theta/(4*epsilon) = 31.25
             }
             else if (params.validation_test == "droplet_nofield")
@@ -560,7 +425,6 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
                 params.mesh.initial_refinement = 7;
 
                 params.use_algebraic_magnetization = true;
-                params.use_sav = true;
                 params.sav.S1 = 0.0;   // auto-computed: S = lambda_theta/(4*epsilon) = 31.25
             }
             else
@@ -601,6 +465,11 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             if (++i >= argc) { std::cerr << "--amr-lower-fraction requires a value\n"; std::exit(1); }
             params.mesh.amr_lower_fraction = std::stod(argv[i]);
         }
+        else if (std::strcmp(argv[i], "--amr-refine-threshold") == 0)
+        {
+            if (++i >= argc) { std::cerr << "--amr-refine-threshold requires a value\n"; std::exit(1); }
+            params.mesh.amr_refine_threshold = std::stod(argv[i]);
+        }
         else if (std::strcmp(argv[i], "--amr-activation-U") == 0 || std::strcmp(argv[i], "--amr_activation_U") == 0)
         {
             if (++i >= argc) { std::cerr << "--amr-activation-U requires a value\n"; std::exit(1); }
@@ -629,66 +498,40 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
         else if (std::strcmp(argv[i], "--help") == 0 ||
                  std::strcmp(argv[i], "-h") == 0)
         {
-            std::cout << "Ferrofluid Solver — Poisson + Magnetization + CH + NS\n";
-            std::cout << "Reference: Nochetto et al. CMAME 309 (2016) Eq. 42a-42f\n\n";
+            std::cout << "Decoupled Ferrofluid Solver (Zhang, He & Yang, SIAM J. Sci. Comput. 43, 2021)\n";
+            std::cout << "Algorithm 3.1: CH → NS → Pressure → Velocity → Magnetization+Poisson\n\n";
             std::cout << "Usage: " << argv[0] << " [options]\n\n";
-            std::cout << "  Run mode:\n";
-            std::cout << "    --mode <mms|2d|3d|temporal>  Run mode (default: mms)\n";
-            std::cout << "    --ref 2 3 4 5 6    Refinement levels for mms/temporal\n";
-            std::cout << "    --steps N          Override number of time steps\n\n";
-            std::cout << "  Presets:\n";
-            std::cout << "    --rosensweig        Rosensweig preset (Section 4.3, uniform field)\n";
-            std::cout << "    --rosensweig-nonuniform  Rosensweig preset (Section 4.4, 42 dipoles)\n";
-            std::cout << "    --validation MODE   Validation test (droplet|square)\n\n";
-            std::cout << "  Mesh:\n";
-            std::cout << "    --refinement N      Mesh refinement level (2d/3d modes)\n";
-            std::cout << "    --amr / --no-amr    Enable/disable adaptive mesh refinement\n";
-            std::cout << "    --amr-interval N    Refine every N steps (default: 5)\n";
-            std::cout << "    --amr-max-level N   Max refinement level (default: 0=no cap)\n";
-            std::cout << "    --amr-min-level N   Min refinement level (default: 0)\n";
-            std::cout << "    --amr-activation-U V  |U| threshold to activate AMR (default: 1e-3, 0=immediate)\n\n";
-            std::cout << "  Time stepping:\n";
-            std::cout << "    --dt VALUE          Time step size\n";
-            std::cout << "    --t_final VALUE     Final simulation time\n\n";
-            std::cout << "  Physics (parametric study):\n";
-            std::cout << "    --chi0 VALUE        Susceptibility χ₀ (default: 0.5)\n";
-            std::cout << "    --alpha_max VALUE   Max field intensity (default: 8000)\n";
-            std::cout << "    --epsilon VALUE     Interface width ε (default: 5e-3)\n";
-            std::cout << "    --y_interface VALUE  Flat interface y-position (default: 0.2)\n";
-            std::cout << "    --Lx VALUE          Domain width (rescales cells+dipoles)\n";
-            std::cout << "    --Ly VALUE          Domain height (rescales cells)\n\n";
-            std::cout << "  Cahn-Hilliard:\n";
-            std::cout << "    --mobility VALUE    CH mobility γ (default: 0.0002)\n";
-            std::cout << "    --lambda VALUE      Surface tension λ (default: 0.05)\n\n";
-            std::cout << "  Magnetization:\n";
-            std::cout << "    --tau_M VALUE       Relaxation time (default: 1e-6)\n";
-            std::cout << "    --beta VALUE        Landau-Lifshitz damping coefficient\n";
-            std::cout << "    --enable_beta       Enable β-term even if β=0\n\n";
-            std::cout << "  Navier-Stokes:\n";
-            std::cout << "    --nu_water VALUE    Non-magnetic viscosity (default: 1.0)\n";
-            std::cout << "    --nu_ferro VALUE    Ferrofluid viscosity (default: 2.0)\n";
-            std::cout << "    --density_ratio V   Density ratio r (default: 0.1)\n";
-            std::cout << "    --gravity VALUE     Gravity magnitude (default: 30000)\n\n";
-            std::cout << "  Coupling:\n";
-            std::cout << "    Mag-Poisson: Zhang single-pass (no Picard iteration)\n";
-            std::cout << "    --picard_iters N    [DEPRECATED] ignored\n";
-            std::cout << "    --picard_omega V    [DEPRECATED] ignored\n\n";
-            std::cout << "  Subsystems:\n";
-            std::cout << "    --mms               MMS verification mode\n";
-            std::cout << "    --no_magnetic       Disable applied field\n";
-            std::cout << "    --reduced_field     H = h_a only (dome setup)\n";
-            std::cout << "    --no_ns             Disable Navier-Stokes\n";
-            std::cout << "    --no_gravity        Disable gravity body force\n\n";
+            std::cout << "  Presets (all physics hardcoded per paper section):\n";
+            std::cout << "    --rosensweig       Uniform field, 5 dipoles (Section 4.3)\n";
+            std::cout << "    --hedgehog         Nonuniform field, 42 dipoles (Section 4.4)\n";
+            std::cout << "    --dome             Hedgehog with H=h_a only (no Poisson)\n";
+            std::cout << "    --validation MODE  Validation test (square|droplet|droplet_nofield)\n\n";
+            std::cout << "  Overrides (applied after preset):\n";
+            std::cout << "    -r, --refinement N  Mesh refinement level\n";
+            std::cout << "    --dt VALUE          Time step size\n\n";
+            std::cout << "  Subsystem toggles:\n";
+            std::cout << "    --mms              MMS verification mode\n";
+            std::cout << "    --no_magnetic      Disable magnetic subsystem\n";
+            std::cout << "    --reduced_field    H = h_a only (dome setup)\n";
+            std::cout << "    --no_ns            Disable Navier-Stokes\n";
+            std::cout << "    --no_gravity       Disable gravity body force\n\n";
             std::cout << "  Solvers:\n";
-            std::cout << "    --all-direct         Force direct solvers for ALL subsystems\n";
-            std::cout << "    --poisson-direct     Force direct solver for Poisson\n";
-            std::cout << "    --ns-direct          Force direct solver for NS (ux, uy, p)\n\n";
+            std::cout << "    --all-direct       Force direct solvers for ALL subsystems\n";
+            std::cout << "    --poisson-direct   Force direct solver for Poisson\n";
+            std::cout << "    --ns-direct        Force direct solver for NS\n\n";
+            std::cout << "  AMR:\n";
+            std::cout << "    --amr / --no-amr   Enable/disable adaptive mesh refinement\n";
+            std::cout << "    --amr-interval N   Refine every N steps (default: 5)\n";
+            std::cout << "    --amr-max-level N  Max refinement level\n";
+            std::cout << "    --amr-min-level N  Min refinement level\n";
+            std::cout << "    --amr-activation-U V  |U| threshold for AMR (default: 1e-3)\n\n";
             std::cout << "  Sparsity / Renumbering:\n";
-            std::cout << "    --renumber-dofs         Apply Cuthill-McKee DoF renumbering (reduces bandwidth)\n";
-            std::cout << "    --no-renumber-dofs      Disable DoF renumbering (default)\n";
-            std::cout << "    --dump-sparsity         Export sparsity patterns (SVG + gnuplot + bandwidth CSV)\n\n";
+            std::cout << "    --renumber-dofs    Apply Cuthill-McKee DoF renumbering\n";
+            std::cout << "    --no-renumber-dofs Disable DoF renumbering (default)\n";
+            std::cout << "    --dump-sparsity    Export sparsity patterns\n\n";
             std::cout << "  Output:\n";
-            std::cout << "    --verbose           Verbose output\n";
+            std::cout << "    --vtk_interval N   VTK output every N steps\n";
+            std::cout << "    --verbose          Verbose output\n";
             std::exit(0);
         }
         else
@@ -700,56 +543,21 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
     }
 
     // ================================================================
-    // Post-processing: apply deferred CLI overrides
-    // (Must run after all flags are parsed, since presets set defaults
-    //  and CLI flags override them. Order: preset → flag → post-process)
+    // AMR finalization: auto-compute level limits if not explicitly set
+    //
+    // Following Semi_Coupled/Nochetto approach:
+    //   amr_min_level = max(1, initial_refinement - 2)  [bulk coarsening floor]
+    //   amr_max_level = initial_refinement + 2          [interface refinement cap]
     // ================================================================
-
-    // --alpha_max: auto-adjust ramp_slope to keep ramp time = 1.6s
-    if (got_alpha_max && params.dipoles.ramp_slope > 0.0)
-        params.dipoles.ramp_slope = params.dipoles.intensity_max / 1.6;
-
-    // --Lx: rescale domain, initial_cells_x, and dipole x-positions
-    if (got_Lx)
+    if (params.mesh.use_amr)
     {
-        const double old_Lx = params.domain.x_max - params.domain.x_min;
-        params.domain.x_max = params.domain.x_min + new_Lx;
+        if (params.mesh.amr_min_level == 0)
+            params.mesh.amr_min_level = std::max(1u,
+                params.mesh.initial_refinement >= 2
+                    ? params.mesh.initial_refinement - 2 : 0u);
 
-        // Scale initial_cells_x to maintain ~same cell aspect ratio
-        // Rosensweig base: 10 cells for Lx=1.0
-        params.domain.initial_cells_x =
-            static_cast<unsigned int>(std::round(
-                params.domain.initial_cells_x * new_Lx / old_Lx));
-        if (params.domain.initial_cells_x < 1)
-            params.domain.initial_cells_x = 1;
-
-        // Rescale dipole x-positions: maintain same relative overhang
-        // Base: 5 dipoles span [-0.5, 1.5] for domain [0,1] → overhang = 0.5 each side
-        // For new domain [0, Lx]: span [-0.5, Lx+0.5]
-        if (!params.dipoles.positions.empty())
-        {
-            const double x_center_old = (params.domain.x_min + params.domain.x_min + old_Lx) / 2.0;
-            const double x_center_new = (params.domain.x_min + params.domain.x_max) / 2.0;
-            const double scale = new_Lx / old_Lx;
-            for (auto& pos : params.dipoles.positions)
-            {
-                double x_rel = pos[0] - x_center_old;  // relative to old center
-                pos[0] = x_center_new + x_rel * scale;  // scale and shift
-            }
-        }
-    }
-
-    // --Ly: rescale domain height and initial_cells_y
-    if (got_Ly)
-    {
-        const double old_Ly = params.domain.y_max - params.domain.y_min;
-        params.domain.y_max = params.domain.y_min + new_Ly;
-
-        params.domain.initial_cells_y =
-            static_cast<unsigned int>(std::round(
-                params.domain.initial_cells_y * new_Ly / old_Ly));
-        if (params.domain.initial_cells_y < 1)
-            params.domain.initial_cells_y = 1;
+        if (params.mesh.amr_max_level == 0)
+            params.mesh.amr_max_level = params.mesh.initial_refinement + 2;
     }
 
     // Print config from rank 0
@@ -759,30 +567,18 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
     if (params.output.verbose && rank == 0)
     {
         std::cout << "=== Configuration ===\n";
-        std::cout << "  Refinement: " << params.mesh.initial_refinement << "\n";
+        std::cout << "  r=" << params.mesh.initial_refinement
+                  << ", dt=" << params.time.dt
+                  << ", t_final=" << params.time.t_final << "\n";
         std::cout << "  Domain: [" << params.domain.x_min << "," << params.domain.x_max
                   << "] x [" << params.domain.y_min << "," << params.domain.y_max << "]\n";
-        std::cout << "  epsilon=" << params.physics.epsilon << "\n";
-        std::cout << "  CH: mobility=" << params.physics.mobility
-                  << ", lambda=" << params.physics.lambda << "\n";
-        std::cout << "  Mag: chi_0=" << params.physics.chi_0
-                  << ", tau_M=" << params.physics.tau_M << "\n";
-        std::cout << "  beta=" << params.physics.beta
-                  << " (enabled=" << (params.physics.enable_beta_term ? "yes" : "no") << ")\n";
-        std::cout << "  NS: nu_w=" << params.physics.nu_water
-                  << ", nu_f=" << params.physics.nu_ferro
-                  << ", r=" << params.physics.r
-                  << ", |g|=" << params.physics.gravity_magnitude << "\n";
-        std::cout << "  dt=" << params.time.dt
-                  << ", t_final=" << params.time.t_final << "\n";
-        std::cout << "  Mag-Poisson: Zhang single-pass (no Picard)\n";
-        std::cout << "  Magnetic: " << (params.enable_magnetic ? "ON" : "OFF") << "\n";
-        std::cout << "  NS: " << (params.enable_ns ? "ON" : "OFF")
+        std::cout << "  Magnetic: " << (params.enable_magnetic ? "ON" : "OFF")
+                  << ", NS: " << (params.enable_ns ? "ON" : "OFF")
                   << ", Gravity: " << (params.enable_gravity ? "ON" : "OFF") << "\n";
-        std::cout << "  MMS: " << (params.enable_mms ? "ON" : "OFF") << "\n";
-        if (params.uniform_field.enabled)
-            std::cout << "  Uniform field: ON, |H_a|=" << params.uniform_field.intensity_max
-                      << ", ramp=" << params.uniform_field.ramp_time << "\n";
+        if (params.mesh.use_amr)
+            std::cout << "  AMR: ON, interval=" << params.mesh.amr_interval
+                      << ", levels=[" << params.mesh.amr_min_level
+                      << "," << params.mesh.amr_max_level << "]\n";
         std::cout << "=====================\n";
     }
 

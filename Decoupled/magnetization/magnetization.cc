@@ -4,7 +4,7 @@
 // Constructor, setup() orchestration, public method delegation,
 // ghost management, equilibrium initialization, and diagnostics.
 //
-// Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
+// Reference: Zhang, He & Yang, SIAM J. Sci. Comput. 43(1) (2021) B167-B193
 // ============================================================================
 
 #include "magnetization/magnetization.h"
@@ -14,6 +14,9 @@
 #include <deal.II/base/quadrature_lib.h>
 #include <deal.II/fe/fe_values.h>
 #include <deal.II/lac/full_matrix.h>
+#include <deal.II/lac/solver_control.h>
+#include <deal.II/lac/trilinos_solver.h>
+#include <deal.II/lac/trilinos_precondition.h>
 #include <deal.II/numerics/vector_tools.h>
 
 #include <cmath>
@@ -32,7 +35,7 @@ MagnetizationSubsystem<dim>::MagnetizationSubsystem(
     : params_(params)
     , mpi_comm_(mpi_comm)
     , triangulation_(triangulation)
-    , fe_(1)                           // DG-Q1
+    , fe_(1)                           // CG Q1 (Zhang Eq 3.6: N_h ∈ C⁰)
     , dof_handler_(triangulation)
     , preconditioner_initialized_(false)
     , ghosts_valid_(false)
@@ -46,10 +49,11 @@ MagnetizationSubsystem<dim>::MagnetizationSubsystem(
 template <int dim>
 void MagnetizationSubsystem<dim>::setup()
 {
-    pcout_ << "[Magnetization] Setting up DG-Q" << fe_.degree
+    pcout_ << "[Magnetization] Setting up CG-Q" << fe_.degree
            << " subsystem..." << std::endl;
 
     distribute_dofs();
+    build_constraints();
     build_sparsity_pattern();
     allocate_vectors();
 
@@ -165,12 +169,6 @@ template <int dim>
 void MagnetizationSubsystem<dim>::set_mms_source(MmsSourceFunction func)
 {
     mms_source_ = std::move(func);
-}
-
-template <int dim>
-void MagnetizationSubsystem<dim>::set_mms_M_exact(MmsExactMFunction func)
-{
-    mms_M_exact_ = std::move(func);
 }
 
 // ============================================================================
@@ -340,12 +338,13 @@ MagnetizationSubsystem<dim>::get_My_old_relevant_mutable()
 }
 
 // ============================================================================
-// initialize_equilibrium() — M⁰ = χ(θ⁰)H⁰ via cell-local L² projection
+// initialize_equilibrium() — M⁰ = χ(θ⁰)H⁰ via global L² projection
 //
-// For DG elements, L² projection is cell-local: each cell independently
-// inverts its small local mass matrix.  No global solve required.
+// For CG, we use VectorTools::project which performs a global L² projection
+// with constraint application. This produces nodal values that are globally
+// optimal in the L² sense (unlike DG cell-local inversion).
 //
-// H = ∇φ + h_a (total field = demagnetizing + applied)
+// H = ∇φ (total field — Poisson encodes h_a via natural BCs)
 // ============================================================================
 template <int dim>
 void MagnetizationSubsystem<dim>::initialize_equilibrium(
@@ -376,17 +375,21 @@ void MagnetizationSubsystem<dim>::initialize_equilibrium(
 
     // Local data structures
     FullMatrix<double> local_mass(dofs_per_cell, dofs_per_cell);
-    FullMatrix<double> local_mass_inv(dofs_per_cell, dofs_per_cell);
     Vector<double>     local_rhs_x(dofs_per_cell);
     Vector<double>     local_rhs_y(dofs_per_cell);
-    Vector<double>     local_sol_x(dofs_per_cell);
-    Vector<double>     local_sol_y(dofs_per_cell);
-
     std::vector<double>          theta_values(n_q_points);
     std::vector<Tensor<1, dim>>  grad_phi_values(n_q_points);
     std::vector<types::global_dof_index> local_dof_indices(dofs_per_cell);
 
-    // Synchronized cell iteration across M, φ, θ DoFHandlers
+    // Build global mass matrix and RHS, then solve via CG
+    // For simplicity and consistency with constraints, we assemble and solve
+    // a global L² projection: M_mass * Mx = Mx_rhs, M_mass * My = My_rhs
+
+    // Reuse the system_matrix_ (will be overwritten during first timestep anyway)
+    system_matrix_ = 0;
+    Mx_rhs_ = 0;
+    My_rhs_ = 0;
+
     auto cell_M     = dof_handler_.begin_active();
     auto cell_phi   = phi_dof_handler.begin_active();
     auto cell_theta = theta_dof_handler.begin_active();
@@ -400,12 +403,10 @@ void MagnetizationSubsystem<dim>::initialize_equilibrium(
         fe_values_phi.reinit(cell_phi);
         fe_values_theta.reinit(cell_theta);
 
-        // Evaluate external fields at quadrature points
         fe_values_theta.get_function_values(theta_relevant, theta_values);
         fe_values_phi.get_function_gradients(phi_relevant, grad_phi_values);
 
-        // Build cell-local mass matrix and RHS
-        local_mass = 0;
+        local_mass  = 0;
         local_rhs_x = 0;
         local_rhs_y = 0;
 
@@ -415,8 +416,6 @@ void MagnetizationSubsystem<dim>::initialize_equilibrium(
             const Point<dim>& x_q = fe_values_M.quadrature_point(q);
             const double theta_q = theta_values[q];
 
-            // Total field H = ∇φ (Poisson with natural Neumann BCs encodes h_a)
-            // CRITICAL: Do NOT add h_a here — ∇φ IS the total field.
             Tensor<1, dim> H;
             if (params_.use_reduced_magnetic_field)
             {
@@ -428,7 +427,6 @@ void MagnetizationSubsystem<dim>::initialize_equilibrium(
                     H[d] = grad_phi_values[q][d];
             }
 
-            // χ(θ) and target M = χ(θ)H
             const double chi = susceptibility(
                 theta_q, params_.physics.epsilon, params_.physics.chi_0);
             const double target_Mx = chi * H[0];
@@ -449,25 +447,54 @@ void MagnetizationSubsystem<dim>::initialize_equilibrium(
             }
         }
 
-        // Invert cell-local mass matrix and solve
-        local_mass_inv.invert(local_mass);
-        local_mass_inv.vmult(local_sol_x, local_rhs_x);
-        local_mass_inv.vmult(local_sol_y, local_rhs_y);
-
-        // Write directly to global vectors (DG — cell-local DoFs)
         cell_M->get_dof_indices(local_dof_indices);
-        for (unsigned int i = 0; i < dofs_per_cell; ++i)
-        {
-            Mx_solution_[local_dof_indices[i]] = local_sol_x(i);
-            My_solution_[local_dof_indices[i]] = local_sol_y(i);
-        }
+
+        // Distribute with constraints
+        constraints_.distribute_local_to_global(
+            local_mass, local_rhs_x, local_dof_indices,
+            system_matrix_, Mx_rhs_);
+        constraints_.distribute_local_to_global(
+            local_rhs_y, local_dof_indices, My_rhs_);
     }
 
-    // Compress after direct writes
-    Mx_solution_.compress(VectorOperation::insert);
-    My_solution_.compress(VectorOperation::insert);
+    system_matrix_.compress(VectorOperation::add);
+    Mx_rhs_.compress(VectorOperation::add);
+    My_rhs_.compress(VectorOperation::add);
 
-    // Ghosts are stale after direct modification
+    // Solve mass system for Mx and My (skip solver if RHS is zero)
+    const double rhs_x_norm = Mx_rhs_.l2_norm();
+    const double rhs_y_norm = My_rhs_.l2_norm();
+
+    if (rhs_x_norm < 1e-14)
+    {
+        Mx_solution_ = 0;
+    }
+    else
+    {
+        SolverControl control(1000, 1e-12 * rhs_x_norm);
+        TrilinosWrappers::SolverCG cg(control);
+        TrilinosWrappers::PreconditionJacobi preconditioner;
+        preconditioner.initialize(system_matrix_);
+
+        cg.solve(system_matrix_, Mx_solution_, Mx_rhs_, preconditioner);
+        constraints_.distribute(Mx_solution_);
+    }
+
+    if (rhs_y_norm < 1e-14)
+    {
+        My_solution_ = 0;
+    }
+    else
+    {
+        SolverControl control(1000, 1e-12 * rhs_y_norm);
+        TrilinosWrappers::SolverCG cg(control);
+        TrilinosWrappers::PreconditionJacobi preconditioner;
+        preconditioner.initialize(system_matrix_);
+
+        cg.solve(system_matrix_, My_solution_, My_rhs_, preconditioner);
+        constraints_.distribute(My_solution_);
+    }
+
     invalidate_ghosts();
 
     pcout_ << "[Magnetization] Equilibrium initialization complete."
@@ -477,73 +504,20 @@ void MagnetizationSubsystem<dim>::initialize_equilibrium(
 // ============================================================================
 // project_initial_condition() — L² project arbitrary Functions onto Mx, My
 //
-// For MMS tests: inject exact initial conditions into DG space.
-// Cell-local inversion (no global solve). Invalidates ghosts.
+// For MMS tests: inject exact initial conditions onto CG space.
+// Uses VectorTools::project (global L² projection). Invalidates ghosts.
 // ============================================================================
 template <int dim>
 void MagnetizationSubsystem<dim>::project_initial_condition(
     const Function<dim>& Mx_exact,
     const Function<dim>& My_exact)
 {
-    const unsigned int dofs_per_cell = fe_.n_dofs_per_cell();
-
     QGauss<dim> quadrature(fe_.degree + 2);
-    const unsigned int n_q = quadrature.size();
 
-    FEValues<dim> fe_values(fe_, quadrature,
-        update_values | update_quadrature_points | update_JxW_values);
-
-    FullMatrix<double> local_mass(dofs_per_cell, dofs_per_cell);
-    FullMatrix<double> local_mass_inv(dofs_per_cell, dofs_per_cell);
-    dealii::Vector<double> local_rhs_x(dofs_per_cell);
-    dealii::Vector<double> local_rhs_y(dofs_per_cell);
-    dealii::Vector<double> local_sol_x(dofs_per_cell);
-    dealii::Vector<double> local_sol_y(dofs_per_cell);
-    std::vector<types::global_dof_index> local_dofs(dofs_per_cell);
-
-    for (const auto& cell : dof_handler_.active_cell_iterators())
-    {
-        if (!cell->is_locally_owned())
-            continue;
-
-        fe_values.reinit(cell);
-        local_mass  = 0;
-        local_rhs_x = 0;
-        local_rhs_y = 0;
-
-        for (unsigned int q = 0; q < n_q; ++q)
-        {
-            const double JxW = fe_values.JxW(q);
-            const auto& x_q  = fe_values.quadrature_point(q);
-
-            const double Mx_val = Mx_exact.value(x_q);
-            const double My_val = My_exact.value(x_q);
-
-            for (unsigned int i = 0; i < dofs_per_cell; ++i)
-            {
-                const double phi_i = fe_values.shape_value(i, q);
-                local_rhs_x(i) += Mx_val * phi_i * JxW;
-                local_rhs_y(i) += My_val * phi_i * JxW;
-
-                for (unsigned int j = 0; j < dofs_per_cell; ++j)
-                    local_mass(i, j) += phi_i * fe_values.shape_value(j, q) * JxW;
-            }
-        }
-
-        local_mass_inv.invert(local_mass);
-        local_mass_inv.vmult(local_sol_x, local_rhs_x);
-        local_mass_inv.vmult(local_sol_y, local_rhs_y);
-
-        cell->get_dof_indices(local_dofs);
-        for (unsigned int i = 0; i < dofs_per_cell; ++i)
-        {
-            Mx_solution_[local_dofs[i]] = local_sol_x(i);
-            My_solution_[local_dofs[i]] = local_sol_y(i);
-        }
-    }
-
-    Mx_solution_.compress(VectorOperation::insert);
-    My_solution_.compress(VectorOperation::insert);
+    VectorTools::project(dof_handler_, constraints_, quadrature,
+                         Mx_exact, Mx_solution_);
+    VectorTools::project(dof_handler_, constraints_, quadrature,
+                         My_exact, My_solution_);
 
     invalidate_ghosts();
 }

@@ -5,11 +5,11 @@
 //   Writes parallel VTU/PVTU files for Mx, My, |M|.
 //
 // VTK fields:
-//   Mx, My         Magnetization components (DG Q1, nodal)
-//   M_magnitude    |M| (DG Q1, nodal)
+//   Mx, My         Magnetization components (CG Q1, nodal)
+//   M_magnitude    |M| (CG Q1, nodal)
 //   subdomain      MPI partition coloring
 //
-// Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
+// Reference: Zhang, He & Yang, SIAM J. Sci. Comput. 43(1) (2021) B167-B193
 // ============================================================================
 
 #include "magnetization/magnetization.h"

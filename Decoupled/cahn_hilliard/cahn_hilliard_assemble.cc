@@ -336,7 +336,6 @@ void CahnHilliardSubsystem<dim>::assemble_sav(
     const double eps = params_.physics.epsilon;
     const double lambda = params_.physics.lambda;
     const double gamma = params_.physics.mobility;  // M in Zhang's notation
-    const double reaction_scale = params_.physics.ch_reaction_scale;
 
     // Zhang Eq 3.10: S stabilization in the ψ equation.
     // S = λ/(4ε) per Zhang p.B182.
@@ -483,11 +482,10 @@ void CahnHilliardSubsystem<dim>::assemble_sav(
                 local_rhs(i_psi) +=
                     S * theta_old_q * Upsilon_i * JxW;
 
-                // -(λ·α/ε) · sav_factor · (f(θ^{n-1}), X) — nonlinear (NEGATIVE: ψ=-W flips)
+                // -(λ/ε) · sav_factor · (f(θ^{n-1}), X) — nonlinear (NEGATIVE: ψ=-W flips)
                 // SAV: sav_factor = r^n / sqrt(E1(θ^{n-1}) + C0)
-                // α = ch_reaction_scale: corrects Φ→θ double-well scaling (1.0=standard, 0.25=Zhang)
                 local_rhs(i_psi) -=
-                    sav_factor * (lambda * reaction_scale / eps) * f_old * Upsilon_i * JxW;
+                    sav_factor * (lambda / eps) * f_old * Upsilon_i * JxW;
 
                 // MMS sources (if any)
                 if (mms_source_theta_)
@@ -549,8 +547,7 @@ double CahnHilliardSubsystem<dim>::compute_bulk_energy(
 
     const double lambda = params_.physics.lambda;
     const double eps = params_.physics.epsilon;
-    const double reaction_scale = params_.physics.ch_reaction_scale;
-    const double coeff = lambda * reaction_scale / eps;
+    const double coeff = lambda / eps;
 
     double local_energy = 0.0;
 
@@ -599,8 +596,7 @@ double CahnHilliardSubsystem<dim>::compute_sav_inner_product(
 
     const double eps = params_.physics.epsilon;
     const double lambda = params_.physics.lambda;
-    const double reaction_scale = params_.physics.ch_reaction_scale;
-    const double coeff = lambda * reaction_scale / eps;  // δE₁/δθ = (λ·α/ε)f(θ)
+    const double coeff = lambda / eps;  // δE₁/δθ = (λ·α/ε)f(θ)
     double local_sum = 0.0;
 
     for (const auto& cell : theta_dof_handler_.active_cell_iterators())

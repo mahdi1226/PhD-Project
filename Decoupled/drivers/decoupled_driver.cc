@@ -156,7 +156,6 @@ public:
             ri << "[Physics]\n";
             ri << "  epsilon:   " << params.physics.epsilon << "\n";
             ri << "  lambda:    " << params.physics.lambda << "\n";
-            ri << "  ch_reaction_scale: " << params.physics.ch_reaction_scale << "\n";
             ri << "  mobility:  " << params.physics.mobility << "\n";
             ri << "  chi_0:     " << params.physics.chi_0 << "\n";
             ri << "  tau_M:     " << params.physics.tau_M << "\n";
@@ -185,6 +184,7 @@ public:
             {
                 ri << "  type: uniform\n";
                 ri << "  intensity_max: " << params.uniform_field.intensity_max << "\n";
+                ri << "  ramp_slope: " << params.uniform_field.ramp_slope << "\n";
                 ri << "  ramp_time: " << params.uniform_field.ramp_time << "\n";
                 ri << "  direction: (" << params.uniform_field.direction[0]
                    << ", " << params.uniform_field.direction[1] << ")\n";
@@ -1273,8 +1273,14 @@ int main(int argc, char* argv[])
                 test_name = "droplet_wofield";
         }
         else if (params.enable_magnetic && params.enable_gravity)
-            test_name = (params.dipoles.positions.size() > 10)
-                        ? "rosensweig_nonuniform" : "rosensweig";
+        {
+            if (params.use_reduced_magnetic_field)
+                test_name = "dome";
+            else if (params.dipoles.positions.size() > 10)
+                test_name = "hedgehog";
+            else
+                test_name = "rosensweig";
+        }
         else if (params.enable_magnetic)
             test_name = "magnetic";
         else if (params.enable_ns)
@@ -1341,6 +1347,22 @@ int main(int argc, char* argv[])
         zero_uy_relevant = 0;
     }
 
+    // ----------------------------------------------------------------
+    // 4c. Velocity predictor ũ^n storage (Bug fix: Zhang requires ũ^n,
+    //     NOT the pressure-corrected u^n, for magnetization transport)
+    // ----------------------------------------------------------------
+    TrilinosWrappers::MPI::Vector u_tilde_x, u_tilde_y;
+    if (params.enable_ns)
+    {
+        IndexSet vel_owned = ns.get_ux_dof_handler().locally_owned_dofs();
+        IndexSet vel_relevant = DoFTools::extract_locally_relevant_dofs(
+            ns.get_ux_dof_handler());
+        u_tilde_x.reinit(vel_owned, vel_relevant, mpi_comm);
+        u_tilde_y.reinit(vel_owned, vel_relevant, mpi_comm);
+        u_tilde_x = 0;
+        u_tilde_y = 0;
+    }
+
     pcout << "  Output directory: " << output_dir << "\n\n";
 
     // ----------------------------------------------------------------
@@ -1354,11 +1376,11 @@ int main(int argc, char* argv[])
     if (params.use_sav)
     {
         // Auto-compute S if not set.
-        // Convexity: (λ·α/ε)*f'(θ) + S >= 0 where α = ch_reaction_scale.
-        // min f'(θ) = -1 at θ=0, so S >= λ·α/ε.
-        // Zhang uses S = λ/(4ε) in Φ-space ≈ λ·α/(4ε) in θ-space.
+        // Convexity: (λ/ε)*f'(θ) + S >= 0.
+        // min f'(θ) = -1 at θ=0, so S >= λ/ε.
+        // Zhang uses S = λ/(4ε) (Eq 3.10, p.B172).
         if (sav_S1 <= 0.0)
-            sav_S1 = params.physics.lambda * params.physics.ch_reaction_scale
+            sav_S1 = params.physics.lambda
                      / (4.0 * params.physics.epsilon);
 
         // Compute initial bulk energy and SAV variable
@@ -1541,8 +1563,19 @@ int main(int argc, char* argv[])
                     current_time - dt,               // t^{n-1} for h_a (h̃^{n-1})
                     /*include_convection=*/true);
             }
-            // Step 2: Solve velocity predictor
+            // Step 2: Solve velocity predictor ũ^n
             ns.solve_velocity();
+
+            // ============================================================
+            // BUG FIX: Save ũ^n BEFORE velocity correction.
+            // Zhang Eq 3.14 and 3.17 require the velocity predictor ũ^n
+            // (NOT the pressure-corrected u^n) for magnetization transport.
+            // The energy stability proof (Eq 3.24) relies on ũ^n appearing
+            // in both the Kelvin force and the magnetization transport.
+            // ============================================================
+            ns.update_ghosts();   // make ũ^n available in ux_relevant_
+            u_tilde_x = ns.get_ux_relevant();  // save ũ^n_x
+            u_tilde_y = ns.get_uy_relevant();  // save ũ^n_y
 
             // Step 3: Pressure Poisson
             ns.assemble_pressure_poisson(dt);
@@ -1581,24 +1614,23 @@ int main(int argc, char* argv[])
                 // ============================================================
                 // PDE-M path: Zhang Algorithm 3.1, Steps 5-6
                 //
-                // SINGLE FORWARD PASS — NO Picard iteration.
+                // Step 5: "Find (m̃^n, φ^n, h̃^n)" — COUPLED system (Eq 3.14-3.16)
+                //   Eq 3.14: m̃ depends on h̃^n = ∇φ^n (relaxation + β terms)
+                //   Eq 3.15: φ depends on m̃ (Poisson source)
+                //   Solved via Picard iteration: m̃ ↔ φ until convergence.
                 //
-                // Zhang's scheme decouples Poisson ↔ Magnetization via the
-                // intermediate variable m̃. The sequence is:
-                //   Step 5a: Mag(h^{n-1}) → m̃     [explicit transport, OLD field]
-                //   Step 5b: Poisson(m̃)  → φ^n    [one solve, no iteration]
-                //   Step 6:  Mag(h^n)     → m^n    [implicit DG transport, NEW field]
+                // Step 6: Final magnetization m^n with converged h^n = ∇φ^n
+                //   Eq 3.17: implicit CG transport, uses converged field.
                 //
-                // Energy stability (Theorem 3.1) is guaranteed by:
-                //   - b_stab terms in NS (already implemented)
-                //   - m̃ intermediate breaking the nonlinear M↔φ feedback
-                //   - Implicit DG transport in Step 6
+                // BUG FIX: Previous code used a single forward pass with
+                // H = ∇φ^{n-1} (lagged). Zhang requires coupled solve.
                 // ============================================================
 
+                // Use ũ^n (velocity predictor, saved before pressure correction)
                 const auto& vel_ux = params.enable_ns
-                    ? ns.get_ux_old_relevant() : zero_ux_relevant;  // ũ^n
+                    ? u_tilde_x : zero_ux_relevant;   // ũ^n (NOT u^n)
                 const auto& vel_uy = params.enable_ns
-                    ? ns.get_uy_old_relevant() : zero_uy_relevant;  // ũ^n
+                    ? u_tilde_y : zero_uy_relevant;   // ũ^n (NOT u^n)
                 const auto& vel_dof = params.enable_ns
                     ? ns.get_ux_dof_handler() : ch.get_theta_dof_handler();
 
@@ -1606,50 +1638,68 @@ int main(int argc, char* argv[])
                 mag.save_old_solution();
 
                 // ============================================================
-                // Step 5a: Magnetization m̃ with OLD field h^{n-1} = ∇φ^{n-1}
-                // (Zhang Eq 3.14: explicit transport, mass + relaxation)
-                // ============================================================
-                mag.assemble(
-                    mag.get_Mx_old_relevant(),   // M^{n-1}: time derivative + β
-                    mag.get_My_old_relevant(),
-                    poisson.get_solution_relevant(), poisson.get_dof_handler(),  // φ^{n-1}
-                    ch.get_theta_relevant(),         ch.get_theta_dof_handler(),
-                    vel_ux, vel_uy, vel_dof,         // ũ^n
-                    dt, current_time,
-                    /*explicit_transport=*/true);     // Step 5: mass-only matrix
-                mag.solve();
-                // NO under-relaxation — Zhang single-pass, no damping needed
-                mag.update_ghosts();
-
-                // ============================================================
-                // Step 5b: Poisson φ^n using m̃ (intermediate magnetization)
-                // (Zhang Eq 3.15: one Poisson solve, NOT iterated)
-                // ============================================================
-                poisson.assemble_rhs(mag.get_Mx_relevant(),   // m̃ from Step 5a
-                                     mag.get_My_relevant(),
-                                     mag.get_dof_handler(),
-                                     current_time);
-                poisson.solve();
-                poisson.update_ghosts();
-
-                // ============================================================
-                // Step 6: Final magnetization m^n with NEW field h^n = ∇φ^n
-                // (Zhang Eq 3.17: implicit DG transport, no under-relaxation)
+                // Step 5: Picard iteration for coupled (m̃, φ) system
                 //
-                // Full DG bilinear form b_h^m(ũ^n, m^n, Z) on LHS with
-                // upwind flux face integrals. This bounds ||m^n|| via the
-                // energy stability estimate (Theorem 3.1).
+                // Iteration k = 0, 1, 2, ...:
+                //   5a: Solve m̃^(k) using H = ∇φ^(k-1)  [Eq 3.14]
+                //   5b: Solve φ^(k) from m̃^(k)           [Eq 3.15]
+                //
+                // First iteration uses φ^{n-1} as initial guess.
+                // Matrix assembled once (mass-only, doesn't depend on φ).
+                // Only RHS changes between iterations (H = ∇φ^(k) updates).
+                // ============================================================
+                constexpr unsigned int picard_max = 3;
+
+                for (unsigned int pic = 0; pic < picard_max; ++pic)
+                {
+                    if (pic == 0)
+                    {
+                        // First iteration: assemble matrix + RHS with φ^{n-1}
+                        mag.assemble(
+                            mag.get_Mx_old_relevant(),
+                            mag.get_My_old_relevant(),
+                            poisson.get_solution_relevant(), poisson.get_dof_handler(),
+                            ch.get_theta_relevant(), ch.get_theta_dof_handler(),
+                            vel_ux, vel_uy, vel_dof,
+                            dt, current_time,
+                            /*explicit_transport=*/true);
+                    }
+                    else
+                    {
+                        // Subsequent iterations: RHS only with updated φ^(k-1)
+                        mag.assemble_rhs_only(
+                            poisson.get_solution_relevant(), poisson.get_dof_handler(),
+                            ch.get_theta_relevant(), ch.get_theta_dof_handler(),
+                            mag.get_Mx_old_relevant(),
+                            mag.get_My_old_relevant(),
+                            dt, current_time,
+                            /*explicit_transport=*/true);
+                    }
+                    mag.solve();
+                    mag.update_ghosts();
+
+                    // Step 5b: Poisson φ^(k) from m̃^(k)
+                    poisson.assemble_rhs(mag.get_Mx_relevant(),
+                                         mag.get_My_relevant(),
+                                         mag.get_dof_handler(),
+                                         current_time);
+                    poisson.solve();
+                    poisson.update_ghosts();
+                }
+
+                // ============================================================
+                // Step 6: Final magnetization m^n with converged h^n = ∇φ^n
+                // (Zhang Eq 3.17: implicit CG transport b(ũ^n, m^n, Z))
                 // ============================================================
                 mag.assemble(
                     mag.get_Mx_old_relevant(),   // M^{n-1}: time derivative + β
                     mag.get_My_old_relevant(),
-                    poisson.get_solution_relevant(), poisson.get_dof_handler(),  // φ^n (NEW)
+                    poisson.get_solution_relevant(), poisson.get_dof_handler(),  // φ^n (converged)
                     ch.get_theta_relevant(),         ch.get_theta_dof_handler(),
                     vel_ux, vel_uy, vel_dof,         // ũ^n
                     dt, current_time,
-                    /*explicit_transport=*/false);    // Step 6: full DG transport
+                    /*explicit_transport=*/false);    // Step 6: CG skew transport
                 mag.solve();
-                // NO under-relaxation — energy stability requires exact solve
                 mag.update_ghosts();
             }
         }

@@ -114,19 +114,6 @@ struct Parameters
         double mobility = 0.0002;       // γ (Cahn-Hilliard mobility)
         double lambda = 0.05;           // λ (surface tension / capillary coefficient)
 
-        // Φ→θ reaction scaling factor.
-        //
-        // Zhang uses Φ∈{0,1}: F(Φ)=(1/4ε)Φ²(Φ-1)², f(Φ)=F'(Φ).
-        // Our code uses θ∈{-1,+1}: G(θ)=(1/4)(θ²-1)², g(θ)=θ³-θ.
-        // Under θ=2Φ-1: the gradient term scales as 1/4 and the reaction
-        // (double-well) term scales as 1/16. With λ_θ=λ_Φ/4 the gradient
-        // matches, but the reaction is 4× too strong.
-        //
-        // Setting ch_reaction_scale=0.25 corrects this:
-        //   ψ = -λε Δθ + ch_reaction_scale·(λ/ε)·f(θ)
-        // giving the exact Zhang dynamics for both 4th- and 2nd-order terms.
-        double ch_reaction_scale = 1.0;  // 1.0 = standard θ, 0.25 = Zhang Φ-match
-
         // -- Navier-Stokes (Eq. 42e-f, Section 6.2) --
         //
         // Viscosity ν(θ) = ν_w + (ν_f - ν_w) H(θ/ε)      (Eq. 17, p.501)
@@ -169,11 +156,12 @@ struct Parameters
         // Kelly error estimation on theta (interface field).
         bool use_amr = false;
         unsigned int amr_interval = 5;            // refine every N steps
-        unsigned int amr_max_level = 0;           // 0 = no cap
-        unsigned int amr_min_level = 0;           // 0 = no floor
-        double amr_upper_fraction = 0.3;          // top 30% cells -> refine
-        double amr_lower_fraction = 0.10;         // bottom 10% cells -> coarsen
+        unsigned int amr_max_level = 0;           // 0 = auto (initial_refinement + 2)
+        unsigned int amr_min_level = 0;           // 0 = auto (max(1, initial_refinement - 2))
+        double amr_upper_fraction = 0.3;          // top 30% error -> refine
+        double amr_lower_fraction = 0.3;          // bottom 30% error -> coarsen
         double interface_coarsen_threshold = 0.9;  // |theta| < this -> protect
+        double amr_refine_threshold = 0.0;        // min Kelly error to refine (0=off)
 
         // Physics-based activation: AMR stays dormant until |U|_max exceeds
         // this threshold (flow has developed). Set to 0 to disable gate.
@@ -308,13 +296,6 @@ struct Parameters
     } solvers;
 
     // ========================================================================
-    // Picard iteration (Poisson ↔ Magnetization coupling)
-    // ========================================================================
-    unsigned int picard_iterations = 7;
-    double picard_tolerance = 0.01;
-    double picard_relaxation = 0.3;  // under-relaxation ω for Picard: M^{k+1} = ω·M_solve + (1-ω)·M^k
-
-    // ========================================================================
     // Validation test mode
     //
     //   --validation droplet   Circle IC, no dipoles, surface tension only
@@ -331,10 +312,6 @@ struct Parameters
     bool use_reduced_magnetic_field = false;    // Dome: H = h_a only (no ∇φ)
     bool enable_ns = true;                     // enable Navier-Stokes solve
     bool enable_gravity = true;                // enable gravity body force
-    bool disable_bstab = false;                // diagnostic: skip b_stab in NS
-    bool disable_kelvin_term2 = false;         // diagnostic: skip μ₀/2(M×H,∇×V)
-    bool use_exact_kelvin = false;             // diagnostic: use exact M*,H* in assembly
-    bool disable_spin_coupling = false;        // diagnostic: skip ½(∇×u)×m in magnetization
 
     // ========================================================================
     // Sparsity analysis & DoF renumbering
@@ -372,7 +349,7 @@ struct Parameters
     //   Makes Poisson nonlinear: ((1+chi(theta)) grad phi, grad X) = ((1-chi(theta)) h_a, grad X)
     // ========================================================================
     bool use_algebraic_magnetization = false;  // true = m=chi(theta)h, false = mag PDE
-    bool use_sav = false;                      // true = SAV energy stabilization
+    bool use_sav = true;                       // Zhang's SAV energy stabilization (always on)
 
     struct SAV
     {
@@ -380,12 +357,10 @@ struct Parameters
     } sav;
 
     // ========================================================================
-    // Run configuration (CLI mode dispatch)
+    // Run configuration (standalone subsystem drivers only)
     //
-    // Shared by all 4 subsystem drivers:
-    //   --mode mms|2d|3d|temporal
-    //   --ref 2 3 4 5 6          (multi-value refinement list)
-    //   --steps N                 (override time steps)
+    // Used by poisson_main, magnetization_main, ch_main, ns_main
+    // for MMS convergence studies. NOT used by decoupled_driver.
     // ========================================================================
     struct Run
     {
@@ -398,9 +373,8 @@ struct Parameters
     // Preset configurations
     // ========================================================================
     void setup_rosensweig();
-    void setup_rosensweig_nonuniform();
-
-    // -- Other presets (hedgehog, droplet, dome) added later --
+    void setup_hedgehog();             // was: setup_rosensweig_nonuniform()
+    void setup_dome();                 // Hedgehog with h = h_a only (no demagnetizing field)
 
     // ========================================================================
     // Command line parsing

@@ -1,35 +1,34 @@
 // ============================================================================
-// magnetization/magnetization.h - DG Magnetization Transport Subsystem (Facade)
+// magnetization/magnetization.h - CG Magnetization Transport Subsystem (Facade)
 //
-// PAPER EQUATION 42c (Nochetto, Salgado & Tomas, CMAME 309 (2016)):
+// ZHANG SCHEME (Algorithm 3.1, Eq. 3.14/3.17):
 //
-//   ∂M/∂t + B_h^m(U, M, Z) + (1/τ_M)(M - χ(θ)H, Z) = 0   ∀Z ∈ M_h
+//   Step 5 (Eq 3.14): mass-only matrix, explicit transport on RHS
+//     (1/τ + 1/τ_M)(m̃, n) = (1/τ_M)(χ(θ)H, n) + (1/τ)(m^{n-1}, n)
+//         - [(U·∇)m^{n-1} + (∇·U)m^{n-1}]·n  + ½(∇×U × m^{n-1}, n)
 //
-// DISCRETE SCHEME (semi-implicit, Eq. 56-57):
-//   (1/τ + 1/τ_M)(M^k, Z) - B_h^m(U^{n-1}, Z, M^k)
-//       = (1/τ_M)(χ(θ^{n-1}) H^k, Z) + (1/τ)(M^{n-1}, Z)
+//   Step 6 (Eq 3.17): implicit CG skew transport
+//     (1/τ + 1/τ_M)(m^n, n) + b(U, m^n, n) = (1/τ_M)(χ(θ)H^n, n) + (1/τ)(m̃, n)
 //
-// where τ = dt and:
-//   B_h^m(U,V,W) = Σ_T ∫_T [(U·∇)V·W + ½(∇·U)(V·W)] dx
-//                 - Σ_F ∫_F (U·n⁻)[[V]]·{W} dS          (Eq. 57)
+//   where b(U,V,W) = ((U·∇)V, W) + ½((∇·U)V, W)   (CG skew form, no faces)
 //
 // KEY PROPERTIES:
-//   1. DG-Q1 discontinuous Galerkin (no continuity constraints)
-//   2. Face-coupled sparsity (upwind flux integrals)
+//   1. CG Q1 continuous Galerkin (Zhang Eq 3.6: N_h ∈ C⁰(Ω))
+//   2. Standard sparsity (no face coupling needed for CG)
 //   3. Two scalar systems Mx, My sharing one DoFHandler and matrix
-//   4. B_h^m(U, M, M) = 0 globally (energy neutrality)
+//   4. b(U, M, M) = 0 globally (energy neutrality via skew form)
 //   5. Matrix depends on U → reassembled each timestep
-//   6. RHS depends on H^k → reassembled each Picard iteration
+//   6. RHS depends on H^k → reassembled each iteration
 //   7. Preconditioner reused for both Mx and My solves
 //
 // FILE LAYOUT:
 //   magnetization.h              ← this file (public facade)
 //   magnetization.cc             ← constructor, setup(), accessors, diagnostics
-//   magnetization_setup.cc       ← DoFs, face-coupled sparsity, vectors
-//   magnetization_assemble.cc    ← DG cell+face assembly, β-term, MMS source
+//   magnetization_setup.cc       ← DoFs, constraints, sparsity, vectors
+//   magnetization_assemble.cc    ← CG cell assembly, β-term, MMS source
 //   magnetization_solve.cc       ← GMRES+ILU or Direct, solves Mx then My
 //
-// Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
+// Reference: Zhang, He & Yang, SIAM J. Sci. Comput. 43(1) (2021) B167-B193
 // ============================================================================
 #ifndef MAGNETIZATION_SUBSYSTEM_H
 #define MAGNETIZATION_SUBSYSTEM_H
@@ -43,7 +42,8 @@
 #include <deal.II/base/timer.h>
 #include <deal.II/distributed/tria.h>
 #include <deal.II/dofs/dof_handler.h>
-#include <deal.II/fe/fe_dgq.h>
+#include <deal.II/fe/fe_q.h>
+#include <deal.II/lac/affine_constraints.h>
 #include <deal.II/lac/trilinos_precondition.h>
 #include <deal.II/lac/trilinos_sparse_matrix.h>
 #include <deal.II/lac/trilinos_vector.h>
@@ -76,7 +76,7 @@ public:
         // -- Air-phase confinement --
         double M_air_phase_max = 0.0;    // max|M| where θ < -0.5
 
-        // -- DG conservation --
+        // -- Conservation --
         double Mx_integral = 0.0;        // ∫Mx dΩ
         double My_integral = 0.0;        // ∫My dΩ
 
@@ -114,10 +114,6 @@ public:
             const dealii::Tensor<1, dim>& U,
             double div_U)>;
 
-    // Face MMS correction: exact M*(point, time) → Tensor<1,dim>
-    using MmsExactMFunction = std::function<
-        dealii::Tensor<1, dim>(const dealii::Point<dim>& point, double time)>;
-
     // ========================================================================
     // Constructor — takes references, no ownership
     // ========================================================================
@@ -132,8 +128,8 @@ public:
     /**
      * @brief Full initialization — call once after mesh is ready.
      *
-     * Distributes DG DoFs, builds face-coupled sparsity pattern,
-     * allocates all vectors (owned + ghosted) for Mx and My.
+     * Distributes CG DoFs, builds constraints (hanging nodes),
+     * builds sparsity pattern, allocates all vectors for Mx and My.
      * Does NOT assemble matrix (matrix depends on velocity U).
      */
     void setup();
@@ -141,21 +137,9 @@ public:
     /**
      * @brief Assemble matrix + RHS for both Mx and My.
      *
-     * Builds the full system: mass + DG transport (B_h^m) matrix,
+     * Builds the full system: mass + CG transport (skew form) matrix,
      * plus RHS with relaxation, old-time, β-term, and MMS source.
      * Call once per timestep (matrix depends on U^{n-1}).
-     *
-     * @param Mx_old_relevant  Previous Mx (ghosted, from M DoFHandler)
-     * @param My_old_relevant  Previous My (ghosted, from M DoFHandler)
-     * @param phi_relevant     Magnetic potential (ghosted, from Poisson DoFHandler)
-     * @param phi_dof_handler  Poisson DoFHandler (for evaluating ∇φ at DG quads)
-     * @param theta_relevant   Phase field (ghosted, from CH DoFHandler)
-     * @param theta_dof_handler CH DoFHandler (for evaluating χ(θ) at DG quads)
-     * @param ux_relevant      x-velocity (ghosted, from NS DoFHandler)
-     * @param uy_relevant      y-velocity (ghosted, from NS DoFHandler)
-     * @param u_dof_handler    NS velocity DoFHandler
-     * @param dt               Time step size
-     * @param current_time     Current time (for h_a and MMS)
      */
     void assemble(
         const dealii::TrilinosWrappers::MPI::Vector& Mx_old_relevant,
@@ -233,25 +217,11 @@ public:
      */
     void set_mms_source(MmsSourceFunction func);
 
-    /**
-     * @brief Set exact M* callback for DG face MMS correction.
-     *
-     * The DG bilinear form B_h^m has face flux terms -∫_F (U·n)[[Z]]{M} dS.
-     * When MMS-testing with transport (U≠0), these face terms acting on the
-     * discrete projection of M* create an O(1) residual that doesn't decrease
-     * with h. This callback provides M*(x,t) so the assembler can add the
-     * corresponding face RHS correction to cancel this residual.
-     *
-     * Only needed when testing DG magnetization transport with non-zero velocity.
-     * Production code never sets this.
-     */
-    void set_mms_M_exact(MmsExactMFunction func);
-
     // ========================================================================
     // Accessors — for other subsystems to read results
     // ========================================================================
 
-    /** DG DoFHandler (shared by Mx and My) */
+    /** CG DoFHandler (shared by Mx and My) */
     const dealii::DoFHandler<dim>& get_dof_handler() const;
 
     /** Locally-owned solution vectors (solver output) */
@@ -350,10 +320,7 @@ public:
     // ========================================================================
 
     /**
-     * @brief Initialize M⁰ = χ(θ⁰)H⁰ via cell-local L² projection.
-     *
-     * For DG elements, L² projection is cell-local (no global solve).
-     * Each cell inverts its local mass matrix independently.
+     * @brief Initialize M⁰ = χ(θ⁰)H⁰ via global L² projection.
      *
      * Call after setup() and after Poisson has been solved for the initial φ.
      */
@@ -367,8 +334,8 @@ public:
     /**
      * @brief L² project arbitrary scalar Functions onto Mx, My.
      *
-     * For MMS tests: project exact initial conditions onto DG space.
-     * Cell-local (no global solve). Invalidates ghosts.
+     * For MMS tests: project exact initial conditions onto CG space.
+     * Uses VectorTools::project (global solve). Invalidates ghosts.
      */
     void project_initial_condition(
         const dealii::Function<dim>& Mx_exact,
@@ -379,6 +346,7 @@ private:
     // Setup internals (magnetization_setup.cc)
     // ========================================================================
     void distribute_dofs();
+    void build_constraints();
     void build_sparsity_pattern();
     void allocate_vectors();
 
@@ -387,14 +355,13 @@ private:
     // ========================================================================
 
     /**
-     * @brief Assemble DG cell + face contributions for matrix and RHS.
+     * @brief Assemble CG cell contributions for matrix and RHS.
      *
      * Cell integrals:
      *   LHS: (1/τ + 1/τ_M)(M, Z) + (U·∇)M·Z + ½(∇·U)(M·Z)
      *   RHS: (1/τ_M)(χH, Z) + (1/τ)(M^old, Z) + β[M(M·H)-H|M|²]·Z
      *
-     * Face integrals (interior faces only, Eq. 57):
-     *   LHS: -∫_F (U·n⁻)[[Z]]·{M} dS   (upwind flux)
+     * No face integrals (CG: continuity enforced by the FE space).
      */
     void assemble_system_internal(
         const dealii::TrilinosWrappers::MPI::Vector& Mx_old_relevant,
@@ -419,9 +386,10 @@ private:
     // ========================================================================
 
     /**
-     * @brief Solve a single scalar DG system: matrix * solution = rhs.
+     * @brief Solve a single scalar CG system: matrix * solution = rhs.
      *
      * Uses GMRES + cached ILU, or direct solver (MUMPS).
+     * Applies constraints.distribute() after solve for hanging nodes.
      */
     SolverInfo solve_component(
         dealii::TrilinosWrappers::MPI::Vector& solution,
@@ -436,9 +404,9 @@ private:
     dealii::parallel::distributed::Triangulation<dim>&     triangulation_;
 
     // ========================================================================
-    // Finite element (DG-Q1)
+    // Finite element (CG Q1) — Zhang Eq 3.6: N_h ∈ C⁰(Ω)
     // ========================================================================
-    dealii::FE_DGQ<dim>         fe_;
+    dealii::FE_Q<dim>           fe_;
     dealii::DoFHandler<dim>     dof_handler_;
 
     // ========================================================================
@@ -446,6 +414,11 @@ private:
     // ========================================================================
     dealii::IndexSet  locally_owned_dofs_;
     dealii::IndexSet  locally_relevant_dofs_;
+
+    // ========================================================================
+    // Constraints (hanging nodes for AMR)
+    // ========================================================================
+    dealii::AffineConstraints<double>  constraints_;
 
     // ========================================================================
     // Linear system (shared by Mx and My)
@@ -510,7 +483,6 @@ private:
     // MMS
     // ========================================================================
     MmsSourceFunction  mms_source_;
-    MmsExactMFunction  mms_M_exact_;
 
     // ========================================================================
     // Output

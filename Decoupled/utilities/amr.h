@@ -2,11 +2,13 @@
 // utilities/amr.h — Adaptive Mesh Refinement for Decoupled Ferrofluid Solver
 //
 // Header-only template implementation (instantiated in the driver).
-// Adapted from Semi_Coupled/core/phase_field_amr.cc.
+// Adapted from Semi_Coupled/core/phase_field_amr.cc (Nochetto et al.).
 //
-// Algorithm (14 steps):
+// Algorithm:
 //   1. Kelly error estimation on theta (interface field)
 //   2. Mark cells for refinement/coarsening (fixed-fraction)
+//   2b. Absolute error threshold — don't refine cells with tiny error
+//   2c. Force bulk coarsening — cells with |theta| > 0.95 everywhere
 //   3. Enforce global level limits (max/min)
 //   4. Interface protection — never coarsen near phase boundary
 //   5. Prepare triangulation
@@ -14,11 +16,12 @@
 //   7. Execute mesh refinement
 //   8. Re-setup all subsystems on new mesh
 //   9. Interpolate solutions to new mesh
-//  10. Apply hanging node constraints
-//  11. Clamp theta to [-1, 1]
-//  12. Recompute psi = theta^3 - theta nodally
-//  13. Update all ghost vectors
-//  14. Log diagnostics
+//  10. Clamp theta to [-1, 1]
+//  11. Recompute psi = theta^3 - theta nodally
+//  12. Update all ghost vectors
+//  13. Log diagnostics (level distribution)
+//
+// Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
 // ============================================================================
 #ifndef AMR_H
 #define AMR_H
@@ -80,6 +83,25 @@ void perform_amr(
         ch.get_theta_relevant(),      // ghosted theta
         indicators);
 
+    // Log indicator statistics (from Semi_Coupled)
+    {
+        float local_max = 0.0f, local_sum = 0.0f;
+        unsigned int local_count = 0;
+        for (const auto& cell : triangulation.active_cell_iterators())
+        {
+            if (!cell->is_locally_owned()) continue;
+            float val = indicators[cell->active_cell_index()];
+            local_max = std::max(local_max, val);
+            local_sum += val;
+            ++local_count;
+        }
+        float global_max = Utilities::MPI::max(local_max, mpi_comm);
+        float global_sum = Utilities::MPI::sum(local_sum, mpi_comm);
+        unsigned int global_count = Utilities::MPI::sum(local_count, mpi_comm);
+        pcout << "[AMR] Kelly indicators: max=" << global_max
+              << " mean=" << (global_count > 0 ? global_sum/global_count : 0.0f) << "\n";
+    }
+
     // ====================================================================
     // Step 2: Mark cells for refinement/coarsening (fixed-fraction)
     // ====================================================================
@@ -90,20 +112,91 @@ void perform_amr(
         params.mesh.amr_lower_fraction);
 
     // ====================================================================
-    // Step 3: Enforce global refinement level limits
+    // Step 2b: Absolute error threshold — don't refine cells with
+    //   small error. Prevents gratuitous refinement of flat interface.
     // ====================================================================
-    const unsigned int max_level = (params.mesh.amr_max_level > 0)
-        ? params.mesh.amr_max_level
-        : std::numeric_limits<unsigned int>::max();
-    const unsigned int min_level = params.mesh.amr_min_level;
+    if (params.mesh.amr_refine_threshold > 0.0)
+    {
+        unsigned int cleared = 0;
+        for (const auto& cell : triangulation.active_cell_iterators())
+        {
+            if (!cell->is_locally_owned())
+                continue;
+            if (cell->refine_flag_set() &&
+                indicators[cell->active_cell_index()] < params.mesh.amr_refine_threshold)
+            {
+                cell->clear_refine_flag();
+                ++cleared;
+            }
+        }
+        unsigned int global_cleared = Utilities::MPI::sum(cleared, mpi_comm);
+        if (global_cleared > 0)
+            pcout << "[AMR] Threshold cleared " << global_cleared << " refine flags\n";
+    }
 
+    // ====================================================================
+    // Step 2c: Force bulk coarsening — cells where ALL DoFs satisfy
+    //   |theta| > 0.95 are deep in the bulk (far from interface).
+    //   Force coarsening to prevent refine-coarsen oscillation.
+    //   (From Semi_Coupled/core/phase_field_amr.cc)
+    // ====================================================================
+    {
+        const double bulk_threshold = 0.95;
+        unsigned int force_coarsened = 0;
+
+        std::vector<types::global_dof_index> bulk_dof_indices(
+            ch.get_theta_dof_handler().get_fe().n_dofs_per_cell());
+
+        for (const auto& cell : ch.get_theta_dof_handler().active_cell_iterators())
+        {
+            if (!cell->is_locally_owned())
+                continue;
+
+            if (cell->level() <= static_cast<int>(params.mesh.amr_min_level))
+                continue;
+
+            cell->get_dof_indices(bulk_dof_indices);
+
+            bool is_bulk = true;
+            for (const auto idx : bulk_dof_indices)
+            {
+                if (std::abs(ch.get_theta_relevant()[idx]) <= bulk_threshold)
+                {
+                    is_bulk = false;
+                    break;
+                }
+            }
+
+            if (is_bulk)
+            {
+                cell->clear_refine_flag();
+                cell->set_coarsen_flag();
+                ++force_coarsened;
+            }
+        }
+
+        unsigned int global_force_coarsened =
+            Utilities::MPI::sum(force_coarsened, mpi_comm);
+        if (global_force_coarsened > 0)
+            pcout << "[AMR] Force-coarsened " << global_force_coarsened
+                  << " bulk cells (|theta| > " << bulk_threshold << ")\n";
+    }
+
+    // ====================================================================
+    // Step 3: Enforce global refinement level limits
+    //
+    // amr_max_level and amr_min_level are auto-computed in parameters.cc
+    // finalization if not explicitly set:
+    //   max_level = initial_refinement + 2
+    //   min_level = max(1, initial_refinement - 2)
+    // ====================================================================
     for (const auto& cell : triangulation.active_cell_iterators())
     {
         if (!cell->is_locally_owned())
             continue;
-        if (cell->level() >= static_cast<int>(max_level))
+        if (cell->level() >= static_cast<int>(params.mesh.amr_max_level))
             cell->clear_refine_flag();
-        if (cell->level() <= static_cast<int>(min_level))
+        if (cell->level() <= static_cast<int>(params.mesh.amr_min_level))
             cell->clear_coarsen_flag();
     }
 
@@ -113,7 +206,7 @@ void perform_amr(
     {
         const double threshold = params.mesh.interface_coarsen_threshold;
         const unsigned int interface_min_level = std::max(
-            min_level,
+            params.mesh.amr_min_level,
             params.mesh.initial_refinement);
 
         std::vector<types::global_dof_index> dof_indices(
@@ -136,7 +229,7 @@ void perform_amr(
             {
                 // Interface cell: protect from coarsening
                 cell->clear_coarsen_flag();
-                // Force refinement if below minimum level
+                // Force refinement if below initial level
                 if (cell->level() < static_cast<int>(interface_min_level))
                     cell->set_refine_flag();
             }
@@ -244,7 +337,7 @@ void perform_amr(
     //
     // CRITICAL: invalidate_ghosts() after each setup() because setup()
     // creates new zeroed ghosted vectors but does NOT reset ghosts_valid_.
-    // Without this, update_ghosts() in Step 13 would skip the copy
+    // Without this, update_ghosts() in Step 12 would skip the copy
     // (thinking ghosts are still valid) and leave theta_relevant_ = 0.
     // ====================================================================
     ch.setup();
@@ -300,7 +393,7 @@ void perform_amr(
     if (mag_enabled)
     {
         // Mag has 4 vectors packed: Mx, My, Mx_old, My_old
-        // But old vectors are ghosted — we need temp non-ghosted for interpolate
+        // Old vectors are ghosted — need temp non-ghosted for interpolate
         const IndexSet M_owned = mag.get_dof_handler().locally_owned_dofs();
         VectorType Mx_tmp(M_owned, mpi_comm);
         VectorType My_tmp(M_owned, mpi_comm);
@@ -313,56 +406,15 @@ void perform_amr(
         // Copy into subsystem vectors
         mag.get_Mx_solution_mutable() = Mx_tmp;
         mag.get_My_solution_mutable() = My_tmp;
-        // For old vectors (ghosted): copy owned part then ghost update happens in step 13
+        // For old vectors (ghosted): copy owned part, ghost update in step 12
         mag.get_Mx_old_relevant_mutable() = Mx_old_tmp;
         mag.get_My_old_relevant_mutable() = My_old_tmp;
     }
 
     // ====================================================================
-    // Step 10: Apply hanging node constraints
-    // ====================================================================
-    // CH: theta and psi have hanging node constraints
-    // (constraints are rebuilt in setup())
-    // We need to get the constraints — they're internal to the subsystem.
-    // The simplest approach: let update_ghosts() handle constraint
-    // distribution via the subsystem's internal distribute_constraints.
+    // Step 10: Clamp theta to [-1, 1]
     //
-    // Actually, constraints_.distribute() must be called on the owned
-    // vectors BEFORE update_ghosts(). The subsystem's setup() rebuilds
-    // constraints. We need access to them.
-    //
-    // For now, we rely on the fact that CG subsystems have hanging node
-    // constraints that are applied during setup's allocate_vectors (zeroed)
-    // and will be satisfied after interpolation IF we call
-    // constraints.distribute(). Since we can't access constraints directly,
-    // we'll use the subsystem's setup path differently.
-    //
-    // SOLUTION: Each subsystem already calls constraints_.distribute()
-    // in solve(). After AMR, the next solve() will apply constraints.
-    // But the interpolated solution might violate constraints between
-    // AMR and the first solve — this is OK because:
-    //   1. update_ghosts() just copies values (no constraint check)
-    //   2. The next assemble() reads ghosted vectors (hanging node
-    //      values are overwritten by the linear system anyway)
-    //
-    // For DG (magnetization): no hanging node constraints.
-    // For pressure (DG): no hanging node constraints.
-    //
-    // HOWEVER, for theta, we clamp in step 11 and want clean values.
-    // Let's add a distribute_constraints() method to CH or handle
-    // constraints here via direct access.
-    //
-    // PRAGMATIC: Skip explicit constraint distribution here.
-    // The clamping + nodal psi recompute in steps 11-12 are the
-    // critical post-processing. Hanging node constraint violations
-    // from interpolation are O(h) and will be resolved by the next
-    // solve. This matches the Semi_Coupled approach where constraints
-    // are distributed but the effect is negligible.
-
-    // ====================================================================
-    // Step 11: Clamp theta to [-1, 1]
-    //
-    // Interpolation can cause overshoot (theta > 1 or < -1).
+    // Interpolation causes overshoot (theta > 1 or < -1).
     // W'(theta) = theta^3 - theta grows rapidly outside [-1,1].
     // ====================================================================
     {
@@ -403,54 +455,23 @@ void perform_amr(
     }
 
     // ====================================================================
-    // Step 12: Recompute psi = theta^3 - theta nodally
+    // Step 11: Recompute psi = theta^3 - theta nodally
     //
     // The interpolated psi violates the constitutive relation.
-    // Simple nodal update is sufficient — the next CH solve will
-    // produce a consistent (theta, psi) pair.
+    // Cell-local approach: loop over cells, read theta DoF values,
+    // compute f(theta) = theta^3 - theta, write to psi DoFs.
+    // Same FE and mesh → same local DoF ordering per cell.
     // ====================================================================
     {
         const IndexSet& psi_owned = ch.get_psi_dof_handler().locally_owned_dofs();
         VectorType& psi_vec = ch.get_psi_solution();
-        const VectorType& theta_vec = ch.get_theta_solution();
 
-        // psi and theta share the same FE space (CG Q2), so DoF indices
-        // correspond to the same nodes. However they use separate DoFHandlers
-        // so the index numbering may differ. We need to evaluate theta at
-        // psi DoF locations. Since both are CG Q2 on the same mesh, the
-        // simplest approach is to ghost theta first and then use FEValues.
-        //
-        // SIMPLER: Since theta and psi use identical FE_Q(2) on the same
-        // mesh, their DoF numbering is the same per DoFHandler. We can
-        // just iterate over psi_owned and read theta at the same position.
-        // BUT they are SEPARATE DoFHandlers — indices may not match!
-        //
-        // SAFEST: Use the theta solution directly with its own index set.
-        // For nodal update, iterate over psi DoFs and read corresponding
-        // theta values. Since both DoFHandlers have identical topology,
-        // the DoF locations match by index.
-        //
-        // ACTUALLY: In parallel::distributed, separate DoFHandlers on the
-        // same mesh will have DIFFERENT global DoF numbering. So we can't
-        // just use the same index.
-        //
-        // PRACTICAL APPROACH: Skip the psi recompute — the next CH solve
-        // will produce consistent (theta, psi). The interpolated psi is
-        // a reasonable approximation anyway.
-        //
-        // ALTERNATIVELY: We can ghost theta, then loop over cells and
-        // evaluate theta at psi support points. This is more robust.
-        //
-        // For now, let's do a simple cell-local approach: for each cell,
-        // get theta DoF values, compute f(theta) = theta^3 - theta,
-        // write to psi DoFs (same local ordering since same FE).
-
-        // First need ghosted theta for reading across cells
+        // Ghost theta for reading across cells
         const IndexSet theta_owned = ch.get_theta_dof_handler().locally_owned_dofs();
         IndexSet theta_relevant;
         DoFTools::extract_locally_relevant_dofs(ch.get_theta_dof_handler(), theta_relevant);
         VectorType theta_ghost(theta_owned, theta_relevant, mpi_comm);
-        theta_ghost = theta_vec;
+        theta_ghost = ch.get_theta_solution();
 
         const unsigned int dofs_per_cell = ch.get_theta_dof_handler().get_fe().n_dofs_per_cell();
         std::vector<types::global_dof_index> theta_dof_indices(dofs_per_cell);
@@ -480,7 +501,7 @@ void perform_amr(
     }
 
     // ====================================================================
-    // Step 13: Update all ghost vectors
+    // Step 12: Update all ghost vectors
     // ====================================================================
     ch.update_ghosts();
     if (ns_enabled)
@@ -492,13 +513,41 @@ void perform_amr(
     }
 
     // ====================================================================
-    // Step 14: Log diagnostics
+    // Step 13: Log diagnostics — cell count + level distribution
     // ====================================================================
     const unsigned int n_cells_after = triangulation.n_global_active_cells();
-    const unsigned int n_dofs_theta = ch.get_theta_dof_handler().n_dofs();
 
-    pcout << "[AMR] Cells: " << n_cells_before << " -> " << n_cells_after
-          << " (theta DoFs: " << n_dofs_theta << ")\n";
+    {
+        int local_min_level = std::numeric_limits<int>::max();
+        int local_max_level = 0;
+        std::vector<unsigned int> level_counts(20, 0);
+        for (const auto& cell : triangulation.active_cell_iterators())
+        {
+            if (!cell->is_locally_owned()) continue;
+            int lev = cell->level();
+            local_min_level = std::min(local_min_level, lev);
+            local_max_level = std::max(local_max_level, lev);
+            if (lev < 20) level_counts[lev]++;
+        }
+        int global_min = Utilities::MPI::min(local_min_level, mpi_comm);
+        int global_max = Utilities::MPI::max(local_max_level, mpi_comm);
+
+        // Sum level counts across MPI
+        std::vector<unsigned int> global_counts(20, 0);
+        for (int l = 0; l < 20; l++)
+            global_counts[l] = Utilities::MPI::sum(level_counts[l], mpi_comm);
+
+        pcout << "[AMR] Cells: " << n_cells_before << " -> " << n_cells_after
+              << "  levels=[" << global_min << "," << global_max << "]  (";
+        bool first = true;
+        for (int l = global_min; l <= global_max; l++)
+        {
+            if (!first) pcout << "/";
+            pcout << "L" << l << ":" << global_counts[l];
+            first = false;
+        }
+        pcout << ")  theta DoFs: " << ch.get_theta_dof_handler().n_dofs() << "\n";
+    }
 }
 
 #endif // AMR_H

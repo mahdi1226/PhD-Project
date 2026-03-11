@@ -176,10 +176,8 @@ static PoissonMagNSResult run_single_level(
     const double nu = params.physics.nu_ferro;  // constant viscosity
     const double mu0 = params.physics.mu_0;
 
-    // NS source: with Kelvin term 1 + term 2 curl correction
-    PoissonMagNSSourceU<dim> ns_source(dt, L_y, nu, mu0,
-                                       params.disable_kelvin_term2,
-                                       params.disable_bstab);
+    // NS source: with Kelvin term 1 + term 2 curl + b_stab
+    PoissonMagNSSourceU<dim> ns_source(dt, L_y, nu, mu0);
     if (ns_ptr)
     {
         ns_ptr->set_mms_source(
@@ -219,13 +217,6 @@ static PoissonMagNSResult run_single_level(
 
             return f;
         });
-
-    // Face MMS correction: exact M*(x, t) for DG face flux consistency
-    // NOTE: Disabled for now — investigating root cause of M convergence failure
-    // mag.set_mms_M_exact(
-    //     [L_y](const Point<dim>& pt, double t) -> Tensor<1, dim> {
-    //         return mag_mms_exact_M<dim>(pt, t, L_y);
-    //     });
 
     // ----------------------------------------------------------------
     // 5. Initial conditions at t = t_start
@@ -333,6 +324,12 @@ static PoissonMagNSResult run_single_level(
                 true);                                 // include convection
 
             ns_ptr->solve();
+
+            // Pressure correction (Zhang Steps 3-4)
+            ns_ptr->assemble_pressure_poisson(dt);
+            ns_ptr->solve_pressure();
+            ns_ptr->velocity_correction(dt);
+
             ns_ptr->advance_time();
             ns_ptr->update_ghosts();
         }
@@ -751,11 +748,8 @@ static PoissonMagNSResult run_single_level(
             pcout << "  DIAG: ||A_transport*Ih||=" << transport_Ih.l2_norm() << "\n";
 
             // ---- Cell IBP transport: ∫_K [-(U·∇Z_i)*I_h - 0.5*(∇·U)*Z_i*I_h] dx
-            //   This is the cell contribution to A_transport, EXCLUDING face flux.
-            //   IBP identity:  cell_IBP = strong_form - boundary_integral
-            //   Total:         transport_Ih = cell_IBP + face_flux
-            //   For continuous I_h: face_flux should cancel boundary_integral
-            //   → transport_Ih = strong_form
+            //   For CG: no face flux (continuity enforced by FE space).
+            //   transport_Ih = cell_IBP (strong form).
             {
                 const auto& diag_ux2 = ns_ptr
                     ? ns_ptr->get_ux_old_relevant() : ux_proj;
@@ -875,179 +869,6 @@ static PoissonMagNSResult run_single_level(
                           sum += face_flux_x;
                           return sum.l2_norm();
                       }() << "\n";
-            }
-
-            // ---- Direct face flux computation using FEInterfaceValues ----
-            // Iterate interior faces, compute ∫_F (U·n) * Z_i * I_h dS
-            // For each face (processed once, lower-index cell = "here"):
-            //   DoF i on here: +∫(U·n)*Z_i*I_h dS
-            //   DoF i on there: -∫(U·n)*Z_i*I_h dS
-            {
-                const auto& diag_ux3 = ns_ptr
-                    ? ns_ptr->get_ux_old_relevant() : ux_proj;
-                const auto& diag_uy3 = ns_ptr
-                    ? ns_ptr->get_uy_old_relevant() : uy_proj;
-                const auto& diag_u_dof3 = ns_ptr
-                    ? ns_ptr->get_ux_dof_handler() : vel_dof;
-
-                const auto& fe_M3 = mag.get_dof_handler().get_fe();
-                const auto& fe_U3 = diag_u_dof3.get_fe();
-                QGauss<dim-1> q_face3(fe_M3.degree + 2);
-                const unsigned int nq_f = q_face3.size();
-                const unsigned int dpc3 = fe_M3.n_dofs_per_cell();
-
-                FEInterfaceValues<dim> fe_iv(fe_M3, q_face3,
-                    update_values | update_JxW_values | update_normal_vectors);
-                FEFaceValues<dim> fe_fv_U(fe_U3, q_face3,
-                    update_values);
-
-                std::vector<double> ux_f(nq_f), uy_f(nq_f);
-                std::vector<types::global_dof_index> dofs_h(dpc3), dofs_t(dpc3);
-
-                TrilinosWrappers::MPI::Vector direct_face_x(M_owned, mpi_comm);
-                direct_face_x = 0;
-
-                // Also accumulate cell boundary integral directly
-                // using FEFaceValues on each cell face (ALL faces, incl boundary)
-                QGauss<dim-1> q_cface(fe_M3.degree + 2);
-                FEFaceValues<dim> fe_fv_M(fe_M3, q_cface,
-                    update_values | update_JxW_values | update_normal_vectors);
-                FEFaceValues<dim> fe_fv_U2(fe_U3, q_cface,
-                    update_values);
-                std::vector<double> ih_cf(q_cface.size());
-                std::vector<double> ux_cf(q_cface.size()), uy_cf(q_cface.size());
-
-                TrilinosWrappers::MPI::Vector direct_bdy_x(M_owned, mpi_comm);
-                direct_bdy_x = 0;
-
-                double max_jump = 0, max_Udn = 0, max_Udn_bdy = 0;
-                unsigned int n_interior_faces = 0, n_boundary_faces = 0;
-
-                auto cM3 = mag.get_dof_handler().begin_active();
-                auto cU3 = diag_u_dof3.begin_active();
-                for (; cM3 != mag.get_dof_handler().end(); ++cM3, ++cU3)
-                {
-                    if (!cM3->is_locally_owned()) continue;
-
-                    cM3->get_dof_indices(dofs_h);
-
-                    // Cell boundary integral: -∫_∂K (U·n)*Z_i*I_h dS
-                    for (unsigned int f = 0; f < cM3->n_faces(); ++f)
-                    {
-                        fe_fv_M.reinit(cM3, f);
-                        fe_fv_U2.reinit(cU3, f);
-                        fe_fv_M.get_function_values(mx_interp, ih_cf);
-                        fe_fv_U2.get_function_values(diag_ux3, ux_cf);
-                        fe_fv_U2.get_function_values(diag_uy3, uy_cf);
-
-                        bool is_bdy_face = cM3->at_boundary(f);
-                        if (is_bdy_face) ++n_boundary_faces;
-
-                        for (unsigned int q = 0; q < q_cface.size(); ++q)
-                        {
-                            const auto& n = fe_fv_M.normal_vector(q);
-                            double Udn = ux_cf[q]*n[0] + uy_cf[q]*n[1];
-                            double JxW = fe_fv_M.JxW(q);
-
-                            if (is_bdy_face)
-                                max_Udn_bdy = std::max(max_Udn_bdy,
-                                    std::abs(Udn));
-
-                            for (unsigned int i = 0; i < dpc3; ++i)
-                            {
-                                double Z_i = fe_fv_M.shape_value(i, q);
-                                // boundary integral = -∫(U·n)*Z_i*I_h
-                                direct_bdy_x[dofs_h[i]] +=
-                                    -Udn * Z_i * ih_cf[q] * JxW;
-                            }
-                        }
-                    }
-
-                    // Interior face flux (same-level, processed once)
-                    for (unsigned int f = 0; f < cM3->n_faces(); ++f)
-                    {
-                        if (cM3->at_boundary(f)) continue;
-                        const auto nb = cM3->neighbor(f);
-                        if (!nb->is_active()) continue;
-                        if (cM3->index() > nb->index()) continue;
-
-                        ++n_interior_faces;
-                        const unsigned int nf = cM3->neighbor_of_neighbor(f);
-                        fe_iv.reinit(cM3, f,
-                            numbers::invalid_unsigned_int,
-                            nb, nf,
-                            numbers::invalid_unsigned_int);
-
-                        fe_fv_U.reinit(cU3, f);
-                        fe_fv_U.get_function_values(diag_ux3, ux_f);
-                        fe_fv_U.get_function_values(diag_uy3, uy_f);
-
-                        nb->get_dof_indices(dofs_t);
-
-                        // Evaluate I_h on both sides + continuity check
-                        for (unsigned int q = 0; q < nq_f; ++q)
-                        {
-                            const auto& n = fe_iv.normal(q);
-                            double Udn = ux_f[q]*n[0] + uy_f[q]*n[1];
-                            double JxW = fe_iv.JxW(q);
-
-                            // I_h from here and there sides
-                            // FEInterfaceValues interface DoF numbering for DG:
-                            //   0..dpc-1       → "here" cell DoFs
-                            //   dpc..2*dpc-1   → "there" cell DoFs
-                            double Ih_here = 0, Ih_there = 0;
-                            for (unsigned int j = 0; j < dpc3; ++j)
-                            {
-                                Ih_here += fe_iv.shape_value(true, j, q)
-                                         * mx_interp[dofs_h[j]];
-                                Ih_there += fe_iv.shape_value(false, j + dpc3, q)
-                                          * mx_interp[dofs_t[j]];
-                            }
-                            max_jump = std::max(max_jump,
-                                std::abs(Ih_here - Ih_there));
-                            max_Udn = std::max(max_Udn, std::abs(Udn));
-
-                            for (unsigned int i = 0; i < dpc3; ++i)
-                            {
-                                double Zi_h = fe_iv.shape_value(true, i, q);
-                                double Zi_t = fe_iv.shape_value(false, i, q);
-
-                                // Face flux for continuous I_h:
-                                // here: +∫(U·n)*Z_i*I_h
-                                // there: -∫(U·n)*Z_i*I_h
-                                direct_face_x[dofs_h[i]] +=
-                                    Udn * Zi_h * Ih_here * JxW;
-                                direct_face_x[dofs_t[i]] +=
-                                    -Udn * Zi_t * Ih_there * JxW;
-                            }
-                        }
-                    }
-                }
-                direct_face_x.compress(VectorOperation::add);
-                direct_bdy_x.compress(VectorOperation::add);
-
-                // Check cancellation: direct_bdy + direct_face should ≈ 0
-                TrilinosWrappers::MPI::Vector cancel_check(direct_bdy_x);
-                cancel_check += direct_face_x;
-
-                pcout << "  DIAG: DIRECT ||face_flux||=" << direct_face_x.l2_norm()
-                      << "  ||bdy_integral||=" << direct_bdy_x.l2_norm()
-                      << "  ||bdy+face||=" << cancel_check.l2_norm() << "\n";
-                pcout << "  DIAG: max|[[Ih]]|=" << max_jump
-                      << "  max|U·n|(interior)=" << max_Udn
-                      << "  max|U·n|(boundary)=" << max_Udn_bdy << "\n";
-                pcout << "  DIAG: n_interior_faces=" << n_interior_faces
-                      << "  n_boundary_faces=" << n_boundary_faces << "\n";
-
-                // The KEY check: does direct_bdy + direct_face ≈ transport_Ih?
-                // transport = cell_IBP + face = (strong + bdy) + face
-                // If bdy + face ≈ 0, then transport ≈ strong ≈ O(h²).
-                // If bdy + face ≈ transport, then strong ≈ 0 (confirmed).
-                TrilinosWrappers::MPI::Vector reconst(direct_bdy_x);
-                reconst += direct_face_x;
-                pcout << "  DIAG: ||direct_bdy + direct_face||="
-                      << reconst.l2_norm()
-                      << "  (should≈0, actual transport=" << transport_Ih.l2_norm() << ")\n";
             }
 
             // Compare with b decomposition

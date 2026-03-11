@@ -528,11 +528,8 @@ void NSSubsystem<dim>::assemble_coupled(
                 local_rhs_uy(i) += mu0 * kelvin[1] * phi_uy_i * JxW;
 
                 // RHS: Kelvin term 2 — μ₀/2(m × H̃, ∇×v)
-                if (!params_.disable_kelvin_term2)
-                {
-                    local_rhs_ux(i) += 0.5 * mu0 * M_cross_H * (-grad_phi_ux_i[1]) * JxW;
-                    local_rhs_uy(i) += 0.5 * mu0 * M_cross_H * ( grad_phi_uy_i[0]) * JxW;
-                }
+                local_rhs_ux(i) += 0.5 * mu0 * M_cross_H * (-grad_phi_ux_i[1]) * JxW;
+                local_rhs_uy(i) += 0.5 * mu0 * M_cross_H * ( grad_phi_uy_i[0]) * JxW;
 
                 // RHS: Kelvin term 3 — μ₀(m × ∇×H̃, v)
                 local_rhs_ux(i) += mu0 * M_cross_curlH[0] * phi_ux_i * JxW;
@@ -551,7 +548,6 @@ void NSSubsystem<dim>::assemble_coupled(
                 local_rhs_uy(i) -= (nu_q / 4.0) * (T_ux_old * T_V_y) * JxW;
 
                 // RHS: b_stab cross-terms from old velocity
-                if (!params_.disable_bstab)
                 {
                     // b_stab cross: (0, uy_old) tested against V_i = (φ_ux_i, 0)
                     {
@@ -629,7 +625,6 @@ void NSSubsystem<dim>::assemble_coupled(
                     }
 
                     // LHS b_stab diagonal blocks only (ux-ux and uy-uy)
-                    if (!params_.disable_bstab)
                     {
                         // ũ_j=(φ_ux_j,0) vs V_i=(φ_ux_i,0)
                         {

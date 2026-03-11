@@ -1,5 +1,5 @@
 // ============================================================================
-// magnetization/magnetization_solve.cc — DG Scalar Component Solver
+// magnetization/magnetization_solve.cc — CG Scalar Component Solver
 //
 // Private method:
 //   solve_component()  — solve matrix * solution = rhs for one component
@@ -8,10 +8,12 @@
 //   1. Direct solver (MUMPS → SuperLU_DIST → KLU fallback chain)
 //   2. Iterative GMRES + cached ILU (if direct fails or configured)
 //
+// After solve, applies constraints.distribute() for CG hanging nodes.
+//
 // The same matrix is shared by Mx and My. The preconditioner is
 // initialized once in magnetization_assemble.cc and reused for both.
 //
-// Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
+// Reference: Zhang, He & Yang, SIAM J. Sci. Comput. 43(1) (2021) B167-B193
 // ============================================================================
 
 #include "magnetization/magnetization.h"
@@ -167,6 +169,9 @@ SolverInfo MagnetizationSubsystem<dim>::solve_component(
     }
 
     info.converged = converged;
+
+    // Apply hanging-node constraints (CG)
+    constraints_.distribute(solution);
 
     timer.stop();
     info.solve_time = timer.wall_time();

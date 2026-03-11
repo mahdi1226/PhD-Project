@@ -235,12 +235,8 @@ template <int dim>
 class PoissonMagNSSourceU
 {
 public:
-    PoissonMagNSSourceU(double dt, double Ly, double nu, double mu0,
-                        bool disable_kelvin_term2 = false,
-                        bool disable_bstab = false)
-        : dt_(dt), Ly_(Ly), nu_(nu), mu0_(mu0),
-          disable_kelvin_term2_(disable_kelvin_term2),
-          disable_bstab_(disable_bstab) {}
+    PoissonMagNSSourceU(double dt, double Ly, double nu, double mu0)
+        : dt_(dt), Ly_(Ly), nu_(nu), mu0_(mu0) {}
 
     dealii::Tensor<1, dim> operator()(const dealii::Point<dim>& pt,
                                       double t_new) const
@@ -285,7 +281,6 @@ public:
         f[1] -= mu0_ * k1[1];
 
         // Kelvin term 2: −μ₀/2 curl(M*×H*) at t_old
-        if (!disable_kelvin_term2_)
         {
             const auto k2 = KelvinMMS::kelvin_term2_curl<dim>(pt, t_old, Ly_);
             f[0] -= 0.5 * mu0_ * k2[0];
@@ -351,11 +346,8 @@ public:
             const double fb3_y = -0.5 * dW_dx;
 
             // Add total b_stab body force: +μ₀·dt·(Term1 + Term3)
-            if (!disable_bstab_)
-            {
-                f[0] += mu0_ * dt_ * (fb1_x + fb3_x);
-                f[1] += mu0_ * dt_ * (fb1_y + fb3_y);
-            }
+            f[0] += mu0_ * dt_ * (fb1_x + fb3_x);
+            f[1] += mu0_ * dt_ * (fb1_y + fb3_y);
         }
 
         return f;
@@ -363,8 +355,6 @@ public:
 
 private:
     double dt_, Ly_, nu_, mu0_;
-    bool disable_kelvin_term2_;
-    bool disable_bstab_;
 };
 
 

@@ -352,11 +352,9 @@ CahnHilliardSubsystem<dim>::compute_diagnostics() const
             local_volume += JxW;
             local_theta_sum += th * JxW;
 
-            // CH energy: E = λ [ε/2 |∇θ|² + α·(1/ε) F(θ)]
-            // α = ch_reaction_scale: corrects Φ→θ double-well scaling
-            const double rs = params_.physics.ch_reaction_scale;
+            // CH energy: E = λ [ε/2 |∇θ|² + (1/ε) F(θ)]
             local_E_grad += lambda * 0.5 * eps * grad_sq * JxW;
-            local_E_bulk += lambda * rs * (1.0 / eps) * double_well_potential(th) * JxW;
+            local_E_bulk += lambda * (1.0 / eps) * double_well_potential(th) * JxW;
 
             local_psi_L2_sq += ps * ps * JxW;
 

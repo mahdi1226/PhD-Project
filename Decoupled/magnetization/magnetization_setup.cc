@@ -1,36 +1,40 @@
 // ============================================================================
-// magnetization/magnetization_setup.cc — DG DoF Distribution, Sparsity, Vectors
+// magnetization/magnetization_setup.cc — CG DoF Distribution, Constraints,
+//                                         Sparsity, Vectors
 //
 // Private methods called by MagnetizationSubsystem::setup():
-//   1. distribute_dofs()       — DG-Q1 DoF distribution + index sets
-//   2. build_sparsity_pattern() — Face-coupled (flux) sparsity for DG
-//   3. allocate_vectors()       — Owned + ghosted vectors for Mx, My
+//   1. distribute_dofs()       — CG Q1 DoF distribution + CM renumbering
+//   2. build_constraints()     — Hanging node constraints (AMR)
+//   3. build_sparsity_pattern() — Standard CG sparsity (no face coupling)
+//   4. allocate_vectors()       — Owned + ghosted vectors for Mx, My
 //
-// DG SPECIFICS:
-//   - No hanging-node constraints (DG has no inter-element continuity)
-//   - Sparsity includes face coupling via make_flux_sparsity_pattern()
+// CG SPECIFICS (Zhang Eq 3.6: N_h ∈ C⁰(Ω)):
+//   - Hanging-node constraints for AMR compatibility
+//   - Standard sparsity (no face coupling needed)
 //   - Single matrix shared by Mx and My (same transport operator)
 //
-// Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
+// Reference: Zhang, He & Yang, SIAM J. Sci. Comput. 43(1) (2021) B167-B193
 // ============================================================================
 
 #include "magnetization/magnetization.h"
 
 #include <deal.II/dofs/dof_tools.h>
+#include <deal.II/dofs/dof_renumbering.h>
 #include <deal.II/lac/trilinos_sparsity_pattern.h>
 
 using namespace dealii;
 
 // ============================================================================
-// distribute_dofs() — Attach FE_DGQ(1) and extract parallel index sets
-//
-// DG elements have no continuity constraints, so AffineConstraints is
-// trivially empty.  We skip creating one entirely.
+// distribute_dofs() — Attach FE_Q(1) and extract parallel index sets
 // ============================================================================
 template <int dim>
 void MagnetizationSubsystem<dim>::distribute_dofs()
 {
     dof_handler_.distribute_dofs(fe_);
+
+    // Cuthill-McKee renumbering (before extracting index sets)
+    if (params_.renumber_dofs)
+        DoFRenumbering::Cuthill_McKee(dof_handler_);
 
     locally_owned_dofs_    = dof_handler_.locally_owned_dofs();
     locally_relevant_dofs_ = DoFTools::extract_locally_relevant_dofs(dof_handler_);
@@ -42,10 +46,27 @@ void MagnetizationSubsystem<dim>::distribute_dofs()
 }
 
 // ============================================================================
-// build_sparsity_pattern() — DG flux sparsity (cell + face coupling)
+// build_constraints() — Hanging node constraints for CG
 //
-// make_flux_sparsity_pattern() includes neighbor coupling across interior
-// faces, which is required for the upwind DG flux terms in B_h^m (Eq. 57).
+// CG elements require hanging-node constraints for AMR compatibility.
+// No Dirichlet or pinning constraints for magnetization.
+// ============================================================================
+template <int dim>
+void MagnetizationSubsystem<dim>::build_constraints()
+{
+    constraints_.clear();
+    constraints_.reinit(locally_owned_dofs_, locally_relevant_dofs_);
+
+    DoFTools::make_hanging_node_constraints(dof_handler_, constraints_);
+
+    constraints_.close();
+}
+
+// ============================================================================
+// build_sparsity_pattern() — Standard CG sparsity (no face coupling)
+//
+// CG does not need face coupling (continuity is built into the FE space).
+// Constraints are respected in the sparsity pattern.
 // ============================================================================
 template <int dim>
 void MagnetizationSubsystem<dim>::build_sparsity_pattern()
@@ -56,22 +77,21 @@ void MagnetizationSubsystem<dim>::build_sparsity_pattern()
         locally_relevant_dofs_,
         mpi_comm_);
 
-    DoFTools::make_flux_sparsity_pattern(dof_handler_, trilinos_sp);
+    DoFTools::make_sparsity_pattern(
+        dof_handler_, trilinos_sp, constraints_,
+        /*keep_constrained_dofs=*/false);
 
     trilinos_sp.compress();
 
     system_matrix_.reinit(trilinos_sp);
 
     pcout_ << "[Magnetization Setup] Sparsity: nnz = "
-           << trilinos_sp.n_nonzero_elements() << " (DG flux)"
+           << trilinos_sp.n_nonzero_elements() << " (CG)"
            << std::endl;
 }
 
 // ============================================================================
 // allocate_vectors() — Owned (Mx, My solution + rhs) and ghosted (relevant)
-//
-// Owned vectors:  Mx/My_solution_, Mx/My_rhs_  (no ghost entries)
-// Ghosted vectors: Mx/My_relevant_  (include locally_relevant for reads)
 // ============================================================================
 template <int dim>
 void MagnetizationSubsystem<dim>::allocate_vectors()
@@ -88,17 +108,15 @@ void MagnetizationSubsystem<dim>::allocate_vectors()
     Mx_relevant_.reinit(locally_owned_dofs_, locally_relevant_dofs_, mpi_comm_);
     My_relevant_.reinit(locally_owned_dofs_, locally_relevant_dofs_, mpi_comm_);
 
-    // Old-time ghosted vectors (for Picard sub-iteration: M^{n-1})
+    // Old-time ghosted vectors (for M^{n-1})
     Mx_old_relevant_.reinit(locally_owned_dofs_, locally_relevant_dofs_, mpi_comm_);
     My_old_relevant_.reinit(locally_owned_dofs_, locally_relevant_dofs_, mpi_comm_);
 
     // Spin-vorticity RHS cache (Zhang Eq 3.14 term: +½(∇×u × m^{n-1}, Z))
-    // Computed once per timestep, reused in Picard RHS-only iterations
     spin_vort_rhs_x_.reinit(locally_owned_dofs_, mpi_comm_);
     spin_vort_rhs_y_.reinit(locally_owned_dofs_, mpi_comm_);
 
     // Explicit transport RHS cache (Zhang Eq 3.14 Step 5)
-    // -[(U·∇)M^{n-1} + (∇·U)M^{n-1}] · Z  (full divergence, not half)
     explicit_transport_rhs_x_.reinit(locally_owned_dofs_, mpi_comm_);
     explicit_transport_rhs_y_.reinit(locally_owned_dofs_, mpi_comm_);
 
@@ -110,9 +128,11 @@ void MagnetizationSubsystem<dim>::allocate_vectors()
 // Explicit instantiations
 // ============================================================================
 template void MagnetizationSubsystem<2>::distribute_dofs();
+template void MagnetizationSubsystem<2>::build_constraints();
 template void MagnetizationSubsystem<2>::build_sparsity_pattern();
 template void MagnetizationSubsystem<2>::allocate_vectors();
 
 template void MagnetizationSubsystem<3>::distribute_dofs();
+template void MagnetizationSubsystem<3>::build_constraints();
 template void MagnetizationSubsystem<3>::build_sparsity_pattern();
 template void MagnetizationSubsystem<3>::allocate_vectors();
