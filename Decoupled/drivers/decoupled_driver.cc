@@ -37,6 +37,8 @@
 #include "utilities/sparsity_export.h"
 #include "physics/material_properties.h"
 #include "physics/applied_field.h"
+#include "diagnostics/force_diagnostics.h"
+#include "diagnostics/interface_tracking.h"
 
 #include <deal.II/base/mpi.h>
 #include <deal.II/base/conditional_ostream.h>
@@ -227,6 +229,8 @@ public:
               << "E_CH,E_kin,E_mag,E_total,"
               << "U_max,CFL,divU_L2,"
               << "H_max,M_mag_max,"
+              << "F_cap_max,F_mag_max,F_grav_max,"
+              << "iface_y_min,iface_y_max,iface_amp,"
               << "wall_time_s"
               << "\n";
 
@@ -297,6 +301,22 @@ public:
                << "E_CH_grad,E_CH_bulk,E_CH,"
                << "interface_length"
                << "\n";
+
+        // ---- forces.csv ---- (body force magnitudes)
+        forces_.open(dir_ + "/forces.csv");
+        write_csv_stamp(forces_, params, n_ranks_, n_cells, n_dofs);
+        forces_ << "step,time,"
+                << "F_cap_L2,F_cap_max,"
+                << "F_mag_L2,F_mag_max,"
+                << "F_grav_L2,F_grav_max"
+                << "\n";
+
+        // ---- interface.csv ---- (interface position tracking)
+        interface_.open(dir_ + "/interface.csv");
+        write_csv_stamp(interface_, params, n_ranks_, n_cells, n_dofs);
+        interface_ << "step,time,"
+                   << "y_min,y_max,y_mean,amplitude,n_points"
+                   << "\n";
     }
 
 
@@ -305,6 +325,8 @@ public:
              const PoissonSubsystem<dim>::Diagnostics& poi,
              const MagnetizationSubsystem<dim>::Diagnostics& mag,
              const NSSubsystem<dim>::Diagnostics& ns,
+             const ForceDiagnostics& forces,
+             const InterfacePosition& iface,
              double E_total, double wall_s)
     {
         if (rank_ != 0) return;
@@ -341,6 +363,10 @@ public:
                  << E_total << ","
                  << ns.U_max << "," << ns.CFL << "," << ns.divU_L2 << ","
                  << poi.H_max << "," << mag.M_magnitude_max << ","
+                 << forces.F_cap_max << "," << forces.F_mag_max << ","
+                 << forces.F_grav_max << ","
+                 << iface.y_min << "," << iface.y_max << ","
+                 << iface.amplitude << ","
                  << std::fixed << std::setprecision(2) << wall_s
                  << "\n";
         diag_.flush();
@@ -412,6 +438,22 @@ public:
                   << ch.interface_length
                   << "\n";
         phase_.flush();
+
+        // ---- forces.csv ----
+        S(forces_) << step << "," << time << ","
+                   << forces.F_cap_L2 << "," << forces.F_cap_max << ","
+                   << forces.F_mag_L2 << "," << forces.F_mag_max << ","
+                   << forces.F_grav_L2 << "," << forces.F_grav_max
+                   << "\n";
+        forces_.flush();
+
+        // ---- interface.csv ----
+        S(interface_) << step << "," << time << ","
+                      << iface.y_min << "," << iface.y_max << ","
+                      << iface.y_mean << "," << iface.amplitude << ","
+                      << iface.n_interface_points
+                      << "\n";
+        interface_.flush();
     }
 
 private:
@@ -430,6 +472,8 @@ private:
     std::ofstream flow_;
     std::ofstream magnetic_;
     std::ofstream phase_;
+    std::ofstream forces_;
+    std::ofstream interface_;
 };
 
 
@@ -1736,6 +1780,28 @@ int main(int argc, char* argv[])
         double E_total = compute_discrete_energy(
             ch_diag, ns_diag, mag_diag, poi_diag, params);
 
+        // Force diagnostics
+        ForceDiagnostics force_diag;
+        if (params.enable_magnetic && params.enable_ns)
+        {
+            force_diag = compute_force_diagnostics<dim>(
+                ch.get_theta_dof_handler(),
+                ch.get_theta_relevant(),
+                ch.get_psi_relevant(),
+                poisson.get_dof_handler(),
+                poisson.get_solution_relevant(),
+                mag.get_dof_handler(),
+                mag.get_Mx_relevant(),
+                mag.get_My_relevant(),
+                params, mpi_comm);
+        }
+
+        // Interface tracking
+        auto iface = compute_interface_position<dim>(
+            ch.get_theta_dof_handler(),
+            ch.get_theta_relevant(),
+            mpi_comm);
+
         // ============================================================
         // Energy sanity check — abort if solution has blown up
         //
@@ -1813,6 +1879,7 @@ int main(int argc, char* argv[])
                 // Log final state before exit
                 logger.log(step, current_time, dt,
                            ch_diag, poi_diag, mag_diag, ns_diag,
+                           force_diag, iface,
                            E_total, wall_s);
 
                 throw std::runtime_error(
@@ -1823,6 +1890,7 @@ int main(int argc, char* argv[])
 
         logger.log(step, current_time, dt,
                    ch_diag, poi_diag, mag_diag, ns_diag,
+                   force_diag, iface,
                    E_total, wall_s);
 
         // Console output
