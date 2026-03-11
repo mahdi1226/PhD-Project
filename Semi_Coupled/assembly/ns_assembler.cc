@@ -415,165 +415,9 @@ static void assemble_ns_core(
 }
 
 // ============================================================================
-// Kelvin force assembly — GRADIENT FORM (production)
+// Kelvin force assembly — DG SKEW FORM (Paper Eq. 38, 42e)
 //
-// Uses the identity: χ(H·∇)H = (1/2)|H|²∇χ + χ∇(|H|²/2)
-// where ∇(|H|²/2) = Hess(φ)·H since H = ∇φ.
-//
-// Term 1 (interface): (μ₀/2)|H|²∇χ(θ) = (μ₀/2)|H|²χ'(θ)∇θ
-//   - Strong at interface (where ∇θ is large)
-//   - Points normal to interface → drives Rosensweig spikes
-//
-// Term 2 (bulk): μ₀ χ(θ) Hess(φ)·H
-//   - Nonzero in ferrofluid bulk
-//   - Uses second derivatives (piecewise constant for Q2)
-//
-// This form is preferred over the DG skew form for physics runs because
-// it uses ∇θ (well-resolved on the mesh) rather than relying solely on
-// Hess(φ) (poorly resolved for Q2 elements).
-//
-// Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016), Eq. 36
-// ============================================================================
-template <int dim>
-static void assemble_kelvin_force_gradient(
-    const dealii::DoFHandler<dim>& ux_dof_handler,
-    const dealii::DoFHandler<dim>& uy_dof_handler,
-    const dealii::DoFHandler<dim>& phi_dof_handler,
-    const dealii::DoFHandler<dim>& theta_dof_handler,
-    const dealii::TrilinosWrappers::MPI::Vector& phi_solution,
-    const dealii::TrilinosWrappers::MPI::Vector& theta_solution,
-    double mu_0,
-    double chi_0,
-    double epsilon,
-    const std::vector<dealii::types::global_dof_index>& ux_to_ns_map,
-    const std::vector<dealii::types::global_dof_index>& uy_to_ns_map,
-    const dealii::AffineConstraints<double>& ns_constraints,
-    dealii::TrilinosWrappers::MPI::Vector& ns_rhs)
-{
-    const auto& fe_vel = ux_dof_handler.get_fe();
-    const auto& fe_phi = phi_dof_handler.get_fe();
-    const auto& fe_theta = theta_dof_handler.get_fe();
-
-    const unsigned int dofs_per_cell_vel = fe_vel.n_dofs_per_cell();
-
-    dealii::QGauss<dim> quadrature(fe_vel.degree + 2);
-    const unsigned int n_q_points = quadrature.size();
-
-    // FEValues for velocity test functions
-    dealii::FEValues<dim> ux_fe_values(fe_vel, quadrature,
-        dealii::update_values | dealii::update_JxW_values);
-    dealii::FEValues<dim> uy_fe_values(fe_vel, quadrature,
-        dealii::update_values);
-
-    // FEValues for φ — need gradients (H = ∇φ) and Hessians (for bulk term)
-    dealii::FEValues<dim> phi_fe_values(fe_phi, quadrature,
-        dealii::update_gradients | dealii::update_hessians);
-
-    // FEValues for θ — need values (for χ, χ') and gradients (for ∇χ)
-    dealii::FEValues<dim> theta_fe_values(fe_theta, quadrature,
-        dealii::update_values | dealii::update_gradients);
-
-    // Storage
-    dealii::Vector<double> local_rhs_ux(dofs_per_cell_vel);
-    dealii::Vector<double> local_rhs_uy(dofs_per_cell_vel);
-
-    std::vector<dealii::types::global_dof_index> ux_local_dofs(dofs_per_cell_vel);
-    std::vector<dealii::types::global_dof_index> uy_local_dofs(dofs_per_cell_vel);
-
-    std::vector<dealii::Tensor<1, dim>> phi_gradients(n_q_points);
-    std::vector<dealii::Tensor<2, dim>> phi_hessians(n_q_points);
-    std::vector<double> theta_values(n_q_points);
-    std::vector<dealii::Tensor<1, dim>> theta_gradients(n_q_points);
-
-    // Cell loop (synchronized across DoF handlers)
-    auto ux_cell = ux_dof_handler.begin_active();
-    auto uy_cell = uy_dof_handler.begin_active();
-    auto phi_cell = phi_dof_handler.begin_active();
-    auto theta_cell = theta_dof_handler.begin_active();
-
-    for (; ux_cell != ux_dof_handler.end();
-         ++ux_cell, ++uy_cell, ++phi_cell, ++theta_cell)
-    {
-        if (!ux_cell->is_locally_owned())
-            continue;
-
-        ux_fe_values.reinit(ux_cell);
-        uy_fe_values.reinit(uy_cell);
-        phi_fe_values.reinit(phi_cell);
-        theta_fe_values.reinit(theta_cell);
-
-        phi_fe_values.get_function_gradients(phi_solution, phi_gradients);
-        phi_fe_values.get_function_hessians(phi_solution, phi_hessians);
-        theta_fe_values.get_function_values(theta_solution, theta_values);
-        theta_fe_values.get_function_gradients(theta_solution, theta_gradients);
-
-        ux_cell->get_dof_indices(ux_local_dofs);
-        uy_cell->get_dof_indices(uy_local_dofs);
-
-        local_rhs_ux = 0;
-        local_rhs_uy = 0;
-
-        for (unsigned int q = 0; q < n_q_points; ++q)
-        {
-            const double JxW = ux_fe_values.JxW(q);
-
-            // H = ∇φ (total magnetic field)
-            const dealii::Tensor<1, dim>& H = phi_gradients[q];
-            const double H_sq = H * H;  // |H|²
-
-            const double theta_q = theta_values[q];
-
-            // Term 1 (interface): (μ₀/2)|H|² ∇χ(θ) = (μ₀/2)|H|² χ'(θ) ∇θ
-            const double chi_prime = chi_0 * heaviside_derivative(theta_q / epsilon) / epsilon;
-            const dealii::Tensor<1, dim>& grad_theta = theta_gradients[q];
-            const double interface_coeff = 0.5 * mu_0 * H_sq * chi_prime;
-
-            // Term 2 (bulk): μ₀ χ(θ) ∇(|H|²/2) = μ₀ χ(θ) Hess(φ)·H
-            const double chi_val = susceptibility(theta_q, epsilon, chi_0);
-            const dealii::Tensor<2, dim>& Hess_phi = phi_hessians[q];
-            dealii::Tensor<1, dim> Hess_phi_dot_H;
-            for (unsigned int d1 = 0; d1 < dim; ++d1)
-                for (unsigned int d2 = 0; d2 < dim; ++d2)
-                    Hess_phi_dot_H[d1] += Hess_phi[d1][d2] * H[d2];
-            const double bulk_coeff = mu_0 * chi_val;
-
-            for (unsigned int i = 0; i < dofs_per_cell_vel; ++i)
-            {
-                const double phi_ux_i = ux_fe_values.shape_value(i, q);
-                const double phi_uy_i = uy_fe_values.shape_value(i, q);
-
-                // f_x = interface + bulk
-                local_rhs_ux(i) += (interface_coeff * grad_theta[0]
-                                    + bulk_coeff * Hess_phi_dot_H[0])
-                                   * phi_ux_i * JxW;
-                // f_y = interface + bulk
-                local_rhs_uy(i) += (interface_coeff * grad_theta[1]
-                                    + bulk_coeff * Hess_phi_dot_H[1])
-                                   * phi_uy_i * JxW;
-            }
-        }
-
-        // Distribute to global RHS
-        std::vector<dealii::types::global_dof_index> coupled_ux_dofs(dofs_per_cell_vel);
-        std::vector<dealii::types::global_dof_index> coupled_uy_dofs(dofs_per_cell_vel);
-        for (unsigned int i = 0; i < dofs_per_cell_vel; ++i)
-        {
-            coupled_ux_dofs[i] = ux_to_ns_map[ux_local_dofs[i]];
-            coupled_uy_dofs[i] = uy_to_ns_map[uy_local_dofs[i]];
-        }
-
-        ns_constraints.distribute_local_to_global(local_rhs_ux, coupled_ux_dofs, ns_rhs);
-        ns_constraints.distribute_local_to_global(local_rhs_uy, coupled_uy_dofs, ns_rhs);
-    }
-
-    ns_rhs.compress(dealii::VectorOperation::add);
-}
-
-// ============================================================================
-// Kelvin force assembly — DG SKEW FORM (used by MMS tests)
-//
-// DG skew form: μ₀ B_h^m(V, H, M) = (M·∇)H·V + ½ div(V)(H·M)
-// Kept for MMS tests where theta is uniform (gradient form interface term = 0).
+// μ₀(M·∇)H in skew-symmetric form: μ₀[(M·∇)H·V + ½ div(V)(H·M)]
 //
 // H = ∇φ (total magnetic field from Poisson solve)
 // The Poisson equation encodes h_a via the RHS, so ∇φ IS the total field.
@@ -1119,36 +963,19 @@ void assemble_ns_system_unified(
     }
 
     // Step 2: Add Kelvin force to RHS (if enabled)
+    // Paper Eq. 42e: μ₀(M·∇)H — DG skew form (Eq. 38)
     if (forces.has_kelvin)
     {
         const Parameters& kp = *forces.kelvin_params;
 
-        // Use gradient form when theta is available (production runs).
-        // Falls back to DG skew form for MMS-only tests (no theta).
-        if (forces.theta_cap_dof_handler != nullptr)
-        {
-            // Gradient form: (μ₀/2)|H|²∇χ(θ) + μ₀χ(θ)Hess(φ)·H
-            // Uses ∇θ (well-resolved) → drives Rosensweig spikes
-            assemble_kelvin_force_gradient<dim>(
-                ux_dof_handler, uy_dof_handler,
-                *forces.phi_dof_handler, *forces.theta_cap_dof_handler,
-                *forces.phi_solution, *forces.theta_cap_solution,
-                forces.mu_0, kp.physics.chi_0, kp.physics.epsilon,
-                ux_to_ns_map, uy_to_ns_map,
-                ns_constraints, ns_rhs);
-        }
-        else
-        {
-            // DG skew form: μ₀[(M·∇)H·V + ½div(V)(H·M)] (MMS tests)
-            assemble_kelvin_force<dim>(
-                ux_dof_handler, uy_dof_handler,
-                *forces.phi_dof_handler, *forces.M_dof_handler,
-                *forces.phi_solution, *forces.Mx_solution, *forces.My_solution,
-                forces.mu_0,
-                ux_to_ns_map, uy_to_ns_map,
-                ns_constraints, ns_rhs,
-                kp, forces.kelvin_time);
-        }
+        assemble_kelvin_force<dim>(
+            ux_dof_handler, uy_dof_handler,
+            *forces.phi_dof_handler, *forces.M_dof_handler,
+            *forces.phi_solution, *forces.Mx_solution, *forces.My_solution,
+            forces.mu_0,
+            ux_to_ns_map, uy_to_ns_map,
+            ns_constraints, ns_rhs,
+            kp, forces.kelvin_time);
 
         // MMS correction: subtract exact Kelvin force F_K(M*, H*)
         // Only applies to DG skew form (MMS tests use uniform theta)
