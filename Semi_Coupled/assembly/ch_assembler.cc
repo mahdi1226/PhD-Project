@@ -92,9 +92,10 @@ void assemble_ch_system(
     const double eta = params.physics.epsilon;
     const bool have_velocity = (ux_solution.size() > 0) && (uy_solution.size() > 0);
 
-    // Check if velocity has actual content (linfty_norm is an MPI collective — called once)
+    // Check if velocity has actual content
+    // NOTE: linfty_norm() works on ghosted Trilinos vectors; l2_norm() does NOT
     const bool use_velocity_convection = have_velocity &&
-        (ux_solution.l2_norm() > 1e-14 || uy_solution.l2_norm() > 1e-14);
+        (ux_solution.linfty_norm() > 1e-14 || uy_solution.linfty_norm() > 1e-14);
 
 
     // ========================================================================
