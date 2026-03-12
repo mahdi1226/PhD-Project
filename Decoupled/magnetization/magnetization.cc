@@ -427,8 +427,7 @@ void MagnetizationSubsystem<dim>::initialize_equilibrium(
                     H[d] = grad_phi_values[q][d];
             }
 
-            const double chi = susceptibility(
-                theta_q, params_.physics.epsilon, params_.physics.chi_0);
+            const double chi = susceptibility(theta_q, params_.physics.chi_0);
             const double target_Mx = chi * H[0];
             const double target_My = (dim > 1) ? chi * H[1] : 0.0;
 
@@ -461,39 +460,10 @@ void MagnetizationSubsystem<dim>::initialize_equilibrium(
     Mx_rhs_.compress(VectorOperation::add);
     My_rhs_.compress(VectorOperation::add);
 
-    // Solve mass system for Mx and My (skip solver if RHS is zero)
-    const double rhs_x_norm = Mx_rhs_.l2_norm();
-    const double rhs_y_norm = My_rhs_.l2_norm();
-
-    if (rhs_x_norm < 1e-14)
-    {
-        Mx_solution_ = 0;
-    }
-    else
-    {
-        SolverControl control(1000, 1e-12 * rhs_x_norm);
-        TrilinosWrappers::SolverCG cg(control);
-        TrilinosWrappers::PreconditionJacobi preconditioner;
-        preconditioner.initialize(system_matrix_);
-
-        cg.solve(system_matrix_, Mx_solution_, Mx_rhs_, preconditioner);
-        constraints_.distribute(Mx_solution_);
-    }
-
-    if (rhs_y_norm < 1e-14)
-    {
-        My_solution_ = 0;
-    }
-    else
-    {
-        SolverControl control(1000, 1e-12 * rhs_y_norm);
-        TrilinosWrappers::SolverCG cg(control);
-        TrilinosWrappers::PreconditionJacobi preconditioner;
-        preconditioner.initialize(system_matrix_);
-
-        cg.solve(system_matrix_, My_solution_, My_rhs_, preconditioner);
-        constraints_.distribute(My_solution_);
-    }
+    // Solve mass system for Mx and My (reuse solve_component —
+    // handles zero-RHS guard and constraint distribution)
+    solve_component(Mx_solution_, Mx_rhs_, "Mx_init");
+    solve_component(My_solution_, My_rhs_, "My_init");
 
     invalidate_ghosts();
 
@@ -613,8 +583,7 @@ MagnetizationSubsystem<dim>::compute_diagnostics(
             const double H_mag = H.norm();
 
             // χ(θ)
-            const double chi = susceptibility(
-                theta_q, params_.physics.epsilon, params_.physics.chi_0);
+            const double chi = susceptibility(theta_q, params_.physics.chi_0);
 
             // -- Field statistics --
             local_M_mag_sum += M_mag * JxW;
@@ -649,24 +618,35 @@ MagnetizationSubsystem<dim>::compute_diagnostics(
         }
     }
 
-    // MPI reductions
-    double global_M_mag_sum, global_Mx_sum, global_My_sum, global_equil_sq;
-    double global_McrossH_sq, global_volume;
-    double global_Mx_integral, global_My_integral, global_MH_align_sum;
-    double global_M_mag_min, global_M_mag_max, global_air_max;
+    // MPI reductions — batched to reduce latency
+    // SUM reductions (9 values)
+    double local_sums[9] = {local_M_mag_sum, local_Mx_sum, local_My_sum,
+                            local_equil_sq, local_McrossH_sq, local_volume,
+                            local_Mx_integral, local_My_integral, local_MH_align_sum};
+    double global_sums[9];
+    MPI_Allreduce(local_sums, global_sums, 9, MPI_DOUBLE, MPI_SUM, mpi_comm_);
 
-    MPI_Allreduce(&local_M_mag_sum,    &global_M_mag_sum,    1, MPI_DOUBLE, MPI_SUM, mpi_comm_);
-    MPI_Allreduce(&local_Mx_sum,       &global_Mx_sum,       1, MPI_DOUBLE, MPI_SUM, mpi_comm_);
-    MPI_Allreduce(&local_My_sum,       &global_My_sum,       1, MPI_DOUBLE, MPI_SUM, mpi_comm_);
-    MPI_Allreduce(&local_equil_sq,     &global_equil_sq,     1, MPI_DOUBLE, MPI_SUM, mpi_comm_);
-    MPI_Allreduce(&local_McrossH_sq,   &global_McrossH_sq,   1, MPI_DOUBLE, MPI_SUM, mpi_comm_);
-    MPI_Allreduce(&local_volume,       &global_volume,       1, MPI_DOUBLE, MPI_SUM, mpi_comm_);
-    MPI_Allreduce(&local_Mx_integral,  &global_Mx_integral,  1, MPI_DOUBLE, MPI_SUM, mpi_comm_);
-    MPI_Allreduce(&local_My_integral,  &global_My_integral,  1, MPI_DOUBLE, MPI_SUM, mpi_comm_);
-    MPI_Allreduce(&local_MH_align_sum, &global_MH_align_sum, 1, MPI_DOUBLE, MPI_SUM, mpi_comm_);
-    MPI_Allreduce(&local_M_mag_min,    &global_M_mag_min,    1, MPI_DOUBLE, MPI_MIN, mpi_comm_);
-    MPI_Allreduce(&local_M_mag_max,    &global_M_mag_max,    1, MPI_DOUBLE, MPI_MAX, mpi_comm_);
-    MPI_Allreduce(&local_air_max,      &global_air_max,      1, MPI_DOUBLE, MPI_MAX, mpi_comm_);
+    // MIN reduction (1 value)
+    double global_M_mag_min;
+    MPI_Allreduce(&local_M_mag_min, &global_M_mag_min, 1, MPI_DOUBLE, MPI_MIN, mpi_comm_);
+
+    // MAX reductions (2 values)
+    double local_maxes[2] = {local_M_mag_max, local_air_max};
+    double global_maxes[2];
+    MPI_Allreduce(local_maxes, global_maxes, 2, MPI_DOUBLE, MPI_MAX, mpi_comm_);
+
+    // Unpack SUM results
+    const double global_M_mag_sum    = global_sums[0];
+    const double global_Mx_sum       = global_sums[1];
+    const double global_My_sum       = global_sums[2];
+    const double global_equil_sq     = global_sums[3];
+    const double global_McrossH_sq   = global_sums[4];
+    const double global_volume       = global_sums[5];
+    const double global_Mx_integral  = global_sums[6];
+    const double global_My_integral  = global_sums[7];
+    const double global_MH_align_sum = global_sums[8];
+    const double global_M_mag_max    = global_maxes[0];
+    const double global_air_max      = global_maxes[1];
 
     // Pack results
     const double inv_vol = (global_volume > 0) ? 1.0 / global_volume : 0.0;
@@ -691,6 +671,7 @@ MagnetizationSubsystem<dim>::compute_diagnostics(
     diag.Mx_residual   = last_Mx_info_.residual;
     diag.My_residual   = last_My_info_.residual;
     diag.solve_time    = last_Mx_info_.solve_time + last_My_info_.solve_time;
+    diag.assemble_time = last_assemble_time_;
 
     return diag;
 }
@@ -788,26 +769,28 @@ MagnetizationSubsystem<dim>::compute_diagnostics_standalone(
         }
     }
 
-    // MPI reductions
-    double global_val;
+    // MPI reductions — batched by operation type
+    // SUM: M_mag_sum, volume, Mx_integral, My_integral, equil_sq, McrossH_sq
+    double local_sums[6] = {local_M_mag_sum, local_volume,
+                            local_Mx_integral, local_My_integral,
+                            local_equil_sq, local_McrossH_sq};
+    double global_sums[6];
+    MPI_Allreduce(local_sums, global_sums, 6, MPI_DOUBLE, MPI_SUM, mpi_comm_);
 
-    MPI_Allreduce(&local_M_mag_sum,   &global_val, 1, MPI_DOUBLE, MPI_SUM, mpi_comm_);
-    double global_volume_sum;
-    MPI_Allreduce(&local_volume, &global_volume_sum, 1, MPI_DOUBLE, MPI_SUM, mpi_comm_);
-    const double inv_vol = (global_volume_sum > 0) ? 1.0 / global_volume_sum : 0.0;
+    const double inv_vol = (global_sums[1] > 0) ? 1.0 / global_sums[1] : 0.0;
+    diag.M_magnitude_mean = global_sums[0] * inv_vol;
+    diag.Mx_integral      = global_sums[2];
+    diag.My_integral      = global_sums[3];
+    diag.M_equilibrium_departure_L2 = std::sqrt(global_sums[4]);
+    diag.M_cross_H_L2              = std::sqrt(global_sums[5]);
 
-    diag.M_magnitude_mean = global_val * inv_vol;
+    // MIN
+    MPI_Allreduce(&local_M_mag_min, &diag.M_magnitude_min, 1,
+                  MPI_DOUBLE, MPI_MIN, mpi_comm_);
 
-    MPI_Allreduce(&local_M_mag_min, &diag.M_magnitude_min, 1, MPI_DOUBLE, MPI_MIN, mpi_comm_);
-    MPI_Allreduce(&local_M_mag_max, &diag.M_magnitude_max, 1, MPI_DOUBLE, MPI_MAX, mpi_comm_);
-    MPI_Allreduce(&local_Mx_integral, &diag.Mx_integral,   1, MPI_DOUBLE, MPI_SUM, mpi_comm_);
-    MPI_Allreduce(&local_My_integral, &diag.My_integral,   1, MPI_DOUBLE, MPI_SUM, mpi_comm_);
-
-    MPI_Allreduce(&local_equil_sq, &global_val, 1, MPI_DOUBLE, MPI_SUM, mpi_comm_);
-    diag.M_equilibrium_departure_L2 = std::sqrt(global_val);
-
-    MPI_Allreduce(&local_McrossH_sq, &global_val, 1, MPI_DOUBLE, MPI_SUM, mpi_comm_);
-    diag.M_cross_H_L2 = std::sqrt(global_val);
+    // MAX
+    MPI_Allreduce(&local_M_mag_max, &diag.M_magnitude_max, 1,
+                  MPI_DOUBLE, MPI_MAX, mpi_comm_);
 
     // No air-phase check in standalone mode
     diag.M_air_phase_max = 0.0;
@@ -818,6 +801,7 @@ MagnetizationSubsystem<dim>::compute_diagnostics_standalone(
     diag.Mx_residual   = last_Mx_info_.residual;
     diag.My_residual   = last_My_info_.residual;
     diag.solve_time    = last_Mx_info_.solve_time + last_My_info_.solve_time;
+    diag.assemble_time = last_assemble_time_;
 
     return diag;
 }

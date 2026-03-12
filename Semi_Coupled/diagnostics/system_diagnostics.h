@@ -300,10 +300,16 @@ inline void update_timing_info(StepData& data,
 
 inline void update_mesh_info(StepData& data,
                              unsigned int n_active_cells,
-                             unsigned int n_dofs_total)
+                             unsigned int n_dofs_total,
+                             unsigned int n_dofs_ch = 0,
+                             unsigned int n_dofs_mag = 0,
+                             unsigned int n_dofs_ns = 0)
 {
     data.n_active_cells = n_active_cells;
     data.n_dofs_total = n_dofs_total;
+    data.n_dofs_ch = n_dofs_ch;
+    data.n_dofs_mag = n_dofs_mag;
+    data.n_dofs_ns = n_dofs_ns;
 }
 
 // ============================================================================

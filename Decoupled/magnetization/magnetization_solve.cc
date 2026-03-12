@@ -17,6 +17,7 @@
 // ============================================================================
 
 #include "magnetization/magnetization.h"
+#include "physics/solver_utils.h"
 
 #include <deal.II/base/utilities.h>
 #include <deal.II/lac/solver_control.h>
@@ -27,7 +28,7 @@
 using namespace dealii;
 
 // ============================================================================
-// solve_component() — solve one scalar DG system
+// solve_component() — solve one scalar CG system
 //
 // Returns SolverInfo with iteration count, residual, convergence flag.
 // ============================================================================
@@ -67,55 +68,19 @@ SolverInfo MagnetizationSubsystem<dim>::solve_component(
         const double tol = std::max(
             params_.solvers.magnetization.abs_tolerance,
             params_.solvers.magnetization.rel_tolerance * rhs_norm);
-        SolverControl solver_control(1, tol);
 
-        // Try MUMPS (parallel direct)
-        try
+        converged = SolverUtils::try_direct_solvers(
+            system_matrix_, solution, rhs, tol,
+            "Magnetization " + component_name, pcout_);
+
+        if (converged)
         {
-            TrilinosWrappers::SolverDirect::AdditionalData data;
-            data.solver_type = "Amesos_Mumps";
-
-            TrilinosWrappers::SolverDirect direct_solver(solver_control, data);
-            direct_solver.solve(system_matrix_, solution, rhs);
-
             info.iterations = 1;
-            converged = true;
-        }
-        catch (std::exception&)
-        {
-            // Try SuperLU_DIST
-            try
-            {
-                TrilinosWrappers::SolverDirect::AdditionalData data;
-                data.solver_type = "Amesos_Superludist";
-
-                TrilinosWrappers::SolverDirect direct_solver(
-                    solver_control, data);
-                direct_solver.solve(system_matrix_, solution, rhs);
-
-                info.iterations = 1;
-                converged = true;
-            }
-            catch (std::exception&)
-            {
-                // Fall back to KLU (default)
-                try
-                {
-                    TrilinosWrappers::SolverDirect direct_solver(
-                        solver_control);
-                    direct_solver.solve(system_matrix_, solution, rhs);
-
-                    info.iterations = 1;
-                    converged = true;
-                }
-                catch (std::exception&)
-                {
-                    pcout_ << "[Magnetization] " << component_name
-                           << ": all direct solvers failed, "
-                           << "falling back to iterative" << std::endl;
-                    converged = false;
-                }
-            }
+            // Compute post-solve residual ‖Ax − b‖
+            TrilinosWrappers::MPI::Vector residual_vec(rhs);
+            system_matrix_.vmult(residual_vec, solution);
+            residual_vec -= rhs;
+            info.residual = residual_vec.l2_norm();
         }
     }
 

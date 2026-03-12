@@ -9,6 +9,7 @@
 
 #include "solvers/ns_solver.h"
 #include "solvers/ns_block_preconditioner.h"
+#include "solvers/direct_solver_utils.h"
 
 #include <deal.II/lac/solver_gmres.h>
 #include <deal.II/lac/trilinos_precondition.h>
@@ -24,6 +25,9 @@
 #include <chrono>
 #include <iostream>
 #include <iomanip>
+
+// Maximum system size for LAPACK direct solver (serial, dense factorization)
+static constexpr unsigned int LAPACK_SIZE_LIMIT = 50000;
 
 // ============================================================================
 // Block Schur solver (recommended for saddle-point)
@@ -125,75 +129,7 @@ SolverInfo solve_ns_system_schur_parallel(
     residual -= rhs;
     info.residual = residual.l2_norm() / rhs_norm;
 
-    /*if (verbose && rank == 0)
-    {
-        std::cout << "[NS Schur] FGMRES: " << info.iterations << " iters"
-                  << ", inner A: " << preconditioner.n_iterations_A
-                  << ", inner S: " << preconditioner.n_iterations_S
-                  << ", rel_res: " << std::scientific << std::setprecision(2) << info.residual
-                  << ", time: " << std::fixed << std::setprecision(2) << info.solve_time << "s"
-                  << ", alpha: " << std::scientific << std::setprecision(2) << preconditioner.get_schur_alpha()
-                  << "\n";
-    } */
-
     return info;
-}
-
-// ============================================================================
-// Helper: Try a specific direct solver with verbose error reporting
-// ============================================================================
-static bool try_direct_solver(
-    const std::string& solver_type,
-    const dealii::TrilinosWrappers::SparseMatrix& matrix,
-    const dealii::TrilinosWrappers::MPI::Vector& rhs,
-    dealii::TrilinosWrappers::MPI::Vector& solution,
-    int rank,
-    bool verbose)
-{
-    if (verbose && rank == 0)
-        std::cout << "[NS Direct] Trying " << solver_type << "...\n";
-
-    try
-    {
-        dealii::SolverControl solver_control(1, 0);
-        dealii::TrilinosWrappers::SolverDirect::AdditionalData data;
-        data.solver_type = solver_type;
-
-        dealii::TrilinosWrappers::SolverDirect direct_solver(solver_control, data);
-
-        if (verbose && rank == 0)
-            std::cout << "[NS Direct]   Initializing (symbolic + numeric factorization)...\n";
-
-        direct_solver.initialize(matrix);
-
-        if (verbose && rank == 0)
-            std::cout << "[NS Direct]   Solving...\n";
-
-        direct_solver.solve(solution, rhs);
-
-        if (verbose && rank == 0)
-            std::cout << "[NS Direct] SUCCESS with " << solver_type << "\n";
-
-        return true;
-    }
-    catch (const dealii::ExceptionBase& e)
-    {
-        if (verbose && rank == 0)
-            std::cout << "[NS Direct]   " << solver_type << " failed: " << e.what() << "\n";
-        return false;
-    }
-    catch (const std::exception& e)
-    {
-        if (verbose && rank == 0)
-            std::cout << "[NS Direct]   " << solver_type << " failed: " << e.what() << "\n";
-        return false;
-    }
-    catch (...)
-    {
-        if (verbose && rank == 0)
-            std::cout << "[NS Direct]   " << solver_type << " failed: unknown exception\n";
-        return false;
-    }
 }
 
 // ============================================================================
@@ -269,8 +205,6 @@ SolverInfo solve_ns_system_direct_parallel(
     MPI_Comm mpi_comm,
     bool verbose)
 {
-    constexpr unsigned int LAPACK_SIZE_LIMIT = 50000;
-
     SolverInfo info;
     info.solver_name = "NS-Direct";
     info.matrix_size = matrix.m();
@@ -325,20 +259,10 @@ SolverInfo solve_ns_system_direct_parallel(
     if (verbose && rank == 0)
         std::cout << "[NS Direct] Trying solvers in order of preference...\n";
 
-    bool solved = false;
-
-    if (!solved)
-        solved = try_direct_solver("Amesos_Mumps", mutable_matrix, mutable_rhs, solution, rank, verbose);
-    if (!solved)
-        solved = try_direct_solver("Amesos_Umfpack", mutable_matrix, mutable_rhs, solution, rank, verbose);
-    if (!solved)
-        solved = try_direct_solver("Amesos_Superludist", mutable_matrix, mutable_rhs, solution, rank, verbose);
-    if (!solved)
-        solved = try_direct_solver("Amesos_Superlu", mutable_matrix, mutable_rhs, solution, rank, verbose);
-    if (!solved)
-        solved = try_direct_solver("Amesos_Klu", mutable_matrix, mutable_rhs, solution, rank, verbose);
+    bool solved = DirectSolverUtils::try_direct_solver_chain(
+        mutable_matrix, mutable_rhs, solution, "NS", rank, verbose);
     if (!solved && info.matrix_size <= LAPACK_SIZE_LIMIT)
-        solved = try_direct_solver("Amesos_Lapack", mutable_matrix, mutable_rhs, solution, rank, verbose);
+        solved = DirectSolverUtils::try_direct_solver("Amesos_Lapack", mutable_matrix, mutable_rhs, solution, "NS", rank, verbose);
 
     if (solved)
     {
@@ -384,8 +308,6 @@ SolverInfo solve_ns_system_direct_parallel(
     MPI_Comm mpi_comm,
     bool verbose)
 {
-    constexpr unsigned int LAPACK_SIZE_LIMIT = 50000;
-
     SolverInfo info;
     info.solver_name = "NS-Direct";
     info.matrix_size = matrix.m();
@@ -413,20 +335,10 @@ SolverInfo solve_ns_system_direct_parallel(
 
     auto start = std::chrono::high_resolution_clock::now();
 
-    bool solved = false;
-
-    if (!solved)
-        solved = try_direct_solver("Amesos_Umfpack", matrix, rhs, solution, rank, verbose);
-    if (!solved)
-        solved = try_direct_solver("Amesos_Mumps", matrix, rhs, solution, rank, verbose);
-    if (!solved)
-        solved = try_direct_solver("Amesos_Superludist", matrix, rhs, solution, rank, verbose);
-    if (!solved)
-        solved = try_direct_solver("Amesos_Superlu", matrix, rhs, solution, rank, verbose);
-    if (!solved)
-        solved = try_direct_solver("Amesos_Klu", matrix, rhs, solution, rank, verbose);
+    bool solved = DirectSolverUtils::try_direct_solver_chain(
+        matrix, rhs, solution, "NS", rank, verbose);
     if (!solved && info.matrix_size <= LAPACK_SIZE_LIMIT)
-        solved = try_direct_solver("Amesos_Lapack", matrix, rhs, solution, rank, verbose);
+        solved = DirectSolverUtils::try_direct_solver("Amesos_Lapack", matrix, rhs, solution, "NS", rank, verbose);
 
     if (solved)
     {

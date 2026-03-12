@@ -192,7 +192,7 @@ public:
         //   for divergence-free U]
         const double L[dim] = {1.0, L_y_};
         const double theta_val = CHMMS::theta_exact_value<dim>(pt, t_new, L);
-        const double nu_val = viscosity(theta_val, params_.physics.epsilon,
+        const double nu_val = viscosity(theta_val,
                                         params_.physics.nu_water,
                                         params_.physics.nu_ferro);
         const auto lap_U = NSMMS::laplacian_U<dim>(pt, t_new, L_y_);

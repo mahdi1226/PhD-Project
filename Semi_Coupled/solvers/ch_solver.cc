@@ -11,6 +11,7 @@
 
 #include "solvers/ch_solver.h"
 #include "solvers/solver_info.h"
+#include "solvers/direct_solver_utils.h"
 
 #include <deal.II/lac/trilinos_precondition.h>
 #include <deal.II/lac/trilinos_solver.h>
@@ -21,64 +22,6 @@
 #include <chrono>
 #include <iostream>
 #include <iomanip>
-
-// ============================================================================
-// Helper: Try a specific direct solver type
-// Returns true if successful, false otherwise
-// ============================================================================
-static bool try_direct_solver(
-    const std::string& solver_type,
-    const dealii::TrilinosWrappers::SparseMatrix& matrix,
-    const dealii::TrilinosWrappers::MPI::Vector& rhs,
-    dealii::TrilinosWrappers::MPI::Vector& solution,
-    int rank,
-    bool verbose)
-{
-    if (verbose && rank == 0)
-        std::cout << "[CH Direct] Trying " << solver_type << "...\n";
-
-    try
-    {
-        dealii::SolverControl solver_control(1, 0);  // Direct = 1 iteration
-        dealii::TrilinosWrappers::SolverDirect::AdditionalData data;
-        data.solver_type = solver_type;
-
-        dealii::TrilinosWrappers::SolverDirect solver(solver_control, data);
-
-        if (verbose && rank == 0)
-            std::cout << "[CH Direct]   Initializing (symbolic + numeric factorization)...\n";
-
-        solver.initialize(matrix);
-
-        if (verbose && rank == 0)
-            std::cout << "[CH Direct]   Solving...\n";
-
-        solver.solve(solution, rhs);
-
-        if (verbose && rank == 0)
-            std::cout << "[CH Direct] SUCCESS with " << solver_type << "\n";
-
-        return true;
-    }
-    catch (dealii::ExceptionBase& e)
-    {
-        if (verbose && rank == 0)
-            std::cout << "[CH Direct]   " << solver_type << " failed: " << e.what() << "\n";
-        return false;
-    }
-    catch (std::exception& e)
-    {
-        if (verbose && rank == 0)
-            std::cout << "[CH Direct]   " << solver_type << " failed: " << e.what() << "\n";
-        return false;
-    }
-    catch (...)
-    {
-        if (verbose && rank == 0)
-            std::cout << "[CH Direct]   " << solver_type << " failed: unknown exception\n";
-        return false;
-    }
-}
 
 // ============================================================================
 // solve_ch_system - Solve and extract in one call
@@ -135,16 +78,8 @@ SolverInfo solve_ch_system(
                       << ", nnz: " << info.nnz << "\n";
         }
 
-        if (!converged)
-            converged = try_direct_solver("Amesos_Mumps", matrix, rhs, coupled_solution, rank, verbose);
-        if (!converged)
-            converged = try_direct_solver("Amesos_Umfpack", matrix, rhs, coupled_solution, rank, verbose);
-        if (!converged)
-            converged = try_direct_solver("Amesos_Superludist", matrix, rhs, coupled_solution, rank, verbose);
-        if (!converged)
-            converged = try_direct_solver("Amesos_Superlu", matrix, rhs, coupled_solution, rank, verbose);
-        if (!converged)
-            converged = try_direct_solver("Amesos_Klu", matrix, rhs, coupled_solution, rank, verbose);
+        converged = DirectSolverUtils::try_direct_solver_chain(
+            matrix, rhs, coupled_solution, "CH", rank, verbose);
 
         if (converged)
         {
@@ -215,12 +150,8 @@ SolverInfo solve_ch_system(
         if (verbose && rank == 0)
             std::cerr << "[CH] Falling back to direct solver\n";
 
-        if (!converged)
-            converged = try_direct_solver("Amesos_Mumps", matrix, rhs, coupled_solution, rank, verbose);
-        if (!converged)
-            converged = try_direct_solver("Amesos_Umfpack", matrix, rhs, coupled_solution, rank, verbose);
-        if (!converged)
-            converged = try_direct_solver("Amesos_Klu", matrix, rhs, coupled_solution, rank, verbose);
+        converged = DirectSolverUtils::try_direct_solver_chain(
+            matrix, rhs, coupled_solution, "CH", rank, verbose);
 
         if (converged)
         {

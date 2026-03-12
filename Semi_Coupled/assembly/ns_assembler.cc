@@ -467,6 +467,8 @@ static void assemble_kelvin_force(
 
     std::vector<dealii::types::global_dof_index> ux_local_dofs(dofs_per_cell_vel);
     std::vector<dealii::types::global_dof_index> uy_local_dofs(dofs_per_cell_vel);
+    std::vector<dealii::types::global_dof_index> coupled_ux_dofs(dofs_per_cell_vel);
+    std::vector<dealii::types::global_dof_index> coupled_uy_dofs(dofs_per_cell_vel);
 
     // Quadrature point storage
     std::vector<dealii::Tensor<1, dim>> phi_gradients(n_q_points);
@@ -540,8 +542,6 @@ static void assemble_kelvin_force(
         }
 
         // Distribute to global RHS
-        std::vector<dealii::types::global_dof_index> coupled_ux_dofs(dofs_per_cell_vel);
-        std::vector<dealii::types::global_dof_index> coupled_uy_dofs(dofs_per_cell_vel);
         for (unsigned int i = 0; i < dofs_per_cell_vel; ++i)
         {
             coupled_ux_dofs[i] = ux_to_ns_map[ux_local_dofs[i]];
@@ -607,6 +607,8 @@ static void assemble_capillary_force(
 
     std::vector<dealii::types::global_dof_index> ux_local_dofs(dofs_per_cell_vel);
     std::vector<dealii::types::global_dof_index> uy_local_dofs(dofs_per_cell_vel);
+    std::vector<dealii::types::global_dof_index> coupled_ux_dofs(dofs_per_cell_vel);
+    std::vector<dealii::types::global_dof_index> coupled_uy_dofs(dofs_per_cell_vel);
 
     // Quadrature point storage
     std::vector<double> theta_values(n_q_points);
@@ -668,9 +670,7 @@ static void assemble_capillary_force(
             }
         }
 
-        // Distribute to global RHS (use vector form for correct constraint handling)
-        std::vector<dealii::types::global_dof_index> coupled_ux_dofs(dofs_per_cell_vel);
-        std::vector<dealii::types::global_dof_index> coupled_uy_dofs(dofs_per_cell_vel);
+        // Distribute to global RHS
         for (unsigned int i = 0; i < dofs_per_cell_vel; ++i)
         {
             coupled_ux_dofs[i] = ux_to_ns_map[ux_local_dofs[i]];
@@ -731,6 +731,8 @@ static void assemble_gravity_force(
 
     std::vector<dealii::types::global_dof_index> ux_local_dofs(dofs_per_cell_vel);
     std::vector<dealii::types::global_dof_index> uy_local_dofs(dofs_per_cell_vel);
+    std::vector<dealii::types::global_dof_index> coupled_ux_dofs(dofs_per_cell_vel);
+    std::vector<dealii::types::global_dof_index> coupled_uy_dofs(dofs_per_cell_vel);
 
     // Quadrature point storage
     std::vector<double> theta_values(n_q_points);
@@ -787,9 +789,7 @@ static void assemble_gravity_force(
             }
         }
 
-        // Distribute to global RHS (use vector form for correct constraint handling)
-        std::vector<dealii::types::global_dof_index> coupled_ux_dofs(dofs_per_cell_vel);
-        std::vector<dealii::types::global_dof_index> coupled_uy_dofs(dofs_per_cell_vel);
+        // Distribute to global RHS
         for (unsigned int i = 0; i < dofs_per_cell_vel; ++i)
         {
             coupled_ux_dofs[i] = ux_to_ns_map[ux_local_dofs[i]];
@@ -844,6 +844,8 @@ static void assemble_kelvin_mms_correction(
 
     std::vector<dealii::types::global_dof_index> ux_local_dofs(dofs_per_cell_vel);
     std::vector<dealii::types::global_dof_index> uy_local_dofs(dofs_per_cell_vel);
+    std::vector<dealii::types::global_dof_index> coupled_ux_dofs(dofs_per_cell_vel);
+    std::vector<dealii::types::global_dof_index> coupled_uy_dofs(dofs_per_cell_vel);
 
     auto ux_cell = ux_dof_handler.begin_active();
     auto uy_cell = uy_dof_handler.begin_active();
@@ -883,8 +885,6 @@ static void assemble_kelvin_mms_correction(
         }
 
         // Map to coupled system and distribute
-        std::vector<dealii::types::global_dof_index> coupled_ux_dofs(dofs_per_cell_vel);
-        std::vector<dealii::types::global_dof_index> coupled_uy_dofs(dofs_per_cell_vel);
         for (unsigned int i = 0; i < dofs_per_cell_vel; ++i)
         {
             coupled_ux_dofs[i] = ux_to_ns_map[ux_local_dofs[i]];

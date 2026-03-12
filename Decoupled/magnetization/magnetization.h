@@ -449,6 +449,7 @@ private:
     // State tracking
     // ========================================================================
     bool         ghosts_valid_;
+    double       last_assemble_time_ = 0.0;
     SolverInfo   last_Mx_info_;
     SolverInfo   last_My_info_;
 

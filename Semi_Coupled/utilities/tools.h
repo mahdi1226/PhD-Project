@@ -11,6 +11,7 @@
 
 #include "utilities/parameters.h"
 #include "utilities/mpi_tools.h"
+#include "physics/material_properties.h"  // compute_gravity()
 
 #include <cmath>
 
@@ -261,7 +262,6 @@ inline std::string get_run_name(const Parameters& params)
  */
 inline void write_run_info(const std::string& output_dir,
                            const Parameters& params,
-                           int argc, char* argv[],
                            int np = 1)
 {
     std::ofstream file(output_dir + "/run_info.txt");
@@ -276,10 +276,12 @@ inline void write_run_info(const std::string& output_dir,
     file << "  Generated: " << get_timestamp_local() << "\n";
     file << "============================================================\n\n";
 
-    // Command line (for exact reproduction)
+    // Command line (captured during parse_command_line for exact reproduction)
     file << "COMMAND LINE:\n  ";
-    for (int i = 0; i < argc; ++i)
-        file << argv[i] << " ";
+    if (!params.command_line.empty())
+        file << params.command_line;
+    else
+        file << "(not captured)";
     file << "\n\n";
 
     // MPI configuration
@@ -331,7 +333,19 @@ inline void write_run_info(const std::string& output_dir,
     file << "  nu_ferro = " << params.physics.nu_ferro << "\n";
     file << "  rho      = " << params.physics.rho << "\n";
     file << "  r        = " << params.physics.r << "\n";
-    file << "  gravity  = " << std::scientific << params.physics.gravity << "\n";
+    file << "  gravity  = " << std::scientific << params.physics.gravity;
+    if (params.gravity_overridden)
+        file << "  (MANUAL OVERRIDE via --gravity)";
+    file << "\n";
+    // Show Eq. 103 formula value for reference (only if gravity is enabled)
+    if (params.enable_gravity)
+    {
+        const double domain_w = params.domain.x_max - params.domain.x_min;
+        const double g_formula = compute_gravity(params.physics.lambda, params.physics.epsilon,
+                                                  params.physics.r, domain_w, 4);
+        file << "  g(Eq.103)= " << std::scientific << g_formula
+             << "  [4π²λ/(ℓ_c²·r·ε), ℓ_c=L/4=" << std::fixed << std::setprecision(4) << (domain_w / 4.0) << "]\n";
+    }
     file << "\n";
 
     // Physics - Magnetic
@@ -390,14 +404,44 @@ inline void write_run_info(const std::string& output_dir,
 }
 
 /**
- * @brief Overload for when argc/argv not available
+ * @brief Append initial setup summary (DoFs, sparsity, cells) to run_info.txt
+ *
+ * Called after all DoF handlers and systems are initialized.
+ * Captures the initial mesh/DoF state before time stepping begins.
  */
-inline void write_run_info(const std::string& output_dir,
-                           const Parameters& params,
-                           int np = 1)
+inline void append_setup_info(const std::string& output_dir,
+                               unsigned int n_cells,
+                               unsigned int n_dofs_ch,
+                               unsigned int n_dofs_mag,
+                               unsigned int n_dofs_ns,
+                               unsigned int n_dofs_mag_M,
+                               unsigned int n_dofs_mag_phi,
+                               unsigned int n_dofs_ns_ux,
+                               unsigned int n_dofs_ns_p,
+                               size_t nnz_ch,
+                               size_t nnz_mag,
+                               size_t nnz_ns)
 {
-    const char* dummy_argv[] = {"(command line not captured)"};
-    write_run_info(output_dir, params, 1, const_cast<char**>(dummy_argv), np);
+    std::ofstream file(output_dir + "/run_info.txt", std::ios::app);
+    if (!file.is_open()) return;
+
+    file << "\n============================================================\n";
+    file << "INITIAL SETUP (after mesh + DoF initialization)\n";
+    file << "============================================================\n";
+    file << "  Cells:           " << n_cells << "\n";
+    file << "  DoFs total:      " << (n_dofs_ch + n_dofs_mag + n_dofs_ns) << "\n";
+    file << "  CH  (θ,ψ):       " << n_dofs_ch << "\n";
+    file << "  Mag (M+φ):       " << n_dofs_mag
+         << "  (M=" << n_dofs_mag_M << ", φ=" << n_dofs_mag_phi << ")\n";
+    file << "  NS  (ux,uy,p):   " << n_dofs_ns
+         << "  (ux=" << n_dofs_ns_ux << ", p=" << n_dofs_ns_p << ")\n";
+    file << "\n";
+    file << "  Sparsity nnz:\n";
+    file << "    CH:  " << nnz_ch << "\n";
+    file << "    Mag: " << nnz_mag << "\n";
+    file << "    NS:  " << nnz_ns << "\n";
+    file << "============================================================\n";
+    file.close();
 }
 
 #endif // TOOLS_H

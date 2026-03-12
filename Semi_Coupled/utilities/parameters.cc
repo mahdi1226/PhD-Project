@@ -5,6 +5,7 @@
 // ============================================================================
 
 #include "utilities/parameters.h"
+#include "physics/material_properties.h"  // compute_gravity()
 #include <array>
 #include <cstring>
 #include <mpi.h>
@@ -30,7 +31,11 @@ void Parameters::setup_rosensweig()
     physics.nu_water = 1.0;
     physics.nu_ferro = 2.0;
     physics.r = 0.1;              // density ratio (paper value, Section 6.2)
-    physics.gravity = 30000.0;    // non-dimensional gravity
+
+    // Gravity from Nochetto Eq. 103: g = 4π²λ/(ℓ_c²·r·ε), 4 peaks in unit box
+    const double domain_width_rosen = domain.x_max - domain.x_min;
+    physics.gravity = compute_gravity(physics.lambda, physics.epsilon,
+                                      physics.r, domain_width_rosen, 4);
 
     dipoles.positions = {
         dealii::Point<2>(-0.5, -15.0),
@@ -55,8 +60,8 @@ void Parameters::setup_rosensweig()
     // The -r flag overrides amr_max_level for parametric studies.
     mesh.initial_refinement = 3;      // Start coarse, let AMR refine to target level
     mesh.use_amr = true;
-    mesh.amr_interval = 5;            // Every 5 steps — paper default
-    mesh.amr_min_level = 0;           // Allow coarsening to base grid in bulk
+    mesh.amr_interval = 50;           // Every 50 steps — less mesh perturbation
+    mesh.amr_min_level = 1;           // Don't coarsen below level 1 (Hess(φ) accuracy)
     mesh.amr_max_level = 6;           // Paper Fig. 1 default (override with -r)
 
     // Subsystems
@@ -90,7 +95,11 @@ void Parameters::setup_hedgehog()
     physics.nu_water = 1.0;
     physics.nu_ferro = 2.0;
     physics.r = 0.1;              // density ratio
-    physics.gravity = 30000.0;    // non-dimensional gravity
+
+    // Gravity from Nochetto Eq. 103: g = 4π²λ/(ℓ_c²·r·ε), 4 peaks in unit box
+    const double domain_width_hedge = domain.x_max - domain.x_min;
+    physics.gravity = compute_gravity(physics.lambda, physics.epsilon,
+                                      physics.r, domain_width_hedge, 4);
 
     // Dipoles (Section 6.3, p.527-528)
     // 42 dipoles arranged in 3 rows × 14 columns
@@ -170,7 +179,11 @@ void Parameters::setup_dome()
     physics.nu_water = 1.0;
     physics.nu_ferro = 2.0;
     physics.r = 0.1;
-    physics.gravity = 30000.0;
+
+    // Gravity from Nochetto Eq. 103: g = 4π²λ/(ℓ_c²·r·ε), 4 peaks in unit box
+    const double domain_width_dome = domain.x_max - domain.x_min;
+    physics.gravity = compute_gravity(physics.lambda, physics.epsilon,
+                                      physics.r, domain_width_dome, 4);
 
     // Same dipoles as hedgehog
     dipoles.positions.clear();
@@ -312,8 +325,8 @@ void Parameters::setup_square()
 
     // Time-stepping
     time.dt = 0.002;
-    time.t_final = 0.7;
-    time.max_steps = 350;
+    time.t_final = 1.0;
+    time.max_steps = 500;
     time.use_adaptive_dt = false;
 
     // Mesh
@@ -429,6 +442,13 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
 {
     Parameters params;
 
+    // Capture full command line for run_info.txt reproducibility
+    for (int i = 0; i < argc; ++i)
+    {
+        if (i > 0) params.command_line += " ";
+        params.command_line += argv[i];
+    }
+
     for (int i = 1; i < argc; ++i)
     {
         // Presets
@@ -528,6 +548,14 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             params.dipoles.intensity_max = std::stod(argv[i]);
         }
 
+        // Gravity override (overrides compute_gravity from preset)
+        else if (std::strcmp(argv[i], "--gravity") == 0)
+        {
+            if (++i >= argc) { std::cerr << "--gravity requires a value\n"; std::exit(1); }
+            params.physics.gravity = std::stod(argv[i]);
+            params.gravity_overridden = true;
+        }
+
         // Run name
         else if (std::strcmp(argv[i], "--run_name") == 0)
         {
@@ -591,7 +619,9 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             std::cout << "  --dt DT         Time step size\n";
             std::cout << "  --t_final T     Final simulation time\n";
             std::cout << "  --max_steps N   Maximum number of steps\n";
-            std::cout << "  --vtk_interval N  VTK output every N steps\n\n";
+            std::cout << "  --vtk_interval N  VTK output every N steps\n";
+            std::cout << "  --gravity G     Override gravity magnitude (default: auto from Eq.103)\n";
+            std::cout << "  --intensity A   Override dipole intensity max\n\n";
 
             std::cout << "AMR:\n";
             std::cout << "  --amr / --no_amr      Enable/disable AMR\n";

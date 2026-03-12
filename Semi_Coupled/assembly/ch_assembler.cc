@@ -28,6 +28,7 @@
 #include <deal.II/lac/full_matrix.h>
 
 #include <iostream>
+#include <memory>
 
 // ============================================================================
 // Main assembly function
@@ -91,9 +92,9 @@ void assemble_ch_system(
     const double eta = params.physics.epsilon;
     const bool have_velocity = (ux_solution.size() > 0) && (uy_solution.size() > 0);
 
-    // For MMS, also check if velocity has actual content
+    // Check if velocity has actual content (linfty_norm is an MPI collective — called once)
     const bool use_velocity_convection = have_velocity &&
-        (ux_solution.linfty_norm() > 1e-14 || uy_solution.linfty_norm() > 1e-14);
+        (ux_solution.l2_norm() > 1e-14 || uy_solution.l2_norm() > 1e-14);
 
 
     // ========================================================================
@@ -207,56 +208,33 @@ void assemble_ch_system(
         {
             const double L_y = params.domain.y_max - params.domain.y_min;
 
-            // Use source with convection if velocity is provided, otherwise standalone
+            // Select theta source based on whether convection is active
+            // (psi source is the same in both cases)
+            std::unique_ptr<dealii::Function<dim>> source_theta_ptr;
             if (use_velocity_convection)
-            {
-                // Implicit convection MMS source: U·∇θ^n (gradient at current time)
-                CHSourceThetaWithImplicitConvection<dim> source_theta(gamma, dt, L_y);
-                CHSourcePsi<dim> source_psi(eps, dt, L_y);
-                source_theta.set_time(current_time);
-                source_psi.set_time(current_time);
-
-                for (unsigned int q = 0; q < n_q_points; ++q)
-                {
-                    const double JxW = theta_fe_values.JxW(q);
-                    const auto& x_q = theta_fe_values.quadrature_point(q);
-
-                    const double f_theta = source_theta.value(x_q);
-                    const double f_psi = source_psi.value(x_q);
-
-                    for (unsigned int i = 0; i < dofs_per_cell; ++i)
-                    {
-                        const double Lambda_i = theta_fe_values.shape_value(i, q);
-                        const double Upsilon_i = psi_fe_values.shape_value(i, q);
-
-                        local_rhs(i) += f_theta * Lambda_i * JxW;
-                        local_rhs(dofs_per_cell + i) += f_psi * Upsilon_i * JxW;
-                    }
-                }
-            }
+                source_theta_ptr = std::make_unique<CHSourceThetaWithImplicitConvection<dim>>(gamma, dt, L_y);
             else
+                source_theta_ptr = std::make_unique<CHSourceTheta<dim>>(gamma, dt, L_y);
+
+            CHSourcePsi<dim> source_psi(eps, dt, L_y);
+            source_theta_ptr->set_time(current_time);
+            source_psi.set_time(current_time);
+
+            for (unsigned int q = 0; q < n_q_points; ++q)
             {
-                CHSourceTheta<dim> source_theta(gamma, dt, L_y);
-                CHSourcePsi<dim> source_psi(eps, dt, L_y);
-                source_theta.set_time(current_time);
-                source_psi.set_time(current_time);
+                const double JxW = theta_fe_values.JxW(q);
+                const auto& x_q = theta_fe_values.quadrature_point(q);
 
-                for (unsigned int q = 0; q < n_q_points; ++q)
+                const double f_theta = source_theta_ptr->value(x_q);
+                const double f_psi = source_psi.value(x_q);
+
+                for (unsigned int i = 0; i < dofs_per_cell; ++i)
                 {
-                    const double JxW = theta_fe_values.JxW(q);
-                    const auto& x_q = theta_fe_values.quadrature_point(q);
+                    const double Lambda_i = theta_fe_values.shape_value(i, q);
+                    const double Upsilon_i = psi_fe_values.shape_value(i, q);
 
-                    const double f_theta = source_theta.value(x_q);
-                    const double f_psi = source_psi.value(x_q);
-
-                    for (unsigned int i = 0; i < dofs_per_cell; ++i)
-                    {
-                        const double Lambda_i = theta_fe_values.shape_value(i, q);
-                        const double Upsilon_i = psi_fe_values.shape_value(i, q);
-
-                        local_rhs(i) += f_theta * Lambda_i * JxW;
-                        local_rhs(dofs_per_cell + i) += f_psi * Upsilon_i * JxW;
-                    }
+                    local_rhs(i) += f_theta * Lambda_i * JxW;
+                    local_rhs(dofs_per_cell + i) += f_psi * Upsilon_i * JxW;
                 }
             }
         }

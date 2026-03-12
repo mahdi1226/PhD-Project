@@ -345,6 +345,7 @@ private:
     // ========================================================================
     double last_assembled_viscosity_ = 0.0;
     double last_assembled_dt_        = -1.0;
+    double last_assemble_time_       = 0.0;
     SolverInfo last_solve_info_;
 
     // ========================================================================
@@ -355,6 +356,25 @@ private:
     // ========================================================================
     // Private helpers
     // ========================================================================
+
+    /** Unified coupled assembly — called by assemble_coupled() and
+     *  assemble_coupled_algebraic_M(). When Mx_relevant is nullptr,
+     *  M is computed algebraically as χ(θ_old)·∇φ. */
+    void assemble_coupled_internal(
+        double dt,
+        const dealii::TrilinosWrappers::MPI::Vector& theta_relevant,
+        const dealii::TrilinosWrappers::MPI::Vector& theta_old_relevant,
+        const dealii::DoFHandler<dim>&               theta_dof_handler,
+        const dealii::TrilinosWrappers::MPI::Vector& psi_relevant,
+        const dealii::DoFHandler<dim>&               psi_dof_handler,
+        const dealii::TrilinosWrappers::MPI::Vector& phi_relevant,
+        const dealii::DoFHandler<dim>&               phi_dof_handler,
+        const dealii::TrilinosWrappers::MPI::Vector* Mx_relevant,
+        const dealii::TrilinosWrappers::MPI::Vector* My_relevant,
+        const dealii::DoFHandler<dim>*               M_dof_handler,
+        double current_time,
+        bool include_convection);
+
     void assemble_lumped_mass();
     void subtract_mean_pressure();
 };

@@ -286,14 +286,9 @@ CahnHilliardSubsystem<dim>::compute_diagnostics() const
 {
     Diagnostics diag;
 
-    // Ensure ghosts are available
-    dealii::TrilinosWrappers::MPI::Vector theta_ghost(
-        theta_locally_owned_, theta_locally_relevant_, mpi_comm_);
-    theta_ghost = theta_solution_;
-
-    dealii::TrilinosWrappers::MPI::Vector psi_ghost(
-        psi_locally_owned_, psi_locally_relevant_, mpi_comm_);
-    psi_ghost = psi_solution_;
+    // Use existing ghosted vectors (caller must have called update_ghosts())
+    const auto& theta_ghost = theta_relevant_;
+    const auto& psi_ghost   = psi_relevant_;
 
     const unsigned int quad_degree = fe_.degree + 2;
     dealii::QGauss<dim> quadrature(quad_degree);

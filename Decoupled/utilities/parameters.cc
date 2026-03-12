@@ -175,6 +175,13 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
 {
     Parameters params;
 
+    // Capture full command line for reproducibility (written to run_info.txt)
+    for (int i = 0; i < argc; ++i)
+    {
+        if (i > 0) params.command_line += " ";
+        params.command_line += argv[i];
+    }
+
     for (int i = 1; i < argc; ++i)
     {
         // ---- Run mode (standalone subsystem drivers only) ----
@@ -274,7 +281,7 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
                 // IC: diamond at (π,π), R=1.75, θ = 0.5-0.5*tanh((d-R)/(1.2ε))
                 // ε = M = 0.05, ν_f = 2, ν_w = 1
                 // λ = μ = τ = β = χ₀ = 1
-                // dt = 1e-3, t_final = 5.0
+                // dt = 1e-3, t_final = 7.0
                 // ============================================================
                 params.domain.x_min = 0.0;
                 params.domain.x_max = 2.0 * M_PI;
@@ -308,8 +315,8 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
                 params.physics.r        = 0.0;     // no density difference
                 params.physics.gravity_magnitude = 0.0;
 
-                params.time.dt        = 1e-3;
-                params.time.t_final   = 5.0;
+                params.time.dt        = 2e-3;
+                params.time.t_final   = 10.0;
                 params.time.max_steps = 5000;
 
                 params.mesh.initial_refinement = 6;  // h = 2π/64 ≈ 0.098

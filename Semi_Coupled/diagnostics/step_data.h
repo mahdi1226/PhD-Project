@@ -164,10 +164,13 @@ struct StepData
     double wall_time_total = 0.0;   // Cumulative wall time (s)
 
     // ========================================================================
-    // Mesh info (for AMR)
+    // Mesh info (for AMR — per-subsystem DoFs track AMR changes per step)
     // ========================================================================
     unsigned int n_active_cells = 0;
     unsigned int n_dofs_total = 0;
+    unsigned int n_dofs_ch = 0;       // θ + ψ
+    unsigned int n_dofs_mag = 0;      // monolithic M + φ
+    unsigned int n_dofs_ns = 0;       // ux + uy + p
 
     // ========================================================================
     // Warning flags

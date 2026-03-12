@@ -177,6 +177,10 @@ private:
     // Ghosted vectors for assembly (read access to ghost values)
     dealii::TrilinosWrappers::MPI::Vector mag_relevant_;
 
+    // Previous timestep M+φ for time derivative in Eq. 42c
+    dealii::TrilinosWrappers::MPI::Vector mag_old_solution_;
+    dealii::TrilinosWrappers::MPI::Vector mag_old_relevant_;  // ghosted
+
     // Separate ghost vectors for Mx, My, phi (for NS assembly and diagnostics)
     // These are VIEWS extracted from mag_solution_ after solve
     dealii::TrilinosWrappers::MPI::Vector Mx_relevant_;

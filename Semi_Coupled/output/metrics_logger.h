@@ -133,6 +133,9 @@ public:
             // Mesh
             << data.n_active_cells << ","
             << data.n_dofs_total << ","
+            << data.n_dofs_ch << ","
+            << data.n_dofs_mag << ","
+            << data.n_dofs_ns << ","
             // Block-GS
             << data.bgs_iterations << ","
             << data.bgs_residual
@@ -306,7 +309,7 @@ private:
             << "F_cap_max,F_mag_max,F_grav_max,ns_time,"
             << "E_internal,E_total,dE_internal_dt,dE_total_dt,"
             << "interface_y_min,interface_y_max,interface_y_mean,"
-            << "n_cells,n_dofs,"
+            << "n_cells,n_dofs_total,n_dofs_ch,n_dofs_mag,n_dofs_ns,"
             << "bgs_iterations,bgs_residual"
             << "\n";
 

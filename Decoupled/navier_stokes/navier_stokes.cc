@@ -260,12 +260,8 @@ void NSSubsystem<dim>::set_mms_source(MmsSourceFunction source)
 // ============================================================================
 // compute_diagnostics()
 //
-// Computes velocity, pressure, incompressibility, and solver diagnostics
-// after solve().
-//
-// NOTE: This is a placeholder skeleton. Full implementation requires
-// quadrature evaluation. For now, it computes vector min/max and
-// returns solver info from last solve.
+// Computes velocity, pressure, incompressibility, vorticity, energy, and
+// solver diagnostics after solve().
 // ============================================================================
 template <int dim>
 typename NSSubsystem<dim>::Diagnostics
@@ -283,58 +279,83 @@ NSSubsystem<dim>::compute_diagnostics(double dt) const
                           std::max(std::abs(diag.uy_min), std::abs(diag.uy_max)));
 
     // --- CFL ---
+    const double h_min = dealii::GridTools::minimal_cell_diameter(triangulation_);
     if (dt > 0)
-    {
-        const double h_min = dealii::GridTools::minimal_cell_diameter(triangulation_);
         diag.CFL = diag.U_max * dt / h_min;
-    }
 
     // --- Pressure bounds ---
     p_solution_.trilinos_vector().MinValue(&diag.p_min);
     p_solution_.trilinos_vector().MaxValue(&diag.p_max);
 
-    // --- Solver info ---
-    diag.iterations = last_solve_info_.iterations;
-    diag.residual   = last_solve_info_.residual;
+    // --- Solver info + timing ---
+    diag.iterations    = last_solve_info_.iterations;
+    diag.residual      = last_solve_info_.residual;
+    diag.solve_time    = last_solve_info_.solve_time;
+    diag.assemble_time = last_assemble_time_;
 
-    // --- Quadrature-based vorticity diagnostics ---
-    // Compute max|∇×u| (omega_Linf) and enstrophy over locally owned cells.
-    // In 2D: ω_z = ∂u_y/∂x − ∂u_x/∂y
+    // --- Quadrature-based diagnostics ---
+    // E_kin = ½∫|u|² dΩ, divU = ∇·u, vorticity, p_mean
     {
         const dealii::QGauss<dim> quadrature(fe_velocity_.degree + 1);
         dealii::FEValues<dim> fe_ux(fe_velocity_, quadrature,
-                                     dealii::update_gradients | dealii::update_JxW_values);
+            dealii::update_values | dealii::update_gradients | dealii::update_JxW_values);
         dealii::FEValues<dim> fe_uy(fe_velocity_, quadrature,
-                                     dealii::update_gradients);
+            dealii::update_values | dealii::update_gradients);
+        dealii::FEValues<dim> fe_p(fe_pressure_, quadrature,
+            dealii::update_values | dealii::update_JxW_values);
 
         const unsigned int n_q = quadrature.size();
+        std::vector<double> ux_vals(n_q), uy_vals(n_q), p_vals(n_q);
         std::vector<dealii::Tensor<1, dim>> grad_ux(n_q), grad_uy(n_q);
 
-        double local_omega_Linf = 0.0;
-        double local_enstrophy  = 0.0;
+        double local_E_kin       = 0.0;
+        double local_divU_L2_sq  = 0.0;
+        double local_divU_Linf   = 0.0;
+        double local_p_sum       = 0.0;
+        double local_volume      = 0.0;
+        double local_omega_Linf  = 0.0;
         double local_omega_L2_sq = 0.0;
+        double local_enstrophy   = 0.0;
 
         auto cell_ux = ux_dof_handler_.begin_active();
         auto cell_uy = uy_dof_handler_.begin_active();
+        auto cell_p  = p_dof_handler_.begin_active();
         const auto end_ux = ux_dof_handler_.end();
 
-        for (; cell_ux != end_ux; ++cell_ux, ++cell_uy)
+        for (; cell_ux != end_ux; ++cell_ux, ++cell_uy, ++cell_p)
         {
             if (!cell_ux->is_locally_owned())
                 continue;
 
             fe_ux.reinit(cell_ux);
             fe_uy.reinit(cell_uy);
+            fe_p.reinit(cell_p);
 
+            fe_ux.get_function_values(ux_relevant_, ux_vals);
+            fe_uy.get_function_values(uy_relevant_, uy_vals);
             fe_ux.get_function_gradients(ux_relevant_, grad_ux);
             fe_uy.get_function_gradients(uy_relevant_, grad_uy);
+            fe_p.get_function_values(p_relevant_, p_vals);
 
             for (unsigned int q = 0; q < n_q; ++q)
             {
-                // 2D vorticity: ω_z = ∂u_y/∂x − ∂u_x/∂y
-                const double omega_z = grad_uy[q][0] - grad_ux[q][1];
                 const double JxW = fe_ux.JxW(q);
 
+                // Kinetic energy: ½∫|u|² dΩ
+                local_E_kin += 0.5 * (ux_vals[q] * ux_vals[q]
+                                    + uy_vals[q] * uy_vals[q]) * JxW;
+
+                // Divergence: ∇·u = ∂ux/∂x + ∂uy/∂y
+                const double div_u = grad_ux[q][0] + grad_uy[q][1];
+                local_divU_L2_sq += div_u * div_u * JxW;
+                local_divU_Linf = std::max(local_divU_Linf, std::abs(div_u));
+
+                // Pressure mean
+                local_p_sum += p_vals[q] * JxW;
+                local_volume += JxW;
+
+                // 2D vorticity: ω_z = ∂uy/∂x − ∂ux/∂y
+                const double omega_z = grad_uy[q][0] - grad_ux[q][1];
                 local_omega_Linf = std::max(local_omega_Linf, std::abs(omega_z));
                 local_omega_L2_sq += omega_z * omega_z * JxW;
                 local_enstrophy  += 0.5 * omega_z * omega_z * JxW;
@@ -343,10 +364,37 @@ NSSubsystem<dim>::compute_diagnostics(double dt) const
 
         // MPI reduce across all ranks
         const auto& mpi_comm = triangulation_.get_communicator();
-        diag.omega_Linf = dealii::Utilities::MPI::max(local_omega_Linf, mpi_comm);
-        diag.omega_L2   = std::sqrt(dealii::Utilities::MPI::sum(local_omega_L2_sq, mpi_comm));
-        diag.enstrophy  = dealii::Utilities::MPI::sum(local_enstrophy, mpi_comm);
+
+        // SUM reductions (5 values)
+        double local_sums[5] = {local_E_kin, local_divU_L2_sq,
+                                local_omega_L2_sq, local_enstrophy, local_p_sum};
+        double global_sums[5];
+        MPI_Allreduce(local_sums, global_sums, 5, MPI_DOUBLE, MPI_SUM, mpi_comm);
+
+        double local_volume_arr[1] = {local_volume};
+        double global_volume[1];
+        MPI_Allreduce(local_volume_arr, global_volume, 1, MPI_DOUBLE, MPI_SUM, mpi_comm);
+
+        // MAX reductions (2 values)
+        double local_maxes[2] = {local_omega_Linf, local_divU_Linf};
+        double global_maxes[2];
+        MPI_Allreduce(local_maxes, global_maxes, 2, MPI_DOUBLE, MPI_MAX, mpi_comm);
+
+        diag.E_kin      = global_sums[0];
+        diag.divU_L2    = std::sqrt(global_sums[1]);
+        diag.omega_L2   = std::sqrt(global_sums[2]);
+        diag.enstrophy  = global_sums[3];
+        diag.p_mean     = (global_volume[0] > 0.0)
+                        ? global_sums[4] / global_volume[0] : 0.0;
+        diag.omega_Linf = global_maxes[0];
+        diag.divU_Linf  = global_maxes[1];
     }
+
+    // --- Reynolds number: Re = U_max * L / ν ---
+    // Use average viscosity as characteristic ν
+    const double nu_avg = 0.5 * (params_.physics.nu_water + params_.physics.nu_ferro);
+    if (nu_avg > 0.0)
+        diag.Re_max = diag.U_max * h_min / nu_avg;
 
     return diag;
 }

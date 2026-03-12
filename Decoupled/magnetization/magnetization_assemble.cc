@@ -234,7 +234,7 @@ void MagnetizationSubsystem<dim>::assemble_system_internal(
 
             // χ(θ)
             const double chi_theta = susceptibility(
-                theta_vals[q], params_.physics.epsilon, params_.physics.chi_0);
+                theta_vals[q], params_.physics.chi_0);
 
             // Velocity + divergence (only for matrix assembly)
             Tensor<1, dim> U_q;
@@ -265,7 +265,11 @@ void MagnetizationSubsystem<dim>::assemble_system_internal(
             }
 
             // ================================================================
-            // β-term: β M×(M×H) = β[M(M·H) - H|M|²]  (explicit, RHS)
+            // β-term: Eq 2.8 has +β m×(m×h) on LHS → RHS = -β m×(m×h)
+            //   m×(m×h) = m(m·h) - h|m|²   (vector triple product)
+            //   So RHS contribution = -β[m(m·h) - h|m|²]
+            //                       = β[h|m|² - m(m·h)]
+            // Equivalently: +β(m×h, m×n)  (Zhang discrete form, Eq 3.14)
             // ================================================================
             Tensor<1, dim> beta_term;
             if (beta_active)
@@ -276,9 +280,10 @@ void MagnetizationSubsystem<dim>::assemble_system_internal(
                     + ((dim > 1) ? My * H[1] : 0.0);
                 const double M_sq = Mx * Mx + My * My;
 
-                beta_term[0] = beta_val * (Mx * MdotH - H[0] * M_sq);
+                // -β[m(m·h) - h|m|²] = β[h|m|² - m(m·h)]
+                beta_term[0] = beta_val * (H[0] * M_sq - Mx * MdotH);
                 if constexpr (dim > 1)
-                    beta_term[1] = beta_val * (My * MdotH - H[1] * M_sq);
+                    beta_term[1] = beta_val * (H[1] * M_sq - My * MdotH);
             }
 
             // ================================================================
@@ -462,11 +467,12 @@ void MagnetizationSubsystem<dim>::assemble_system_internal(
     }
 
     timer.stop();
+    last_assemble_time_ = timer.wall_time();
 
     pcout_ << "[Magnetization] Assembly ("
            << (matrix_and_rhs ? "matrix+RHS" : "RHS-only")
            << (explicit_transport ? ", Step5-explicit" : ", Step6-implicit")
-           << "): " << timer.wall_time() << " s" << std::endl;
+           << "): " << last_assemble_time_ << " s" << std::endl;
 }
 
 // ============================================================================

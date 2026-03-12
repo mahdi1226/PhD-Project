@@ -377,6 +377,11 @@ struct Parameters
     void setup_dome();                 // Hedgehog with h = h_a only (no demagnetizing field)
 
     // ========================================================================
+    // Command line (captured at parse time for run_info.txt reproducibility)
+    // ========================================================================
+    std::string command_line;
+
+    // ========================================================================
     // Command line parsing
     // ========================================================================
     static Parameters parse_command_line(int argc, char* argv[]);

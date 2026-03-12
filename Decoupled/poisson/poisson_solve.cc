@@ -15,6 +15,7 @@
 // ============================================================================
 
 #include "poisson/poisson.h"
+#include "physics/solver_utils.h"
 
 #include <deal.II/lac/solver_cg.h>
 #include <deal.II/lac/solver_control.h>
@@ -64,42 +65,24 @@ SolverInfo PoissonSubsystem<dim>::solve()
     // ====================================================================
     if (!sp.use_iterative)
     {
-        dealii::SolverControl solver_control(1, tol);
-        bool direct_ok = false;
-
-        // Try MUMPS (parallel direct)
-        try
-        {
-            dealii::TrilinosWrappers::SolverDirect::AdditionalData data;
-            data.solver_type = "Amesos_Mumps";
-            dealii::TrilinosWrappers::SolverDirect solver(solver_control, data);
-            solver.solve(system_matrix_, solution_, system_rhs_);
-            direct_ok = true;
-        }
-        catch (std::exception&)
-        {
-            // Try KLU (serial fallback)
-            try
-            {
-                dealii::TrilinosWrappers::SolverDirect solver(solver_control);
-                solver.solve(system_matrix_, solution_, system_rhs_);
-                direct_ok = true;
-            }
-            catch (std::exception& e)
-            {
-                pcout_ << "[Poisson] Direct solver failed: " << e.what()
-                       << ", falling back to CG+AMG\n";
-            }
-        }
+        const bool direct_ok = SolverUtils::try_direct_solvers(
+            system_matrix_, solution_, system_rhs_, tol, "Poisson", pcout_);
 
         if (direct_ok)
         {
             info.iterations = 1;
-            info.residual = 0.0;
             info.converged = true;
             info.used_direct = true;
 
             constraints_.distribute(solution_);
+
+            // Compute post-solve residual ‖Ax − b‖
+            {
+                dealii::TrilinosWrappers::MPI::Vector res_vec(system_rhs_);
+                system_matrix_.vmult(res_vec, solution_);
+                res_vec -= system_rhs_;
+                info.residual = res_vec.l2_norm();
+            }
 
             auto end = std::chrono::high_resolution_clock::now();
             info.solve_time = std::chrono::duration<double>(end - start).count();

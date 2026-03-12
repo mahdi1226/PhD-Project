@@ -117,11 +117,14 @@ struct Parameters
         double mu_0 = 1.0;          // permeability of free space
         double tau_M = 1e-6;        // magnetization relaxation time
 
-        // Density / Gravity (Eq. 19)
+        // Density / Gravity (Eq. 19, Eq. 103)
         double rho = 1.0;           // reference density
         double r = 0.1;             // density ratio
-        double gravity = 30000.0;   // non-dimensionalized gravity
+        double gravity = 30000.0;   // non-dimensionalized gravity (auto-computed by presets)
     } physics;
+
+    // Track whether gravity was manually overridden via --gravity flag
+    bool gravity_overridden = false;
 
     // ========================================================================
     // Finite element degrees
@@ -226,6 +229,11 @@ struct Parameters
     // Exports SVG/gnuplot of sparsity patterns + bandwidth + per-row nnz
     // ========================================================================
     bool dump_sparsity = false;                     // Export sparsity patterns at step 0
+
+    // ========================================================================
+    // Command line (captured during parse for run_info.txt reproducibility)
+    // ========================================================================
+    std::string command_line;
 
     // ========================================================================
     // Build run_name from preset + refinement + amr (call after parsing)

@@ -29,6 +29,7 @@
 // ============================================================================
 // Helper: Solve a single scalar system with CG+AMG.
 // Returns iteration count (0 if RHS was zero).
+// If residual_out is non-null, stores the final solver residual.
 // ============================================================================
 template <int dim>
 static unsigned int solve_scalar_cg_amg(
@@ -36,12 +37,14 @@ static unsigned int solve_scalar_cg_amg(
     dealii::TrilinosWrappers::MPI::Vector& solution,
     const dealii::TrilinosWrappers::MPI::Vector& rhs,
     const dealii::AffineConstraints<double>& constraints,
-    double tol, unsigned int max_iter, bool higher_order)
+    double tol, unsigned int max_iter, bool higher_order,
+    double* residual_out = nullptr)
 {
     const double rhs_norm = rhs.l2_norm();
     if (rhs_norm < 1e-14)
     {
         solution = 0;
+        if (residual_out) *residual_out = 0.0;
         return 0;
     }
 
@@ -60,6 +63,7 @@ static unsigned int solve_scalar_cg_amg(
     cg.solve(matrix, solution, rhs, amg);
     constraints.distribute(solution);
 
+    if (residual_out) *residual_out = control.last_value();
     return control.last_step();
 }
 
@@ -121,6 +125,8 @@ SolverInfo NSSubsystem<dim>::solve_velocity()
     const unsigned int max_iter = params_.solvers.ns.max_iterations;
     const bool use_direct = !params_.solvers.ns.use_iterative;
 
+    double ux_residual = 0.0, uy_residual = 0.0;
+
     if (use_direct)
     {
         // Direct solver path (--ns-direct or --all-direct)
@@ -133,6 +139,15 @@ SolverInfo NSSubsystem<dim>::solve_velocity()
             info.iterations += solve_scalar_direct(uy_matrix_, uy_solution_, uy_rhs_,
                                                    uy_constraints_, tol);
             info.converged = true;
+            // Compute post-solve residual ‖Ax − b‖ for each component
+            {
+                dealii::TrilinosWrappers::MPI::Vector res(ux_rhs_);
+                ux_matrix_.vmult(res, ux_solution_); res -= ux_rhs_;
+                ux_residual = res.l2_norm();
+                uy_matrix_.vmult(res, uy_solution_); res -= uy_rhs_;
+                uy_residual = res.l2_norm();
+                info.residual = std::max(ux_residual, uy_residual);
+            }
         }
         catch (std::exception& e)
         {
@@ -140,12 +155,15 @@ SolverInfo NSSubsystem<dim>::solve_velocity()
                    << ", falling back to CG+AMG\n";
             // Fall through to iterative
             info.iterations  = solve_scalar_cg_amg<dim>(ux_matrix_, ux_solution_, ux_rhs_,
-                                                        ux_constraints_, tol, max_iter, true);
+                                                        ux_constraints_, tol, max_iter, true,
+                                                        &ux_residual);
             info.iterations += solve_scalar_cg_amg<dim>(uy_matrix_, uy_solution_, uy_rhs_,
-                                                        uy_constraints_, tol, max_iter, true);
+                                                        uy_constraints_, tol, max_iter, true,
+                                                        &uy_residual);
             info.solver_name = "NS-Velocity-CG+AMG(fallback)";
             info.used_direct = false;
             info.converged = true;
+            info.residual = std::max(ux_residual, uy_residual);
         }
     }
     else
@@ -154,9 +172,12 @@ SolverInfo NSSubsystem<dim>::solve_velocity()
         info.solver_name = "NS-Velocity-CG+AMG";
         info.used_direct = false;
         info.iterations  = solve_scalar_cg_amg<dim>(ux_matrix_, ux_solution_, ux_rhs_,
-                                                    ux_constraints_, tol, max_iter, true);
+                                                    ux_constraints_, tol, max_iter, true,
+                                                    &ux_residual);
         info.iterations += solve_scalar_cg_amg<dim>(uy_matrix_, uy_solution_, uy_rhs_,
-                                                    uy_constraints_, tol, max_iter, true);
+                                                    uy_constraints_, tol, max_iter, true,
+                                                    &uy_residual);
+        info.residual = std::max(ux_residual, uy_residual);
         info.converged = true;
     }
 
@@ -196,6 +217,8 @@ SolverInfo NSSubsystem<dim>::solve_pressure()
     const unsigned int max_iter = params_.solvers.ns.max_iterations;
     const bool use_direct = !params_.solvers.ns.use_iterative;
 
+    double p_residual = 0.0;
+
     if (use_direct)
     {
         // Direct solver path
@@ -206,16 +229,24 @@ SolverInfo NSSubsystem<dim>::solve_pressure()
             info.iterations = solve_scalar_direct(p_matrix_, p_solution_, p_rhs_,
                                                   p_constraints_, tol);
             info.converged = true;
+            // Compute post-solve residual ‖Ax − b‖
+            {
+                dealii::TrilinosWrappers::MPI::Vector res(p_rhs_);
+                p_matrix_.vmult(res, p_solution_); res -= p_rhs_;
+                info.residual = res.l2_norm();
+            }
         }
         catch (std::exception& e)
         {
             pcout_ << "  [NS Pressure] Direct solver failed: " << e.what()
                    << ", falling back to CG+AMG\n";
             info.iterations = solve_scalar_cg_amg<dim>(p_matrix_, p_solution_, p_rhs_,
-                                                       p_constraints_, tol, max_iter, false);
+                                                       p_constraints_, tol, max_iter, false,
+                                                       &p_residual);
             info.solver_name = "NS-Pressure-CG+AMG(fallback)";
             info.used_direct = false;
             info.converged = true;
+            info.residual = p_residual;
         }
     }
     else
@@ -224,7 +255,9 @@ SolverInfo NSSubsystem<dim>::solve_pressure()
         info.solver_name = "NS-Pressure-CG+AMG";
         info.used_direct = false;
         info.iterations = solve_scalar_cg_amg<dim>(p_matrix_, p_solution_, p_rhs_,
-                                                   p_constraints_, tol, max_iter, false);
+                                                   p_constraints_, tol, max_iter, false,
+                                                   &p_residual);
+        info.residual = p_residual;
         info.converged = true;
     }
 

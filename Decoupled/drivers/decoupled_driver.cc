@@ -101,7 +101,9 @@ static double compute_discrete_energy(
 // Helper: write the run config stamp as a CSV comment header
 static void write_csv_stamp(std::ofstream& ofs, const Parameters& params,
                             unsigned int n_ranks, unsigned int n_cells,
-                            unsigned int n_dofs)
+                            unsigned int n_dofs,
+                            unsigned int n_dofs_ch, unsigned int n_dofs_poisson,
+                            unsigned int n_dofs_mag, unsigned int n_dofs_ns)
 {
     ofs << "# date=" << get_timestamp()
         << ",preset=" << (params.validation_test.empty() ? "production" : params.validation_test)
@@ -114,6 +116,10 @@ static void write_csv_stamp(std::ofstream& ofs, const Parameters& params,
         << ",ranks=" << n_ranks
         << ",cells=" << n_cells
         << ",dofs=" << n_dofs
+        << ",dofs_ch=" << n_dofs_ch
+        << ",dofs_poi=" << n_dofs_poisson
+        << ",dofs_mag=" << n_dofs_mag
+        << ",dofs_ns=" << n_dofs_ns
         << ",coupling=decoupled"
         << "\n";
 }
@@ -124,10 +130,18 @@ class CSVLoggerFamily
 public:
     CSVLoggerFamily(const std::string& output_dir, MPI_Comm comm,
                     const Parameters& params,
-                    unsigned int n_cells, unsigned int n_dofs)
+                    unsigned int n_cells, unsigned int n_dofs,
+                    unsigned int n_dofs_ch, unsigned int n_dofs_poisson,
+                    unsigned int n_dofs_mag, unsigned int n_dofs_ns)
         : dir_(output_dir)
         , rank_(dealii::Utilities::MPI::this_mpi_process(comm))
         , n_ranks_(dealii::Utilities::MPI::n_mpi_processes(comm))
+        , n_cells_(n_cells)
+        , n_dofs_(n_dofs)
+        , n_dofs_ch_(n_dofs_ch)
+        , n_dofs_poisson_(n_dofs_poisson)
+        , n_dofs_mag_(n_dofs_mag)
+        , n_dofs_ns_(n_dofs_ns)
         , initial_mass_(0.0)
         , prev_E_total_(0.0)
         , prev_E_CH_(0.0)
@@ -142,9 +156,16 @@ public:
             ri << "Ferrofluid Decoupled Driver (Strategy A)\n";
             ri << "========================================\n\n";
             ri << "Date:       " << get_timestamp() << "\n";
+            ri << "Command:    " << params.command_line << "\n";
             ri << "MPI ranks:  " << n_ranks_ << "\n";
             ri << "Cells:      " << n_cells << "\n";
             ri << "Total DoFs: " << n_dofs << "\n\n";
+            ri << "[DoFs]\n";
+            ri << "  CH (θ+ψ):       " << n_dofs_ch << "\n";
+            ri << "  Poisson:         " << n_dofs_poisson << "\n";
+            ri << "  Magnetization:   " << n_dofs_mag << "\n";
+            ri << "  NS (ux+uy+p):    " << n_dofs_ns << "\n";
+            ri << "  Total:           " << n_dofs << "\n\n";
             ri << "[Domain]\n";
             ri << "  x: [" << params.domain.x_min << ", " << params.domain.x_max << "]\n";
             ri << "  y: [" << params.domain.y_min << ", " << params.domain.y_max << "]\n";
@@ -223,7 +244,8 @@ public:
 
         // ---- diagnostics.csv ---- (compact per-step summary)
         diag_.open(dir_ + "/diagnostics.csv");
-        write_csv_stamp(diag_, params, n_ranks_, n_cells, n_dofs);
+        write_csv_stamp(diag_, params, n_ranks_, n_cells_, n_dofs_,
+                        n_dofs_ch_, n_dofs_poisson_, n_dofs_mag_, n_dofs_ns_);
         diag_ << "step,time,dt,"
               << "theta_min,theta_max,theta_mass,mass_drift_rel,"
               << "E_CH,E_kin,E_mag,E_total,"
@@ -231,12 +253,14 @@ public:
               << "H_max,M_mag_max,"
               << "F_cap_max,F_mag_max,F_grav_max,"
               << "iface_y_min,iface_y_max,iface_amp,"
-              << "wall_time_s"
+              << "wall_time_s,"
+              << "n_cells,n_dofs_total,n_dofs_ch,n_dofs_poisson,n_dofs_mag,n_dofs_ns"
               << "\n";
 
         // ---- energy.csv ---- (all energy components + rates)
         energy_.open(dir_ + "/energy.csv");
-        write_csv_stamp(energy_, params, n_ranks_, n_cells, n_dofs);
+        write_csv_stamp(energy_, params, n_ranks_, n_cells_, n_dofs_,
+                        n_dofs_ch_, n_dofs_poisson_, n_dofs_mag_, n_dofs_ns_);
         energy_ << "step,time,"
                 << "E_CH_grad,E_CH_bulk,E_CH,"
                 << "E_kin,E_mag,E_total,"
@@ -245,7 +269,8 @@ public:
 
         // ---- timing.csv ---- (per-subsystem performance)
         timing_.open(dir_ + "/timing.csv");
-        write_csv_stamp(timing_, params, n_ranks_, n_cells, n_dofs);
+        write_csv_stamp(timing_, params, n_ranks_, n_cells_, n_dofs_,
+                        n_dofs_ch_, n_dofs_poisson_, n_dofs_mag_, n_dofs_ns_);
         timing_ << "step,time,"
                 << "poi_assemble_s,poi_solve_s,"
                 << "mag_assemble_s,mag_solve_s,"
@@ -256,7 +281,8 @@ public:
 
         // ---- solver.csv ---- (iterations, residuals, convergence)
         solver_.open(dir_ + "/solver.csv");
-        write_csv_stamp(solver_, params, n_ranks_, n_cells, n_dofs);
+        write_csv_stamp(solver_, params, n_ranks_, n_cells_, n_dofs_,
+                        n_dofs_ch_, n_dofs_poisson_, n_dofs_mag_, n_dofs_ns_);
         solver_ << "step,time,"
                 << "poi_iters,poi_residual,"
                 << "mag_Mx_iters,mag_Mx_residual,"
@@ -268,7 +294,8 @@ public:
 
         // ---- flow.csv ---- (CFL, incompressibility, vorticity, pressure)
         flow_.open(dir_ + "/flow.csv");
-        write_csv_stamp(flow_, params, n_ranks_, n_cells, n_dofs);
+        write_csv_stamp(flow_, params, n_ranks_, n_cells_, n_dofs_,
+                        n_dofs_ch_, n_dofs_poisson_, n_dofs_mag_, n_dofs_ns_);
         flow_ << "step,time,"
               << "ux_min,ux_max,uy_min,uy_max,U_max,"
               << "E_kin,CFL,"
@@ -280,7 +307,8 @@ public:
 
         // ---- magnetic.csv ---- (M/H statistics, equilibrium, alignment)
         magnetic_.open(dir_ + "/magnetic.csv");
-        write_csv_stamp(magnetic_, params, n_ranks_, n_cells, n_dofs);
+        write_csv_stamp(magnetic_, params, n_ranks_, n_cells_, n_dofs_,
+                        n_dofs_ch_, n_dofs_poisson_, n_dofs_mag_, n_dofs_ns_);
         magnetic_ << "step,time,"
                   << "phi_min,phi_max,H_max,H_L2,E_mag,"
                   << "mu_min,mu_max,"
@@ -293,7 +321,8 @@ public:
 
         // ---- phase_field.csv ---- (detailed CH diagnostics)
         phase_.open(dir_ + "/phase_field.csv");
-        write_csv_stamp(phase_, params, n_ranks_, n_cells, n_dofs);
+        write_csv_stamp(phase_, params, n_ranks_, n_cells_, n_dofs_,
+                        n_dofs_ch_, n_dofs_poisson_, n_dofs_mag_, n_dofs_ns_);
         phase_ << "step,time,"
                << "theta_min,theta_max,theta_mean,theta_mass,"
                << "mass_drift_rel,"
@@ -304,7 +333,8 @@ public:
 
         // ---- forces.csv ---- (body force magnitudes)
         forces_.open(dir_ + "/forces.csv");
-        write_csv_stamp(forces_, params, n_ranks_, n_cells, n_dofs);
+        write_csv_stamp(forces_, params, n_ranks_, n_cells_, n_dofs_,
+                        n_dofs_ch_, n_dofs_poisson_, n_dofs_mag_, n_dofs_ns_);
         forces_ << "step,time,"
                 << "F_cap_L2,F_cap_max,"
                 << "F_mag_L2,F_mag_max,"
@@ -313,7 +343,8 @@ public:
 
         // ---- interface.csv ---- (interface position tracking)
         interface_.open(dir_ + "/interface.csv");
-        write_csv_stamp(interface_, params, n_ranks_, n_cells, n_dofs);
+        write_csv_stamp(interface_, params, n_ranks_, n_cells_, n_dofs_,
+                        n_dofs_ch_, n_dofs_poisson_, n_dofs_mag_, n_dofs_ns_);
         interface_ << "step,time,"
                    << "y_min,y_max,y_mean,amplitude,n_points"
                    << "\n";
@@ -367,7 +398,10 @@ public:
                  << forces.F_grav_max << ","
                  << iface.y_min << "," << iface.y_max << ","
                  << iface.amplitude << ","
-                 << std::fixed << std::setprecision(2) << wall_s
+                 << std::fixed << std::setprecision(2) << wall_s << ","
+                 << n_cells_ << "," << n_dofs_ << ","
+                 << n_dofs_ch_ << "," << n_dofs_poisson_ << ","
+                 << n_dofs_mag_ << "," << n_dofs_ns_
                  << "\n";
         diag_.flush();
 
@@ -460,6 +494,14 @@ private:
     std::string dir_;
     unsigned int rank_;
     unsigned int n_ranks_;
+
+    // Mesh/DoF counts (constant without AMR; update via update_mesh_info() for AMR)
+    unsigned int n_cells_;
+    unsigned int n_dofs_;
+    unsigned int n_dofs_ch_;
+    unsigned int n_dofs_poisson_;
+    unsigned int n_dofs_mag_;
+    unsigned int n_dofs_ns_;
 
     double initial_mass_;
     double prev_E_total_, prev_E_CH_, prev_E_kin_;
@@ -962,7 +1004,7 @@ static void write_algebraic_M_vtu(
                 Tensor<1, dim> H_total = grad_phi[q] + h_a;
 
                 // χ(θ) and M = χ(θ) * H_total
-                const double chi_q = susceptibility(theta_vals[q], eps, chi_0);
+                const double chi_q = susceptibility(theta_vals[q], chi_0);
                 Tensor<1, dim> M_q = chi_q * H_total;
 
                 avg_H += grad_phi[q] * JxW;  // H_field = ∇φ (without h_a for consistency)
@@ -1346,21 +1388,22 @@ int main(int argc, char* argv[])
         MPI_Bcast(&output_dir[0], len, MPI_CHAR, 0, mpi_comm);
     }
 
-    unsigned int total_dofs = ch.get_theta_dof_handler().n_dofs()
-                            + ch.get_psi_dof_handler().n_dofs();
-    if (params.enable_magnetic)
-    {
-        total_dofs += poisson.get_dof_handler().n_dofs();
-        if (!params.use_algebraic_magnetization)
-            total_dofs += 2 * mag.get_dof_handler().n_dofs();
-    }
-    if (params.enable_ns)
-        total_dofs += ns.get_ux_dof_handler().n_dofs()
-                    + ns.get_uy_dof_handler().n_dofs()
-                    + ns.get_p_dof_handler().n_dofs();
+    // Per-subsystem DoF counts (for run_info.txt + CSV tracking)
+    const unsigned int n_dofs_ch = ch.get_theta_dof_handler().n_dofs()
+                                 + ch.get_psi_dof_handler().n_dofs();
+    const unsigned int n_dofs_poisson = params.enable_magnetic
+        ? poisson.get_dof_handler().n_dofs() : 0;
+    const unsigned int n_dofs_mag = (params.enable_magnetic && !params.use_algebraic_magnetization)
+        ? 2 * mag.get_dof_handler().n_dofs() : 0;
+    const unsigned int n_dofs_ns = params.enable_ns
+        ? (ns.get_ux_dof_handler().n_dofs()
+           + ns.get_uy_dof_handler().n_dofs()
+           + ns.get_p_dof_handler().n_dofs()) : 0;
+    const unsigned int total_dofs = n_dofs_ch + n_dofs_poisson + n_dofs_mag + n_dofs_ns;
 
     CSVLoggerFamily logger(output_dir, mpi_comm, params,
-                           triangulation.n_global_active_cells(), total_dofs);
+                           triangulation.n_global_active_cells(), total_dofs,
+                           n_dofs_ch, n_dofs_poisson, n_dofs_mag, n_dofs_ns);
 
     // Write initial VTK
     const bool full_vtk = params.enable_magnetic && params.enable_ns;
@@ -1691,8 +1734,26 @@ int main(int argc, char* argv[])
                 // First iteration uses φ^{n-1} as initial guess.
                 // Matrix assembled once (mass-only, doesn't depend on φ).
                 // Only RHS changes between iterations (H = ∇φ^(k) updates).
+                //
+                // Under-relaxation: M^(k+1) = ω·M_solve + (1-ω)·M^(k)
+                // Required when χ₀ ≥ 1 to prevent M-H positive feedback
+                // divergence. Convergence requires ω < 1/(1+N·χ₀) where
+                // N is the demagnetizing factor. We use ω = 1/(1+χ₀) for
+                // robustness (conservative bound with N=1).
+                //
+                // Convergence check: track ||M||₂ across iterations.
+                // When the norm stops changing, M-φ coupling has converged.
                 // ============================================================
-                constexpr unsigned int picard_max = 3;
+                constexpr unsigned int picard_max = 12;
+                constexpr double picard_tol = 1e-4;
+                const double chi_0 = params.physics.chi_0;
+                // Under-relax when χ₀ ≥ 1 (demagnetization can cause divergence).
+                // For χ₀ < 1 (Rosensweig, hedgehog), N·χ₀ < 1 always → stable.
+                const double picard_omega = (chi_0 >= 1.0)
+                    ? 1.0 / (1.0 + chi_0)   // Under-relax for large χ₀
+                    : 1.0;                    // No relaxation needed for χ₀ < 1
+
+                double prev_M_norm = 0.0;
 
                 for (unsigned int pic = 0; pic < picard_max; ++pic)
                 {
@@ -1720,6 +1781,20 @@ int main(int argc, char* argv[])
                             /*explicit_transport=*/true);
                     }
                     mag.solve();
+
+                    // Under-relaxation: blend new solve with previous iterate
+                    if (picard_omega < 1.0)
+                        mag.apply_under_relaxation(picard_omega);
+
+                    // Track ||M||₂ for convergence
+                    const double curr_M_norm =
+                        mag.get_Mx_solution().l2_norm()
+                        + mag.get_My_solution().l2_norm();
+                    const double rel_change = (pic > 0 && prev_M_norm > 1e-14)
+                        ? std::abs(curr_M_norm - prev_M_norm) / curr_M_norm
+                        : 1.0;
+                    prev_M_norm = curr_M_norm;
+
                     mag.update_ghosts();
 
                     // Step 5b: Poisson φ^(k) from m̃^(k)
@@ -1729,6 +1804,27 @@ int main(int argc, char* argv[])
                                          current_time);
                     poisson.solve();
                     poisson.update_ghosts();
+
+                    if (params.output.verbose && Utilities::MPI::this_mpi_process(mpi_comm) == 0)
+                    {
+                        std::cout << "    [Picard " << pic
+                                  << "] omega=" << picard_omega
+                                  << " |dM|=" << rel_change
+                                  << " ||M||=" << curr_M_norm
+                                  << std::endl;
+                    }
+
+                    // Early exit if converged (skip first iteration)
+                    if (pic > 0 && rel_change < picard_tol)
+                    {
+                        if (params.output.verbose && Utilities::MPI::this_mpi_process(mpi_comm) == 0)
+                        {
+                            std::cout << "    [Picard] Converged in "
+                                      << (pic + 1) << " iterations"
+                                      << std::endl;
+                        }
+                        break;
+                    }
                 }
 
                 // ============================================================

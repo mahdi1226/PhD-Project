@@ -1,0 +1,1335 @@
+\documentclass[11pt,a4paper]{article}
+
+% ── Packages ──
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath,amssymb,amsthm,mathtools}
+\usepackage{bm}          % bold math
+\usepackage{geometry}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage{stmaryrd}     % for \llbracket, \rrbracket
+\usepackage{tcolorbox}
+
+\geometry{margin=1in}
+\hypersetup{colorlinks=true, linkcolor=blue!60!black, citecolor=green!50!black}
+
+% ── Theorem environments ──
+\newtheorem{proposition}{Proposition}[section]
+\newtheorem{lemma}[proposition]{Lemma}
+\newtheorem{theorem}[proposition]{Theorem}
+\theoremstyle{definition}
+\newtheorem{definition}[proposition]{Definition}
+\theoremstyle{remark}
+\newtheorem{remark}[proposition]{Remark}
+
+% ── Shortcuts ──
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\dd}{\,\mathrm{d}}
+\newcommand{\dt}{\partial_t}
+\newcommand{\dn}{\partial_n}
+\newcommand{\dv}{\operatorname{div}}
+\newcommand{\curl}{\operatorname{curl}}
+\newcommand{\grad}{\nabla}
+\newcommand{\eps}{\varepsilon}
+\newcommand{\half}{\tfrac{1}{2}}
+\newcommand{\inner}[2]{\left\langle #1, #2 \right\rangle}
+\newcommand{\norm}[1]{\left\| #1 \right\|}
+\newcommand{\jump}[1]{\llbracket #1 \rrbracket}
+\newcommand{\avg}[1]{\left\{ #1 \right\}}
+\newcommand{\bfu}{\bm{u}}
+\newcommand{\bfm}{\bm{m}}
+\newcommand{\bfh}{\bm{h}}
+\newcommand{\bfn}{\bm{n}}
+\newcommand{\bff}{\bm{f}}
+\newcommand{\bfz}{\bm{z}}
+\newcommand{\bfv}{\bm{v}}
+\newcommand{\bfM}{\bm{M}}
+\newcommand{\bfH}{\bm{H}}
+\newcommand{\bfB}{\bm{B}}
+\newcommand{\Th}{\mathcal{T}_h}
+\newcommand{\Eh}{\mathcal{E}_h}
+\newcommand{\bfV}{\bm{V}}
+
+% ── Colored remark boxes ──
+\newtcolorbox{keypoint}{colback=blue!5!white, colframe=blue!50!black,
+  fonttitle=\bfseries, title=Key Point}
+\newtcolorbox{derivnote}{colback=yellow!5!white, colframe=orange!50!black,
+  fonttitle=\bfseries, title=Derivation Note}
+
+% ══════════════════════════════════════════════════════════════════════
+\title{%
+  Two-Phase Ferrohydrodynamics:\\
+  Derivation from First Principles\\[6pt]
+  \large Independent Formulation for Code Verification}
+\author{Derivation Document — Semi\_Coupled Project}
+\date{March 2026}
+
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+
+% ══════════════════════════════════════════════════════════════════════
+% SECTION 1: CAHN-HILLIARD
+% ══════════════════════════════════════════════════════════════════════
+\section{Phase-Field Model: Cahn--Hilliard Equation}
+\label{sec:CH}
+
+\subsection{Physical Motivation}
+
+We have two immiscible fluids in a bounded domain $\Omega \subset \R^d$
+($d=2,3$): a ferrofluid and a non-magnetic carrier fluid. Rather than
+tracking the sharp interface between them (which is numerically painful
+and topologically fragile), we introduce a \emph{phase-field} variable
+$\theta : \Omega \times [0,T] \to \R$ with the convention
+\[
+  \theta \approx +1 \quad \text{(ferrofluid)}, \qquad
+  \theta \approx -1 \quad \text{(non-magnetic fluid)}.
+\]
+The interface is the thin transition layer where $\theta$ varies from
+$-1$ to $+1$ over a width $\sim \eps$.
+
+\subsection{Free Energy}
+
+The Ginzburg--Landau free energy for the two-phase mixture is
+\begin{equation}
+  \label{eq:GL-energy}
+  E_{\mathrm{GL}}[\theta]
+  = \int_\Omega \frac{\eps}{2} |\grad\theta|^2
+    + \frac{1}{\eps} F(\theta) \dd x,
+\end{equation}
+where $\eps > 0$ is the interface thickness parameter, and $F$ is a
+double-well potential with minima at $\theta = \pm 1$.
+
+\begin{derivnote}
+Why this form? The term $\frac{\eps}{2}|\grad\theta|^2$ penalizes
+spatial gradients (keeps the interface smooth), while
+$\frac{1}{\eps}F(\theta)$ forces $\theta$ toward $\pm 1$ in the bulk.
+The competition between these two terms produces a diffuse interface of
+width $\mathcal{O}(\eps)$. As $\eps \to 0$, we formally recover a sharp
+interface.
+\end{derivnote}
+
+\subsubsection{Choice of Double-Well Potential}
+
+The standard polynomial double-well is $F_0(\theta) = \frac{1}{4}(\theta^2 - 1)^2$.
+However, we need bounded derivatives for the analysis to work, so we use
+a \emph{truncated} version:
+\begin{equation}
+  \label{eq:truncated-F}
+  F(\theta) =
+  \begin{cases}
+    (\theta + 1)^2   & \text{if } \theta \leq -1, \\
+    \frac{1}{4}(\theta^2 - 1)^2 & \text{if } -1 \leq \theta \leq 1, \\
+    (\theta - 1)^2   & \text{if } \theta \geq 1.
+  \end{cases}
+\end{equation}
+
+Set $f(\theta) := F'(\theta)$. Then:
+\begin{itemize}
+  \item In $[-1,1]$: $f(\theta) = \theta^3 - \theta$.
+  \item For $\theta \leq -1$: $f(\theta) = 2(\theta+1)$.
+  \item For $\theta \geq 1$: $f(\theta) = 2(\theta-1)$.
+\end{itemize}
+
+The crucial property we need is:
+\begin{equation}
+  \label{eq:f-bounds}
+  |f(\theta)| \leq 2|\theta| + 1, \qquad
+  |f'(\theta)| \leq 2, \qquad \forall\, \theta \in \R.
+\end{equation}
+The bound $|f'| \leq 2$ is what makes the convex-concave splitting work
+later.
+
+\subsection{Deriving the Cahn--Hilliard Equation}
+
+The phase field should evolve to minimize the free energy while
+conserving mass (total amount of each fluid is fixed). The standard
+approach:
+
+\paragraph{Step 1: Chemical potential.}
+Define the chemical potential as the variational derivative of the free
+energy:
+\begin{equation}
+  \label{eq:chem-potential}
+  \psi := \frac{\delta E_{\mathrm{GL}}}{\delta \theta}
+  = -\eps\,\Delta\theta + \frac{1}{\eps} f(\theta).
+\end{equation}
+To see this, take a variation $\theta \mapsto \theta + \delta\alpha\,\eta$
+for test function $\eta$ with $\dn\theta = 0$ on $\partial\Omega$:
+\begin{align*}
+  \frac{d}{d\alpha}\bigg|_{\alpha=0} E_{\mathrm{GL}}[\theta + \alpha\eta]
+  &= \int_\Omega \eps\,\grad\theta \cdot \grad\eta
+     + \frac{1}{\eps} f(\theta)\,\eta \dd x \\
+  &= \int_\Omega \left( -\eps\,\Delta\theta
+     + \frac{1}{\eps} f(\theta) \right) \eta \dd x
+     + \underbrace{\int_{\partial\Omega} \eps\,\dn\theta\,\eta \dd s}_{=\,0}.
+\end{align*}
+
+\paragraph{Step 2: Mass-conserving dynamics.}
+To conserve mass ($\frac{d}{dt}\int_\Omega \theta \dd x = 0$), we need
+$\dt\theta = -\dv \bm{J}$ for some flux $\bm{J}$. The simplest choice
+that dissipates energy is $\bm{J} = -\gamma \grad\psi$ (Fick's law with
+mobility $\gamma > 0$):
+\begin{equation}
+  \label{eq:CH}
+  \dt\theta = \gamma\,\Delta\psi = -\gamma\,\Delta\!\left(
+    -\eps\,\Delta\theta + \frac{1}{\eps} f(\theta)
+  \right).
+\end{equation}
+
+\paragraph{Step 3: Verify energy dissipation.}
+Multiply \eqref{eq:CH} by $\psi$ and integrate:
+\begin{align}
+  \frac{d}{dt} E_{\mathrm{GL}}[\theta]
+  &= \int_\Omega \psi\,\dt\theta \dd x
+  = \int_\Omega \psi\,\gamma\,\Delta\psi \dd x
+  = -\gamma \int_\Omega |\grad\psi|^2 \dd x \leq 0.
+  \label{eq:CH-dissipation}
+\end{align}
+Good: energy decreases.
+
+\paragraph{Boundary conditions.}
+Natural (Neumann) on both $\theta$ and $\psi$:
+\begin{equation}
+  \label{eq:CH-BC}
+  \dn\theta = 0, \qquad \dn\psi = 0 \qquad \text{on } \partial\Omega.
+\end{equation}
+
+\subsection{First-Order System Form}
+
+For numerics, we write CH as a system of two second-order PDEs:
+\begin{equation}
+  \label{eq:CH-system}
+  \boxed{
+  \begin{aligned}
+    \dt\theta + \bfu \cdot \grad\theta &= \gamma\,\Delta\psi, \\
+    \psi &= -\eps\,\Delta\theta + \frac{1}{\eps} f(\theta),
+  \end{aligned}
+  }
+\end{equation}
+where we have added the advection term $\bfu \cdot \grad\theta$ because
+the phase field is carried by the fluid velocity $\bfu$ (this will be
+justified in Section~\ref{sec:NS}).
+
+\begin{remark}
+  Mass conservation: integrating the first equation over $\Omega$ with
+  $\dn\psi = 0$ and $\dv\bfu = 0$ gives
+  $\frac{d}{dt}\int_\Omega \theta \dd x = 0$.
+  The advection term contributes zero because
+  $\int_\Omega \bfu \cdot \grad\theta \dd x
+   = -\int_\Omega (\dv\bfu)\,\theta \dd x = 0$
+  for divergence-free $\bfu$.
+\end{remark}
+
+
+% ══════════════════════════════════════════════════════════════════════
+% SECTION 2: FERROHYDRODYNAMICS — SHLIOMIS
+% ══════════════════════════════════════════════════════════════════════
+\section{Magnetization Dynamics: Shliomis Model}
+\label{sec:shliomis}
+
+\subsection{Physical Setting}
+
+A ferrofluid is a colloidal suspension of magnetic nanoparticles
+($\sim 10$\,nm diameter) in a carrier liquid. Each particle has a
+permanent magnetic dipole moment. The \emph{magnetization}
+$\bfm : \Omega \times [0,T] \to \R^d$ is the volume-averaged magnetic
+moment density.
+
+When an external magnetic field $\bfh$ is applied, the particles tend to
+align with $\bfh$, but thermal fluctuations and viscous drag resist
+alignment. The \emph{Shliomis model} describes this competition.
+
+\subsection{Full Shliomis Model (Single Phase)}
+
+The full monophase Shliomis model couples Navier--Stokes with a
+magnetization evolution equation. The magnetization equation is:
+\begin{equation}
+  \label{eq:shliomis-full}
+  \dt\bfm + (\bfu \cdot \grad)\bfm - \half\,\curl(\bfu) \times \bfm
+  = -\frac{1}{\tau}\left(\bfm - \chi_0\,\bfh\right)
+    - \beta\,\bfm \times (\bfm \times \bfh),
+\end{equation}
+where:
+\begin{itemize}[nosep]
+  \item $\bfu$: fluid velocity,
+  \item $\tau > 0$: magnetic relaxation time,
+  \item $\chi_0 > 0$: magnetic susceptibility (equilibrium: $\bfm = \chi_0\,\bfh$),
+  \item $\beta \geq 0$: coefficient for the cross-relaxation term,
+  \item $\half\,\curl(\bfu) \times \bfm$: vorticity coupling (particles
+        rotate with the fluid).
+\end{itemize}
+
+\subsection{Simplification: Why We Drop Terms}
+
+For commercial ferrofluids, $\tau \sim 10^{-5}$ to $10^{-9}$\,s, so
+$1/\tau$ is enormous. This means:
+
+\begin{enumerate}
+  \item The relaxation term $-\frac{1}{\tau}(\bfm - \chi_0\bfh)$ dominates.
+        On time scales of interest (flow time $\sim \mathcal{O}(1)$\,s),
+        the magnetization is always close to equilibrium:
+        $\bfm \approx \chi_0\bfh$.
+
+  \item The cross-relaxation term $\beta\,\bfm \times (\bfm \times \bfh)$
+        is a second-order correction. Near equilibrium,
+        $\bfm \times \bfh \approx 0$, so this term is negligible.
+
+  \item The vorticity coupling $\half\curl(\bfu) \times \bfm$:
+        this term cannot be handled in a clean energy framework because
+        it does not have a symmetric structure. Dropping it simplifies
+        the energy analysis.
+\end{enumerate}
+
+\begin{keypoint}
+The simplified Shliomis magnetization equation is:
+\begin{equation}
+  \label{eq:shliomis-simple}
+  \boxed{
+    \dt\bfm + (\bfu \cdot \grad)\bfm + \frac{1}{\tau}\bfm
+    = \frac{\chi_0}{\tau}\bfh.
+  }
+\end{equation}
+This is a \emph{linear advection-reaction equation} for $\bfm$ given
+$\bfu$ and $\bfh$. The $(1/\tau)\bfm$ term provides damping, and
+$(\chi_0/\tau)\bfh$ drives $\bfm$ toward $\chi_0\bfh$.
+\end{keypoint}
+
+\begin{derivnote}
+Even though $\tau$ is small and $\bfm \approx \chi_0\bfh$ in steady
+state, we do \emph{not} replace the PDE by the algebraic relation
+$\bfm = \chi_0\bfh$. The PDE form is essential because:
+(a) it provides the correct energy structure for stability,
+(b) it allows for transient dynamics during field changes,
+(c) it naturally handles the two-phase case where $\chi_0$ varies in space.
+\end{derivnote}
+
+\subsection{Energy Structure of the Magnetization Equation}
+
+Multiply \eqref{eq:shliomis-simple} by $\bfm$ and integrate over $\Omega$.
+For the advection term, assuming $\dv\bfu = 0$ and $\bfu \cdot \bfn = 0$
+on $\partial\Omega$:
+\[
+  \int_\Omega [(\bfu \cdot \grad)\bfm] \cdot \bfm \dd x
+  = \half \int_\Omega \bfu \cdot \grad|\bfm|^2 \dd x
+  = -\half \int_\Omega (\dv\bfu)|\bfm|^2 \dd x = 0.
+\]
+So:
+\begin{equation}
+  \label{eq:mag-energy-test}
+  \half\frac{d}{dt}\norm{\bfm}^2_{L^2}
+  + \frac{1}{\tau}\norm{\bfm}^2_{L^2}
+  = \frac{\chi_0}{\tau}\int_\Omega \bfh \cdot \bfm \dd x.
+\end{equation}
+The right-hand side couples to the magnetic field energy — we will close
+this in Section~\ref{sec:energy}.
+
+
+% ══════════════════════════════════════════════════════════════════════
+% SECTION 3: MAGNETOSTATICS
+% ══════════════════════════════════════════════════════════════════════
+\section{Magnetostatics: From Maxwell to Poisson}
+\label{sec:maxwell}
+
+\subsection{Maxwell's Equations in Matter (Magnetostatics)}
+
+We assume the magnetic field varies slowly compared to the speed of
+light (no electromagnetic waves), so we use the \emph{magnetostatic}
+approximation. The relevant Maxwell equations are:
+\begin{equation}
+  \label{eq:maxwell}
+  \curl(\bfh) = \bm{0}, \qquad
+  \dv(\bfB) = 0,
+\end{equation}
+where $\bfB$ is the magnetic flux density and $\bfh$ is the magnetic
+field intensity. The constitutive relation in a magnetic medium is:
+\begin{equation}
+  \label{eq:constitutive}
+  \bfB = \mu_0(\bfh + \bfm),
+\end{equation}
+with $\mu_0$ the permeability of free space and $\bfm$ the magnetization.
+
+\subsection{Deriving the Poisson Equation}
+
+\paragraph{Step 1:} Since $\curl(\bfh) = \bm{0}$ in a simply connected
+domain, there exists a scalar potential $\varphi$ such that
+\begin{equation}
+  \label{eq:h-grad-phi}
+  \bfh = -\grad\varphi + \bfh_a,
+\end{equation}
+where $\bfh_a$ is the externally applied field (given data). We decompose:
+\[
+  \bfh = \bfh_a + \bfh_d, \qquad \bfh_d = -\grad\varphi,
+\]
+where $\bfh_d$ is the \emph{demagnetizing field} (the field created by
+the magnetic material itself).
+
+\begin{derivnote}
+Why this decomposition? The applied field $\bfh_a$ satisfies
+$\curl(\bfh_a) = \bm{0}$ and $\dv(\bfh_a) = 0$ in free space (it is
+the field that would exist without the ferrofluid). The demagnetizing
+field $\bfh_d$ is generated by the magnetized material. In our
+formulation, $\bfh_a$ is given and we solve for $\varphi$ (which gives
+$\bfh_d$).
+\end{derivnote}
+
+\paragraph{Step 2:} Substitute into $\dv(\bfB) = 0$:
+\begin{align*}
+  0 &= \dv(\bfB) = \mu_0\,\dv(\bfh + \bfm) \\
+    &= \mu_0\,\dv(\bfh_a + \bfh_d + \bfm) \\
+    &= \mu_0\left(\underbrace{\dv(\bfh_a)}_{=\,0}
+       + \dv(-\grad\varphi) + \dv(\bfm)\right) \\
+    &= \mu_0\left(-\Delta\varphi + \dv(\bfm)\right).
+\end{align*}
+
+Therefore:
+\begin{equation}
+  \label{eq:poisson}
+  \boxed{
+    -\Delta\varphi = -\dv(\bfm) \qquad \text{in } \Omega.
+  }
+\end{equation}
+Or equivalently: $\Delta\varphi = \dv(\bfm)$.
+
+\subsection{Boundary Conditions}
+
+On $\partial\Omega$, we impose:
+\begin{equation}
+  \label{eq:poisson-BC}
+  \dn\varphi = \bfm \cdot \bfn \qquad \text{on } \partial\Omega.
+\end{equation}
+
+\begin{derivnote}
+This comes from the physical requirement that
+$\bfB \cdot \bfn$ is continuous across $\partial\Omega$. Outside
+$\Omega$, $\bfm = \bm{0}$, so $\bfB = \mu_0\bfh$. Continuity of
+$\bfB \cdot \bfn$ gives
+$(\bfh_a + \bfh_d + \bfm) \cdot \bfn |_{\text{inside}}
+= (\bfh_a + \bfh_d) \cdot \bfn|_{\text{outside}}$,
+which simplifies to $\bfh_d \cdot \bfn = -\bfm \cdot \bfn$, i.e.,
+$-\dn\varphi = -\bfm \cdot \bfn$, giving \eqref{eq:poisson-BC}.
+\end{derivnote}
+
+\subsection{Total Magnetic Field}
+
+After solving the Poisson equation, the total field is:
+\begin{equation}
+  \label{eq:total-h}
+  \bfh = \bfh_a - \grad\varphi.
+\end{equation}
+
+\begin{remark}
+  The magnetization $\bfm$ and field $\bfh$ are coupled:
+  $\bfm$ depends on $\bfh$ through \eqref{eq:shliomis-simple}, and
+  $\bfh$ depends on $\bfm$ through \eqref{eq:poisson}. This nonlinear
+  coupling is the reason we need Picard iteration later.
+\end{remark}
+
+
+% ══════════════════════════════════════════════════════════════════════
+% SECTION 4: NAVIER-STOKES WITH BODY FORCES
+% ══════════════════════════════════════════════════════════════════════
+\section{Navier--Stokes with Magnetic and Capillary Forces}
+\label{sec:NS}
+
+\subsection{Incompressible Navier--Stokes}
+
+The fluid velocity $\bfu$ and pressure $p$ satisfy the incompressible
+Navier--Stokes equations:
+\begin{equation}
+  \label{eq:NS-generic}
+  \begin{aligned}
+    \rho\left(\dt\bfu + (\bfu \cdot \grad)\bfu\right)
+    - \dv\!\left(2\nu\,\bm{D}(\bfu)\right) + \grad p &= \bff, \\
+    \dv(\bfu) &= 0,
+  \end{aligned}
+\end{equation}
+where $\bm{D}(\bfu) = \half(\grad\bfu + \grad\bfu^\top)$ is the
+symmetric strain rate, $\nu$ is the dynamic viscosity, $\rho$ is the
+density, and $\bff$ collects all body forces.
+
+\subsection{Kelvin Force (Magnetic Body Force)}
+\label{sec:kelvin}
+
+The force exerted by a magnetic field on a magnetized material is the
+\emph{Kelvin force}:
+\begin{equation}
+  \label{eq:kelvin}
+  \bff_{\mathrm{mag}} = \mu_0\,(\bfm \cdot \grad)\bfh.
+\end{equation}
+
+\begin{derivnote}
+Derivation: Consider a magnetic dipole $\bfm$ in a non-uniform field
+$\bfh$. Its potential energy is $U = -\mu_0\,\bfm \cdot \bfh$. The
+force on the dipole is $\bff = -\grad U = \mu_0\,\grad(\bfm \cdot \bfh)$.
+Using the vector identity
+\[
+  \grad(\bfm \cdot \bfh)
+  = (\bfm \cdot \grad)\bfh + (\bfh \cdot \grad)\bfm
+    + \bfm \times \curl(\bfh) + \bfh \times \curl(\bfm),
+\]
+and noting that $\curl(\bfh) = \bm{0}$ (magnetostatics), this becomes
+\[
+  \bff = \mu_0\left[(\bfm \cdot \grad)\bfh + (\bfh \cdot \grad)\bfm
+         + \bfh \times \curl(\bfm)\right].
+\]
+For a continuum of dipoles, after averaging, the standard result is the
+Kelvin force $\bff_{\mathrm{mag}} = \mu_0(\bfm \cdot \grad)\bfh$.
+The other terms either cancel or are absorbed into a modified pressure.
+\end{derivnote}
+
+\begin{remark}
+  In the full Shliomis model, there is also an antisymmetric stress
+  contribution $\frac{\mu_0}{2}\curl(\bfm \times \bfh)$. This was
+  dropped in the simplified model (Section~\ref{sec:shliomis}).
+\end{remark}
+
+\subsection{Capillary Force (Surface Tension)}
+\label{sec:capillary}
+
+In the diffuse-interface framework, surface tension appears as a
+distributed body force derived from the capillary stress tensor.
+
+The capillary stress tensor is
+$\bm{\sigma}_c = \lambda\,\grad\theta \otimes \grad\theta$,
+where $\lambda > 0$ is proportional to surface tension.
+The capillary force is:
+\begin{equation}
+  \label{eq:capillary-force-div}
+  \bff_c = \dv(\bm{\sigma}_c) = \lambda\left[
+    \Delta\theta\,\grad\theta
+    + \half\grad|\grad\theta|^2
+  \right].
+\end{equation}
+
+Using the chemical potential $\psi$ from \eqref{eq:chem-potential}, we
+can rewrite this more conveniently. Note that
+\[
+  \psi = -\eps\,\Delta\theta + \frac{1}{\eps}f(\theta)
+  \quad \Longrightarrow \quad
+  \Delta\theta = -\frac{1}{\eps}\psi + \frac{1}{\eps^2}f(\theta).
+\]
+After some manipulation (using $\grad F(\theta) = f(\theta)\grad\theta$),
+the capillary force can be written as:
+\begin{equation}
+  \label{eq:capillary-force}
+  \boxed{
+    \bff_c = \frac{\lambda}{\eps}\,\theta\,\grad\psi.
+  }
+\end{equation}
+
+\begin{derivnote}
+The key trick: write
+$\dv(\bm{\sigma}_c) = \lambda\Delta\theta\,\grad\theta + \text{(gradient terms)}$.
+The gradient terms can be absorbed into a modified pressure
+$\tilde{p} = p + \frac{\lambda}{2}|\grad\theta|^2 + \frac{\lambda}{\eps}F(\theta)$
+(see the original derivation in the Cahn--Hilliard literature, e.g.,
+Feng 2006, Kay et al.\ 2009). What remains is
+$\lambda\Delta\theta\,\grad\theta$, which using
+$\psi = -\eps\Delta\theta + \frac{1}{\eps}f(\theta)$ gives us the
+$\frac{\lambda}{\eps}\theta\grad\psi$ form after absorbing remaining
+gradient terms into $\tilde{p}$.
+\end{derivnote}
+
+\subsection{Gravity (Boussinesq Approximation)}
+
+For the Rosensweig instability, gravity is essential (it opposes the
+magnetic force that creates spikes). Using Boussinesq:
+\begin{equation}
+  \label{eq:gravity}
+  \bff_g = -\rho_0\left(1 + \alpha_\theta\,\theta\right)\bm{g},
+\end{equation}
+where $\rho_0$ is a reference density, $\alpha_\theta$ accounts for the
+density contrast, and $\bm{g}$ is gravitational acceleration.
+
+\subsection{Complete Navier--Stokes}
+
+Collecting all forces:
+\begin{equation}
+  \label{eq:NS-complete}
+  \boxed{
+  \begin{aligned}
+    \dt\bfu + (\bfu \cdot \grad)\bfu
+    - \dv\!\left(2\nu(\theta)\,\bm{D}(\bfu)\right)
+    + \grad p
+    &= \frac{\lambda}{\eps}\,\theta\,\grad\psi
+       + \mu_0\,(\bfm \cdot \grad)\bfh
+       + \bff_g, \\
+    \dv(\bfu) &= 0,
+  \end{aligned}
+  }
+\end{equation}
+with boundary conditions $\bfu = \bm{0}$ on $\partial\Omega$ (no-slip).
+
+
+% ══════════════════════════════════════════════════════════════════════
+% SECTION 5: TWO-PHASE EXTENSION
+% ══════════════════════════════════════════════════════════════════════
+\section{Two-Phase Material Properties}
+\label{sec:two-phase}
+
+In the two-phase system, material properties depend on the phase field
+$\theta$. Let subscript 1 denote ferrofluid ($\theta = +1$) and
+subscript 2 denote non-magnetic fluid ($\theta = -1$).
+
+\subsection{Interpolation Functions}
+
+We use linear interpolation:
+\begin{equation}
+  \label{eq:interp}
+  \begin{aligned}
+    \nu(\theta) &= \frac{\nu_1 + \nu_2}{2}
+                 + \frac{\nu_1 - \nu_2}{2}\,\theta, \\
+    \chi_0(\theta) &= \frac{\chi_{0,1} + \chi_{0,2}}{2}
+                    + \frac{\chi_{0,1} - \chi_{0,2}}{2}\,\theta.
+  \end{aligned}
+\end{equation}
+Since the non-magnetic fluid has $\chi_{0,2} = 0$:
+\begin{equation}
+  \label{eq:chi-interp}
+  \chi_0(\theta) = \frac{\chi_{0,1}}{2}(1 + \theta).
+\end{equation}
+
+\begin{remark}
+  This means $\chi_0(\theta) > 0$ only where $\theta > -1$ (i.e., where
+  ferrofluid is present). In the non-magnetic region ($\theta = -1$),
+  $\chi_0 = 0$ and the magnetization relaxes to zero.
+\end{remark}
+
+\subsection{Relaxation Time}
+
+Similarly for the relaxation time, but since the non-magnetic fluid has
+no magnetic relaxation, we set $\tau(\theta) = \tau_1$ in the ferrofluid
+region and handle the non-magnetic region through $\chi_0 = 0$
+(the magnetization equation naturally drives $\bfm \to 0$ when
+$\chi_0 = 0$).
+
+
+% ══════════════════════════════════════════════════════════════════════
+% SECTION 6: COMPLETE SYSTEM
+% ══════════════════════════════════════════════════════════════════════
+\section{Complete Two-Phase Ferrohydrodynamic System}
+\label{sec:complete}
+
+Collecting everything from the previous sections, the complete system in
+$\Omega \times (0,T]$ is:
+
+\bigskip
+\begin{equation}
+  \label{eq:system}
+  \boxed{
+  \begin{aligned}
+    &\textbf{Cahn--Hilliard:} \\
+    &\quad \dt\theta + \bfu \cdot \grad\theta
+      = \gamma\,\Delta\psi, \\
+    &\quad \psi = -\eps\,\Delta\theta + \frac{1}{\eps}f(\theta), \\[6pt]
+    &\textbf{Magnetization:} \\
+    &\quad \dt\bfm + (\bfu \cdot \grad)\bfm + \frac{1}{\tau}\bfm
+      = \frac{\chi_0(\theta)}{\tau}\bfh, \\[6pt]
+    &\textbf{Magnetostatics:} \\
+    &\quad -\Delta\varphi = -\dv(\bfm), \qquad
+      \bfh = \bfh_a - \grad\varphi, \\[6pt]
+    &\textbf{Navier--Stokes:} \\
+    &\quad \dt\bfu + (\bfu \cdot \grad)\bfu
+      - \dv\!\left(2\nu(\theta)\,\bm{D}(\bfu)\right) + \grad p \\
+    &\qquad\qquad = \frac{\lambda}{\eps}\,\theta\,\grad\psi
+       + \mu_0\,(\bfm \cdot \grad)\bfh + \bff_g, \\
+    &\quad \dv(\bfu) = 0.
+  \end{aligned}
+  }
+\end{equation}
+
+\bigskip\noindent
+\textbf{Boundary conditions:}
+\begin{equation}
+  \label{eq:BCs}
+  \dn\theta = 0, \quad \dn\psi = 0, \quad
+  \bfu = \bm{0}, \quad
+  \dn\varphi = \bfm \cdot \bfn
+  \qquad \text{on } \partial\Omega.
+\end{equation}
+
+
+% ══════════════════════════════════════════════════════════════════════
+% SECTION 7: ENERGY LAW
+% ══════════════════════════════════════════════════════════════════════
+\section{Energy Law for the Continuous System}
+\label{sec:energy}
+
+\subsection{Total Energy Functional}
+
+Define the total energy:
+\begin{equation}
+  \label{eq:total-energy}
+  E(t) = \underbrace{\frac{1}{2}\norm{\bfu}^2_{L^2}}_{\text{kinetic}}
+       + \underbrace{\frac{\lambda}{\eps}\int_\Omega
+         \frac{\eps}{2}|\grad\theta|^2
+         + \frac{1}{\eps}F(\theta) \dd x}_{\text{Ginzburg--Landau}}
+       + \underbrace{\frac{\mu_0}{2\chi_0}\norm{\bfm}^2_{L^2}
+         + \frac{\mu_0}{2}\norm{\grad\varphi}^2_{L^2}}_{\text{magnetic}}.
+\end{equation}
+
+\begin{derivnote}
+Why these specific coefficients?
+\begin{itemize}[nosep]
+  \item The kinetic energy $\frac{1}{2}\|\bfu\|^2$ is standard.
+  \item The GL energy is multiplied by $\lambda/\eps$ because the
+        capillary force involves this coefficient.
+  \item The magnetic energy $\frac{\mu_0}{2\chi_0}\|\bfm\|^2$ comes
+        from the magnetization equation: testing with
+        $\frac{\mu_0}{\chi_0}\bfm$ produces
+        $\frac{\mu_0}{2\chi_0}\frac{d}{dt}\|\bfm\|^2$.
+  \item The field energy $\frac{\mu_0}{2}\|\grad\varphi\|^2$ comes
+        from the Poisson equation: testing with $\mu_0\,\dt\varphi$.
+\end{itemize}
+The art is choosing test functions so that all coupling terms cancel.
+\end{derivnote}
+
+\subsection{Energy Identity}
+
+\begin{proposition}[Energy Dissipation]
+  \label{prop:energy}
+  Smooth solutions of system~\eqref{eq:system} satisfy:
+  \begin{equation}
+    \label{eq:energy-law}
+    \frac{d}{dt} E(t)
+    + 2\int_\Omega \nu(\theta)\,|\bm{D}(\bfu)|^2 \dd x
+    + \frac{\lambda\gamma}{\eps}\norm{\grad\psi}^2_{L^2}
+    + \frac{\mu_0}{\tau\chi_0}\norm{\bfm}^2_{L^2}
+    = \frac{\mu_0}{\tau}\int_\Omega \bfh_a \cdot \bfm \dd x.
+  \end{equation}
+\end{proposition}
+
+\begin{proof}[Proof sketch]
+Test each equation with the appropriate function and add:
+
+\paragraph{Step 1: NS tested with $\bfu$.}
+\[
+  \half\frac{d}{dt}\norm{\bfu}^2
+  + 2\int_\Omega \nu|\bm{D}(\bfu)|^2 \dd x
+  = \frac{\lambda}{\eps}\int_\Omega \theta\,\grad\psi \cdot \bfu \dd x
+    + \mu_0 \int_\Omega [(\bfm \cdot \grad)\bfh] \cdot \bfu \dd x.
+\]
+The pressure term vanishes: $\int \grad p \cdot \bfu = -\int p\,\dv\bfu = 0$.
+The advection nonlinearity vanishes:
+$\int [(\bfu\cdot\grad)\bfu]\cdot\bfu = 0$ (skew-symmetry for $\dv\bfu=0$).
+
+\paragraph{Step 2: CH tested with $\frac{\lambda}{\eps}\psi$.}
+Using $\dt\theta = -\bfu\cdot\grad\theta + \gamma\Delta\psi$:
+\[
+  \frac{\lambda}{\eps}\int_\Omega \psi\,\dt\theta \dd x
+  = \frac{\lambda}{\eps}\frac{d}{dt}\left[
+    \int_\Omega \frac{\eps}{2}|\grad\theta|^2 + \frac{1}{\eps}F(\theta) \dd x
+  \right],
+\]
+which equals $\frac{d}{dt}E_{\mathrm{GL}}$. The cross-term with $\bfu$:
+\[
+  -\frac{\lambda}{\eps}\int_\Omega \psi\,\bfu\cdot\grad\theta \dd x.
+\]
+And the dissipation: $-\frac{\lambda\gamma}{\eps}\|\grad\psi\|^2$.
+
+\paragraph{Step 3: Magnetization tested with $\frac{\mu_0}{\chi_0}\bfm$.}
+\[
+  \frac{\mu_0}{2\chi_0}\frac{d}{dt}\norm{\bfm}^2
+  + \underbrace{\frac{\mu_0}{\chi_0}\int_\Omega [(\bfu\cdot\grad)\bfm]\cdot\bfm}_{=\,0}
+  + \frac{\mu_0}{\tau\chi_0}\norm{\bfm}^2
+  = \frac{\mu_0}{\tau}\int_\Omega \bfh \cdot \bfm \dd x.
+\]
+
+\paragraph{Step 4: Poisson tested with $\mu_0\,\dt\varphi$.}
+From $-\Delta\varphi = -\dv\bfm$:
+\[
+  \mu_0\int_\Omega \grad\varphi \cdot \grad(\dt\varphi) \dd x
+  = \mu_0\int_\Omega \bfm \cdot \grad(\dt\varphi) \dd x.
+\]
+The left side gives $\frac{\mu_0}{2}\frac{d}{dt}\|\grad\varphi\|^2$.
+
+\paragraph{Step 5: Cancel cross-terms.}
+The capillary coupling: $\frac{\lambda}{\eps}\int\theta\,\grad\psi\cdot\bfu$
+from NS cancels with $-\frac{\lambda}{\eps}\int\psi\,\bfu\cdot\grad\theta$ from CH
+because (integration by parts with $\dv\bfu = 0$):
+\[
+  \int_\Omega \theta\,\grad\psi\cdot\bfu \dd x
+  = -\int_\Omega \psi\,\dv(\theta\bfu) \dd x
+  = -\int_\Omega \psi\left(\bfu\cdot\grad\theta + \theta\,\dv\bfu\right) \dd x
+  = -\int_\Omega \psi\,\bfu\cdot\grad\theta \dd x. \quad \checkmark
+\]
+
+The magnetic coupling: $\mu_0\int[(\bfm\cdot\grad)\bfh]\cdot\bfu$ from NS
+and $\frac{\mu_0}{\tau}\int\bfh\cdot\bfm$ from magnetization
+combine with the Poisson contribution. The key identity is:
+\[
+  \int_\Omega [(\bfm\cdot\grad)\bfh]\cdot\bfu \dd x
+  = -\int_\Omega [(\bfu\cdot\grad)\bfm]\cdot\bfh \dd x
+    - \int_\Omega [(\bfu\cdot\grad)\bfh]\cdot\bfm \dd x.
+\]
+Together with the Poisson time-derivative term, everything closes to
+give \eqref{eq:energy-law}.
+\end{proof}
+
+\begin{keypoint}
+The right-hand side $\frac{\mu_0}{\tau}\int\bfh_a\cdot\bfm$ is the
+power input from the external field. In steady state, this power is
+balanced by viscous dissipation, phase-field diffusion, and magnetic
+relaxation.
+\end{keypoint}
+
+\begin{remark}
+  \label{rem:chi-restriction}
+  For the energy estimate to close properly in the discrete setting, one
+  needs the demagnetizing field energy to be controlled. This leads to
+  the restriction $\chi_0 \leq 4$ in practice (the constant comes from
+  the Poincar\'e-type estimate for the Poisson problem). This is a
+  limitation of the scheme, not the physics.
+\end{remark}
+
+
+% ══════════════════════════════════════════════════════════════════════
+% SECTION 8: FINITE ELEMENT DISCRETIZATION
+% ══════════════════════════════════════════════════════════════════════
+\section{Finite Element Discretization}
+\label{sec:fem}
+
+\subsection{Mesh and Notation}
+
+Let $\Th$ be a conforming quadrilateral (2D) or hexahedral (3D)
+partition of $\Omega$, with mesh size $h$. Let $\Eh$ denote the set of
+interior faces (edges in 2D). For each face $e \in \Eh$ shared by
+elements $K^+$ and $K^-$:
+\begin{itemize}[nosep]
+  \item $\bfn_e$: unit normal (with fixed orientation),
+  \item $\jump{v} := v^+ - v^-$: jump across $e$,
+  \item $\avg{v} := \half(v^+ + v^-)$: average across $e$.
+\end{itemize}
+
+\subsection{Finite Element Spaces}
+\label{sec:fe-spaces}
+
+\paragraph{Why mixed CG/DG?}
+The magnetization equation has dominant advection
+($(\bfu\cdot\grad)\bfm$), so standard CG would produce oscillations.
+DG handles advection naturally via upwinding. However, the Poisson
+equation for $\varphi$ needs CG for efficiency (DG Poisson is expensive
+due to the penalty/LDG terms).
+
+The critical constraint linking these spaces is:
+\begin{equation}
+  \label{eq:space-constraint}
+  \boxed{
+    \grad(X_h) \subseteq \bfM_h,
+  }
+\end{equation}
+where $X_h$ is the CG space for $\varphi$ and $\bfM_h$ is the DG space
+for $\bfm$. This ensures that testing the Poisson equation is consistent
+with the magnetization discretization.
+
+\begin{derivnote}
+Why is this constraint needed? In the energy proof, we test the Poisson
+equation with $\dt\varphi_h$, which gives terms involving
+$\grad(\dt\varphi_h)$. This gradient must live in $\bfM_h$ for the
+discrete integration by parts to work correctly. If $\grad(X_h) \not\subseteq \bfM_h$, the discrete energy law breaks.
+\end{derivnote}
+
+\paragraph{Concrete spaces:}
+\begin{equation}
+  \label{eq:spaces}
+  \begin{aligned}
+    \text{Velocity:}\quad &\bfV{}_h \subset [H^1_0(\Omega)]^d,
+      &&\text{CG } \bm{Q}_2, \\
+    \text{Pressure:}\quad &Q_h \subset L^2(\Omega),
+      &&\text{DG } P_1, \\
+    \text{Phase field:}\quad &S_h \subset H^1(\Omega),
+      &&\text{CG } Q_2, \\
+    \text{Poisson:}\quad &X_h \subset H^1(\Omega),
+      &&\text{CG } Q_2, \\
+    \text{Magnetization:}\quad &\bfM_h \subset [L^2(\Omega)]^d,
+      &&\text{DG } \bm{Q}_1.
+  \end{aligned}
+\end{equation}
+
+\begin{keypoint}
+$\varphi \in Q_2$ (CG) and $\bfm \in Q_1$ (DG). Since
+$\grad(Q_2) \subset Q_1$ (the gradient of a quadratic polynomial is
+linear), the constraint \eqref{eq:space-constraint} is satisfied.
+If we used $Q_1$ for $\varphi$, we would need $Q_0$ for $\bfm$ (constants),
+which is too low-order.
+\end{keypoint}
+
+\subsection{DG Transport Form for Magnetization}
+\label{sec:dg-transport}
+
+The advection term $(\bfu\cdot\grad)\bfm$ needs special treatment in
+DG. We derive the DG bilinear form from scratch.
+
+\paragraph{Step 1: Start from the weak form on each element.}
+On element $K$, multiply $(\bfu\cdot\grad)\bfm$ by test function $\bfz$
+and integrate:
+\[
+  \int_K [(\bfu\cdot\grad)\bfm] \cdot \bfz \dd x.
+\]
+
+\paragraph{Step 2: Integration by parts on $K$.}
+\begin{align*}
+  \int_K (\bfu\cdot\grad)\bfm \cdot \bfz \dd x
+  &= -\int_K \bfm \cdot \dv(\bfu \otimes \bfz) \dd x
+     + \int_{\partial K} (\bfu \cdot \bfn_K)\,\bfm \cdot \bfz \dd s \\
+  &= -\int_K \bfm \cdot [(\bfu\cdot\grad)\bfz] \dd x
+     - \int_K (\dv\bfu)\,\bfm \cdot \bfz \dd x
+     + \int_{\partial K} (\bfu\cdot\bfn_K)\,\bfm \cdot \bfz \dd s.
+\end{align*}
+
+\paragraph{Step 3: Sum over all elements.}
+\[
+  \sum_K \int_K (\bfu\cdot\grad)\bfm\cdot\bfz \dd x
+  = -\sum_K \int_K \bfm \cdot [(\bfu\cdot\grad)\bfz] \dd x
+    - \sum_K \int_K (\dv\bfu)\bfm\cdot\bfz \dd x
+    + \sum_K \int_{\partial K} (\bfu\cdot\bfn_K)\bfm\cdot\bfz \dd s.
+\]
+The boundary integral sum, after pairing faces, gives jump terms on
+interior faces:
+\[
+  \sum_K \int_{\partial K} (\bfu\cdot\bfn_K)\bfm\cdot\bfz \dd s
+  = \sum_{e \in \Eh} \int_e \left[
+    \avg{\bfu\cdot\bfn}\,\jump{\bfm\cdot\bfz}
+    + \jump{\bfu\cdot\bfn}\,\avg{\bfm\cdot\bfz}
+  \right] \dd s.
+\]
+
+\paragraph{Step 4: Simplify using $\dv\bfu = 0$.}
+For continuous velocity ($\bfu \in \bfV{}_h$, CG), $\jump{\bfu\cdot\bfn} = 0$.
+Also $\dv\bfu = 0$ (pointwise for the discrete divergence-free velocity).
+So:
+\[
+  b_h(\bfu, \bfm, \bfz) := \sum_K \int_K [(\bfu\cdot\grad)\bfm]\cdot\bfz \dd x
+  = -\sum_K \int_K \bfm\cdot[(\bfu\cdot\grad)\bfz] \dd x
+    + \sum_{e \in \Eh} \int_e (\bfu\cdot\bfn)\,\jump{\bfm\cdot\bfz} \dd s.
+\]
+
+\paragraph{Step 5: Symmetrize (skew-symmetric form).}
+Define the DG trilinear form:
+\begin{equation}
+  \label{eq:DG-trilinear}
+  \boxed{
+  \begin{aligned}
+    B_h(\bfu, \bfm, \bfz) &:=
+    \sum_K \int_K [(\bfu\cdot\grad)\bfm]\cdot\bfz \dd x \\
+    &\quad + \half \sum_K \int_K (\dv\bfu)\,\bfm\cdot\bfz \dd x \\
+    &\quad - \half \sum_{e \in \Eh} \int_e
+      (\bfu\cdot\bfn)\,\jump{\bfm}\cdot\avg{\bfz} \dd s \\
+    &\quad - \half \sum_{e \in \Eh} \int_e
+      (\bfu\cdot\bfn)\,\avg{\bfm}\cdot\jump{\bfz} \dd s.
+  \end{aligned}
+  }
+\end{equation}
+
+\begin{derivnote}
+The skew-symmetrization is done so that
+$B_h(\bfu, \bfm, \bfm) = 0$,
+which is essential for the energy estimate. The extra $\half(\dv\bfu)$
+term and the face average/jump splitting achieve this.
+Let us verify: set $\bfz = \bfm$ in \eqref{eq:DG-trilinear}. The cell
+terms give
+$\sum_K \int_K [(\bfu\cdot\grad)\bfm]\cdot\bfm + \half(\dv\bfu)|\bfm|^2$
+$= \sum_K \half\int_K \bfu\cdot\grad|\bfm|^2 + \half(\dv\bfu)|\bfm|^2$
+$= \sum_K \half\int_K \dv(\bfu|\bfm|^2)$
+$= \half\sum_K \int_{\partial K} (\bfu\cdot\bfn)|\bfm|^2$.
+The face terms become
+$-\half\sum_e \int_e (\bfu\cdot\bfn)\jump{\bfm}\cdot\avg{\bfm}
+ -\half\sum_e \int_e (\bfu\cdot\bfn)\avg{\bfm}\cdot\jump{\bfm}$
+$= -\sum_e \int_e (\bfu\cdot\bfn)\jump{\bfm}\cdot\avg{\bfm}$.
+Using the identity $\jump{|\bfm|^2} = 2\avg{\bfm}\cdot\jump{\bfm}$
+and $\sum_K \int_{\partial K}(\bfu\cdot\bfn)|\bfm|^2
+= \sum_e \int_e (\bfu\cdot\bfn)\jump{|\bfm|^2}$,
+everything cancels: $B_h(\bfu,\bfm,\bfm) = 0$. $\checkmark$
+\end{derivnote}
+
+\subsection{Upwind Stabilization}
+\label{sec:upwind}
+
+The skew-symmetric form $B_h$ is energy-neutral but does not suppress
+oscillations. We add upwind stabilization:
+\begin{equation}
+  \label{eq:upwind}
+  S_h(\bfu, \bfm, \bfz) :=
+  \half \sum_{e \in \Eh} \int_e |\bfu \cdot \bfn|\,
+  \jump{\bfm} \cdot \jump{\bfz} \dd s.
+\end{equation}
+
+The total transport form is:
+\begin{equation}
+  \label{eq:transport-total}
+  \mathcal{B}_h(\bfu, \bfm, \bfz) = B_h(\bfu, \bfm, \bfz)
+  + S_h(\bfu, \bfm, \bfz).
+\end{equation}
+
+\begin{derivnote}
+Upwind adds dissipation: $S_h(\bfu,\bfm,\bfm) = \half\sum_e\int_e |\bfu\cdot\bfn|\,|\jump{\bfm}|^2 \geq 0$.
+This is the DG equivalent of artificial viscosity, localized at element
+interfaces where the solution has jumps. It vanishes for smooth solutions
+(where $\jump{\bfm} \to 0$).
+\end{derivnote}
+
+
+% ══════════════════════════════════════════════════════════════════════
+% SECTION 9: THE DISCRETE SCHEME
+% ══════════════════════════════════════════════════════════════════════
+\section{Energy-Stable Discrete Scheme}
+\label{sec:scheme}
+
+\subsection{Time Discretization}
+
+Let $\delta t > 0$ be the time step, $t^n = n\,\delta t$. We use
+backward Euler for time derivatives and treat the nonlinear terms
+carefully to maintain energy stability.
+
+Notation: $d_t v^n := \frac{v^n - v^{n-1}}{\delta t}$.
+
+\subsection{The Coupled Scheme}
+
+Given $(\theta^{n-1}, \bfu^{n-1}, \bfm^{n-1}, \varphi^{n-1})$, find
+$(\theta^n, \psi^n, \bfu^n, p^n, \bfm^n, \varphi^n)$ such that:
+
+\bigskip
+\noindent\textbf{Block 1: Cahn--Hilliard.}
+For all $(s, r) \in S_h \times S_h$:
+\begin{subequations}
+\label{eq:disc-CH}
+\begin{align}
+  (d_t\theta^n, s)
+  + (\bfu^{n-1}\cdot\grad\theta^n, s)
+  + \gamma(\grad\psi^n, \grad s)
+  &= 0,
+  \label{eq:disc-CH-a} \\
+  (\psi^n, r) - \eps(\grad\theta^n, \grad r)
+  - \frac{1}{\eps}\left(f(\theta^{n-1}) + f'(\theta^{n-1})(\theta^n - \theta^{n-1}), r\right)
+  &= 0.
+  \label{eq:disc-CH-b}
+\end{align}
+\end{subequations}
+
+\begin{derivnote}
+The nonlinearity $f(\theta)$ is linearized by a first-order Taylor
+expansion about $\theta^{n-1}$. Since $|f'| \leq 2$
+(from \eqref{eq:f-bounds}), this linearization is Lipschitz-stable.
+The convex-concave splitting could also be used here.
+\end{derivnote}
+
+\bigskip
+\noindent\textbf{Block 2: Navier--Stokes.}
+For all $(\bfv, q) \in \bfV{}_h \times Q_h$:
+\begin{subequations}
+\label{eq:disc-NS}
+\begin{align}
+  (d_t\bfu^n, \bfv)
+  + c_h(\bfu^{n-1}; \bfu^n, \bfv)
+  + 2(\nu(\theta^n)\,\bm{D}(\bfu^n), \bm{D}(\bfv))
+  &\notag\\
+  - (p^n, \dv\bfv)
+  &= \frac{\lambda}{\eps}(\theta^n\,\grad\psi^n, \bfv)
+     + \mu_0\left((\bfm^{n-1}\cdot\grad)\bfh^{n-1}, \bfv\right)
+     + (\bff_g^n, \bfv),
+  \label{eq:disc-NS-a} \\
+  (\dv\bfu^n, q) &= 0.
+  \label{eq:disc-NS-b}
+\end{align}
+\end{subequations}
+Here $c_h$ is the skew-symmetric CG convection form:
+\begin{equation}
+  \label{eq:cg-convection}
+  c_h(\bm{w}; \bfu, \bfv) = ((\bm{w}\cdot\grad)\bfu, \bfv)
+  + \half((\dv\bm{w})\bfu, \bfv).
+\end{equation}
+
+\begin{remark}
+  The Kelvin force uses $\bfm^{n-1}$ and $\bfh^{n-1}$ (explicit in
+  magnetization). This decouples NS from the magnetization-Poisson
+  block but means the energy estimate requires care.
+\end{remark}
+
+\bigskip
+\noindent\textbf{Block 3: Magnetization + Poisson (coupled, Picard).}
+For all $(\bfz, \xi) \in \bfM_h \times X_h$:
+\begin{subequations}
+\label{eq:disc-mag}
+\begin{align}
+  (d_t\bfm^n, \bfz)
+  + \mathcal{B}_h(\bfu^n, \bfm^n, \bfz)
+  + \frac{1}{\tau}(\bfm^n, \bfz)
+  &= \frac{\chi_0(\theta^n)}{\tau}(\bfh^n, \bfz),
+  \label{eq:disc-mag-a} \\
+  (\grad\varphi^n, \grad\xi) &= (\bfm^n, \grad\xi),
+  \label{eq:disc-mag-b} \\
+  \bfh^n &= \bfh_a - \grad\varphi^n.
+  \label{eq:disc-mag-c}
+\end{align}
+\end{subequations}
+
+\begin{keypoint}
+Equations \eqref{eq:disc-mag-a}--\eqref{eq:disc-mag-c} are
+\emph{nonlinearly coupled}: $\bfm^n$ depends on $\bfh^n$ (through the
+RHS), and $\bfh^n$ depends on $\bfm^n$ (through the Poisson equation).
+This is solved by \emph{Picard iteration} (Section~\ref{sec:picard}).
+\end{keypoint}
+
+
+% ══════════════════════════════════════════════════════════════════════
+% SECTION 10: PICARD ITERATION
+% ══════════════════════════════════════════════════════════════════════
+\section{Picard Iteration for Magnetization--Poisson}
+\label{sec:picard}
+
+\subsection{The Coupling Problem}
+
+The magnetization equation~\eqref{eq:disc-mag-a} has $\bfh^n$ on the
+RHS, and $\bfh^n = \bfh_a - \grad\varphi^n$ where $\varphi^n$ depends
+on $\bfm^n$. Writing out:
+\[
+  \frac{1}{\tau}(\bfm^n, \bfz)
+  + \text{(other LHS terms)}
+  = \frac{\chi_0}{\tau}(\bfh_a - \grad\varphi^n[\bfm^n], \bfz).
+\]
+This is nonlinear because $\varphi^n$ depends on $\bfm^n$ through the
+Poisson equation.
+
+\subsection{Block Gauss--Seidel (Picard) Algorithm}
+
+Initialize: $\bfm^{n,0} = \bfm^{n-1}$, $\varphi^{n,0} = \varphi^{n-1}$.
+
+For $k = 0, 1, 2, \ldots$ until convergence:
+\begin{enumerate}
+  \item \textbf{Magnetization sub-step:} Given $\varphi^{n,k}$, solve for
+        $\bfm^{n,k+1}$:
+        \begin{equation}
+          \label{eq:picard-mag}
+          (d_t\bfm^{n,k+1}, \bfz)
+          + \mathcal{B}_h(\bfu^n, \bfm^{n,k+1}, \bfz)
+          + \frac{1}{\tau}(\bfm^{n,k+1}, \bfz)
+          = \frac{\chi_0}{\tau}(\bfh_a - \grad\varphi^{n,k}, \bfz).
+        \end{equation}
+
+  \item \textbf{Poisson sub-step:} Given $\bfm^{n,k+1}$, solve for
+        $\varphi^{n,k+1}$:
+        \begin{equation}
+          \label{eq:picard-poisson}
+          (\grad\varphi^{n,k+1}, \grad\xi) = (\bfm^{n,k+1}, \grad\xi)
+          \qquad \forall\,\xi \in X_h.
+        \end{equation}
+\end{enumerate}
+
+\begin{derivnote}
+\textbf{Convergence:} The iteration is a contraction if
+$\chi_0 < \chi_*$ for some critical value. Intuitively: the Poisson
+equation maps $\bfm \mapsto \varphi$ with a ``gain'' related to the
+Poincar\'e constant, and the magnetization equation maps
+$\varphi \mapsto \bfm$ with gain $\chi_0/\tau$ divided by the
+$(1/\tau + 1/\delta t)$ from the LHS. The product of gains must be $< 1$.
+
+The relaxation parameter $\omega = 1/(1+\chi_0)$ can be used to
+accelerate convergence by under-relaxing the Poisson update:
+$\varphi^{n,k+1} \leftarrow \omega\,\varphi^{n,k+1} + (1-\omega)\varphi^{n,k}$.
+
+In practice, convergence is fast: 3--7 iterations suffice with tolerance
+$\sim 10^{-6}$.
+\end{derivnote}
+
+
+% ══════════════════════════════════════════════════════════════════════
+% SECTION 11: SIMPLIFIED MODEL h = h_a
+% ══════════════════════════════════════════════════════════════════════
+\section{Simplified Model: \texorpdfstring{$\bfh = \bfh_a$}{h = h\_a} (No Demagnetization)}
+\label{sec:simplified}
+
+\subsection{When Is This Valid?}
+
+If the demagnetizing field $\bfh_d = -\grad\varphi$ is negligible
+compared to the applied field $\bfh_a$, we can set $\bfh = \bfh_a$ and
+drop the Poisson equation entirely.
+
+This is valid when:
+\begin{itemize}[nosep]
+  \item The ferrofluid region is thin (demagnetization is weak),
+  \item $\chi_0$ is small (weak magnetization),
+  \item The applied field is strong and slowly varying.
+\end{itemize}
+
+\subsection{Simplified System}
+
+The magnetization equation becomes:
+\begin{equation}
+  \label{eq:simple-mag}
+  \dt\bfm + (\bfu\cdot\grad)\bfm + \frac{1}{\tau}\bfm
+  = \frac{\chi_0(\theta)}{\tau}\bfh_a.
+\end{equation}
+This is a \emph{linear} equation for $\bfm$ (no Picard needed).
+
+\begin{remark}
+  Convergence of the FEM is provable for this simplified model: optimal
+  error estimates in $L^2$ and $H^1$ norms hold under standard regularity
+  assumptions. The full model with Picard has convergence proven only
+  under smallness assumptions on $\chi_0$.
+\end{remark}
+
+
+% ══════════════════════════════════════════════════════════════════════
+% SECTION 12: ROSENSWEIG INSTABILITY
+% ══════════════════════════════════════════════════════════════════════
+\section{Rosensweig Instability: Benchmark Setup}
+\label{sec:rosensweig}
+
+\subsection{Physical Description}
+
+The Rosensweig (normal-field) instability occurs when a uniform
+vertical magnetic field is applied to a horizontal layer of ferrofluid.
+Above a critical field strength, the flat surface becomes unstable and
+forms a regular pattern of peaks (``spikes'').
+
+The instability is a competition between:
+\begin{itemize}
+  \item \textbf{Magnetic force} (destabilizing): the Kelvin force
+        $\mu_0(\bfm\cdot\grad)\bfh$ pulls ferrofluid upward where the
+        field concentrates at a perturbation.
+  \item \textbf{Gravity} (stabilizing): pulls the spike back down.
+  \item \textbf{Surface tension} (stabilizing): penalizes curvature.
+\end{itemize}
+
+\subsection{Domain and Initial Conditions}
+
+\paragraph{Uniform field case:}
+\begin{itemize}[nosep]
+  \item Domain: $\Omega = (0, L_x) \times (0, L_y)$ (2D).
+  \item Ferrofluid layer on bottom, non-magnetic on top:
+    \[
+      \theta_0(x, y) = -\tanh\!\left(\frac{y - y_0}{\sqrt{2}\,\eps}\right),
+    \]
+    where $y_0$ is the unperturbed interface height.
+  \item Applied field: $\bfh_a = H_a\,\bm{e}_y$ (uniform, vertical).
+  \item $\bfu_0 = \bm{0}$, $\bfm_0 = \chi_0(\theta_0)\,\bfh_a$
+    (equilibrium magnetization).
+\end{itemize}
+
+\subsection{Nondimensional Parameters}
+
+The key nondimensional parameters are:
+\begin{itemize}
+  \item \textbf{Magnetic Bond number:}
+    $\mathrm{Bo}_m = \frac{\mu_0 \chi_0^2 H_a^2 L}{\sigma}$
+    (magnetic force / surface tension).
+  \item \textbf{Gravitational Bond number:}
+    $\mathrm{Bo}_g = \frac{\Delta\rho\,g\,L^2}{\sigma}$
+    (gravity / surface tension).
+  \item \textbf{Reynolds number:}
+    $\mathrm{Re} = \frac{\rho\,U\,L}{\nu}$.
+  \item \textbf{Cahn number:}
+    $\mathrm{Cn} = \eps / L$ (interface width / domain size).
+\end{itemize}
+
+\subsection{What Should Happen}
+
+\begin{enumerate}
+  \item Initially, the flat interface is in equilibrium.
+  \item Numerical perturbations (or explicit perturbation) seed the instability.
+  \item If $\mathrm{Bo}_m$ exceeds a critical value, spikes grow.
+  \item The spike pattern depends on the domain size and boundary conditions
+        (periodic $\to$ regular array; bounded $\to$ fewer spikes near walls).
+  \item In steady state, a fixed spike height is reached where magnetic
+        force = gravity + surface tension.
+\end{enumerate}
+
+\begin{keypoint}
+For the code to produce spikes, the following must all be correct:
+\begin{enumerate}[nosep]
+  \item The Kelvin force $\mu_0(\bfm\cdot\grad)\bfh$ must create an
+        upward force where the interface bulges.
+  \item The demagnetizing field (from Poisson) must concentrate field
+        lines at the spike tips.
+  \item The phase field must track the moving interface.
+  \item Gravity must oppose the magnetic force.
+  \item Surface tension must regularize the spike shape.
+\end{enumerate}
+If any one of these is wrong (sign error, missing term, wrong coupling),
+the interface remains flat.
+\end{keypoint}
+
+
+% ══════════════════════════════════════════════════════════════════════
+% SECTION 13: DIAGNOSTIC CHECKLIST
+% ══════════════════════════════════════════════════════════════════════
+\section{Diagnostic Checklist for Flat Interface Bug}
+\label{sec:diagnostics}
+
+Based on the derivations above, if the code produces a flat interface
+when it should produce spikes, the possible causes are:
+
+\subsection{Kelvin Force}
+\begin{enumerate}[label=(\alph*)]
+  \item Is $\mu_0(\bfm\cdot\grad)\bfh$ assembled correctly? Check sign
+        and coefficient.
+  \item Is the full field $\bfh = \bfh_a - \grad\varphi$ used, or only
+        $\bfh_a$? Without the demagnetizing field, there is no field
+        concentration at perturbations $\Rightarrow$ no instability.
+  \item Is $(\bfm\cdot\grad)\bfh$ computed as
+        $m_i\,\partial_i h_j$ or as $\grad(\bfm\cdot\bfh)$?
+        They differ unless $\curl\bfh = 0$ \emph{and} $\curl\bfm = 0$.
+\end{enumerate}
+
+\subsection{Poisson / Demagnetization}
+\begin{enumerate}[label=(\alph*)]
+  \item Is the sign correct? $-\Delta\varphi = -\dv\bfm$ (note both
+        negative signs).
+  \item Is the Neumann BC $\dn\varphi = \bfm\cdot\bfn$ applied?
+  \item Is the Picard iteration converging? Check residual.
+  \item After Poisson solve, is $\bfh^n = \bfh_a - \grad\varphi^n$
+        correctly computed?
+\end{enumerate}
+
+\subsection{Magnetization}
+\begin{enumerate}[label=(\alph*)]
+  \item Is the DG transport form correct? Check face integrals, signs,
+        upwind direction.
+  \item Is $\chi_0(\theta)$ correct? It should be $\approx \chi_{0,1}$
+        in ferrofluid and $\approx 0$ in non-magnetic fluid.
+  \item Is $\tau$ physical? Too small $\Rightarrow$ stiff, too large
+        $\Rightarrow$ slow relaxation.
+\end{enumerate}
+
+\subsection{Cahn--Hilliard}
+\begin{enumerate}[label=(\alph*)]
+  \item Is the interface width $\eps$ resolved by the mesh? Need
+        $h \lesssim \eps$.
+  \item Is the mobility $\gamma$ reasonable? Too large $\Rightarrow$
+        fast diffusion smears interface.
+\end{enumerate}
+
+\subsection{Energy}
+\begin{enumerate}[label=(\alph*)]
+  \item Is the total energy \eqref{eq:total-energy} decreasing (for
+        zero applied field) or bounded (with applied field)?
+  \item If energy grows without bound, there is an instability in the
+        scheme — likely a sign error or missing stabilization.
+\end{enumerate}
+
+
+% ══════════════════════════════════════════════════════════════════════
+\section*{Summary}
+
+This document derives the complete two-phase ferrohydrodynamic system
+from first principles:
+\begin{itemize}[nosep]
+  \item Cahn--Hilliard from Ginzburg--Landau free energy minimization,
+  \item Simplified Shliomis from the full ferrohydrodynamic model,
+  \item Poisson equation from Maxwell's magnetostatics,
+  \item Kelvin force from magnetic dipole energy,
+  \item Capillary force from the capillary stress tensor,
+  \item Energy-stable FEM with DG magnetization and CG Poisson,
+  \item DG transport form with upwind from element-wise integration by parts,
+  \item Picard iteration from the $\bfm$--$\varphi$ coupling structure.
+\end{itemize}
+
+Every equation and every sign has a physical or mathematical justification.
+The diagnostic checklist in Section~\ref{sec:diagnostics} provides a
+systematic way to verify the code against this derivation.
+
+\end{document}

@@ -246,7 +246,6 @@ PoissonSubsystem<dim>::compute_diagnostics(
             if (has_theta)
             {
                 mu = permeability(theta_values[q],
-                                  params_.physics.epsilon,
                                   params_.physics.chi_0);
                 local_mu_min = std::min(local_mu_min, mu);
                 local_mu_max = std::max(local_mu_max, mu);
@@ -257,30 +256,53 @@ PoissonSubsystem<dim>::compute_diagnostics(
         if (has_theta) ++theta_cell;
     }
 
-    // Global reductions
-    MPI_Allreduce(MPI_IN_PLACE, &local_phi_min, 1, MPI_DOUBLE, MPI_MIN, mpi_comm_);
-    MPI_Allreduce(MPI_IN_PLACE, &local_phi_max, 1, MPI_DOUBLE, MPI_MAX, mpi_comm_);
-    MPI_Allreduce(MPI_IN_PLACE, &local_H_max, 1, MPI_DOUBLE, MPI_MAX, mpi_comm_);
-    MPI_Allreduce(MPI_IN_PLACE, &local_H_L2_sq, 1, MPI_DOUBLE, MPI_SUM, mpi_comm_);
-    MPI_Allreduce(MPI_IN_PLACE, &local_E_mag, 1, MPI_DOUBLE, MPI_SUM, mpi_comm_);
+    // Global reductions — batched by operation type
+    // SUM: H_L2_sq, E_mag
+    double local_sum_vals[2] = {local_H_L2_sq, local_E_mag};
+    double global_sum_vals[2];
+    MPI_Allreduce(local_sum_vals, global_sum_vals, 2, MPI_DOUBLE, MPI_SUM, mpi_comm_);
 
-    diag.phi_min = local_phi_min;
-    diag.phi_max = local_phi_max;
-    diag.H_max = local_H_max;
-    diag.H_L2 = std::sqrt(local_H_L2_sq);
-    diag.E_mag = local_E_mag;
-
+    // MIN: phi_min (+ mu_min if has_theta)
+    // MAX: phi_max, H_max (+ mu_max if has_theta)
     if (has_theta)
     {
-        MPI_Allreduce(MPI_IN_PLACE, &local_mu_min, 1, MPI_DOUBLE, MPI_MIN, mpi_comm_);
-        MPI_Allreduce(MPI_IN_PLACE, &local_mu_max, 1, MPI_DOUBLE, MPI_MAX, mpi_comm_);
-        diag.mu_min = local_mu_min;
-        diag.mu_max = local_mu_max;
+        double local_mins[2] = {local_phi_min, local_mu_min};
+        double global_mins[2];
+        MPI_Allreduce(local_mins, global_mins, 2, MPI_DOUBLE, MPI_MIN, mpi_comm_);
+        diag.phi_min = global_mins[0];
+        diag.mu_min  = global_mins[1];
+
+        double local_maxs[3] = {local_phi_max, local_H_max, local_mu_max};
+        double global_maxs[3];
+        MPI_Allreduce(local_maxs, global_maxs, 3, MPI_DOUBLE, MPI_MAX, mpi_comm_);
+        diag.phi_max = global_maxs[0];
+        diag.H_max   = global_maxs[1];
+        diag.mu_max  = global_maxs[2];
     }
     else
     {
+        MPI_Allreduce(MPI_IN_PLACE, &local_phi_min, 1, MPI_DOUBLE, MPI_MIN, mpi_comm_);
+        diag.phi_min = local_phi_min;
+
+        double local_maxs[2] = {local_phi_max, local_H_max};
+        double global_maxs[2];
+        MPI_Allreduce(local_maxs, global_maxs, 2, MPI_DOUBLE, MPI_MAX, mpi_comm_);
+        diag.phi_max = global_maxs[0];
+        diag.H_max   = global_maxs[1];
+
         diag.mu_min = 1.0;
         diag.mu_max = 1.0;
+    }
+
+    diag.H_L2 = std::sqrt(global_sum_vals[0]);
+    diag.E_mag = global_sum_vals[1];
+
+    // Gauss law residual: ‖Aφ − b‖ (post-solve quality check)
+    {
+        dealii::TrilinosWrappers::MPI::Vector residual_vec(system_rhs_);
+        system_matrix_.vmult(residual_vec, solution_);
+        residual_vec -= system_rhs_;
+        diag.gauss_law_residual = residual_vec.l2_norm();
     }
 
     return diag;

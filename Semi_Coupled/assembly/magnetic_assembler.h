@@ -1,8 +1,7 @@
 // ============================================================================
 // assembly/magnetic_assembler.h - Monolithic Magnetics Assembler (PARALLEL)
 //
-// Equilibrium-limit assembler (tau_M -> 0): no transport PDE for M.
-// The M block enforces M = chi * grad(phi) algebraically.
+// Full PDE assembler for Paper Eq. 42c-42d (Nochetto et al. CMAME 2016).
 //
 // Assembles the 2x2 block system for combined M + phi:
 //
@@ -11,16 +10,18 @@
 //   | C_phi_M    A_phi   | | phi^k |   | f_phi |
 //
 // Block terms:
-//   A_M:       (1/tau_M)(M^k, Z)
-//   C_M_phi:   -(1/tau_M) chi(theta) (grad phi^k, Z)
-//   C_phi_M:   +(M^k, grad X)
-//   A_phi:     (grad phi^k, grad X)
+//   A_M:       (1/dt + 1/tau_M)(M^k, Z) + B_h^m(U; M^k, Z)   [mass + transport]
+//   C_M_phi:   -(1/tau_M) chi(theta) (grad phi^k, Z)           [relaxation coupling]
+//   C_phi_M:   +(M^k, grad X)                                  [Poisson coupling]
+//   A_phi:     (grad phi^k, grad X)                             [Laplacian]
 //
 // RHS:
-//   f_M:   0
-//   f_phi: (h_a, grad X)
+//   f_M:   (1/dt)(M^{k-1}, Z)                                  [time derivative]
+//   f_phi: (h_a, grad X)                                        [applied field]
 //
-// No transport terms, no face terms.
+// DG transport B_h^m(U; M, Z) = cell terms + face terms (Eq. 57):
+//   Cell:  (U·∇M)·Z + (1/2)(∇·U)(M·Z)
+//   Face:  -(U·n) [[M]]·{Z}
 //
 // Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
 // ============================================================================
@@ -36,12 +37,13 @@
 #include <deal.II/lac/trilinos_vector.h>
 
 #include <mpi.h>
+#include <vector>
 
 /**
  * @brief Monolithic Magnetics Assembler (PARALLEL)
  *
- * Equilibrium-limit assembler: M = chi * grad(phi) algebraically.
- * No transport PDE, no face terms. Cell assembly only using FEValuesExtractors.
+ * Full PDE for M (Eq. 42c): time derivative + DG transport + relaxation.
+ * Coupled to Poisson (Eq. 42d) in a monolithic block system.
  */
 template <int dim>
 class MagneticAssembler
@@ -94,6 +96,11 @@ private:
     const dealii::DoFHandler<dim>& theta_dof_handler_;
     const dealii::AffineConstraints<double>& mag_constraints_;
     MPI_Comm mpi_communicator_;
+
+    // Precomputed: local DoF indices for each M component in the FESystem
+    // M_comp_local_dofs_[d] = list of local DoF indices for component d
+    // (d=0: Mx, d=1: My). Used to efficiently assemble DG face terms.
+    std::vector<std::vector<unsigned int>> M_comp_local_dofs_;
 };
 
 #endif // MAGNETIC_ASSEMBLER_H

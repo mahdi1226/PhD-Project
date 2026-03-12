@@ -196,4 +196,43 @@ inline double double_well_second_derivative(double theta)
         return 3.0 * theta * theta - 1.0;
 }
 
+// ============================================================================
+// Gravity Scaling (Nochetto Eq. 100-103, p.520-522)
+//
+// From linear stability analysis (Cowley & Rosensweig 1967):
+//   ℓ_c = 2π (σ / (g Δρ))^{1/2}       (Eq. 100) critical spacing
+//   r ≈ Δρ / ρ                          (Eq. 101) density ratio
+//   λ ≈ σ ε                             (Eq. 102) capillary ↔ surface tension
+//
+// Solving for g with ℓ_c = domain_width / n_peaks:
+//   g = 4π² λ / (ℓ_c² · r · ε)         (Eq. 103)
+//
+// Nochetto: "an educated guess" for the scaling between λ and g.
+// With ε=0.01, λ=0.05, r=0.1, ℓ_c=0.25: g ≈ 3×10⁴ (matches paper).
+// ============================================================================
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
+/**
+ * @brief Compute gravity magnitude from Rosensweig instability scaling
+ *
+ * Uses Nochetto Eq. 103: g = 4π²λ / (ℓ_c² · r · ε)
+ * where ℓ_c = domain_width / n_peaks is the critical peak spacing.
+ *
+ * @param lambda        Capillary coefficient (Cahn-Hilliard)
+ * @param epsilon       Interface thickness
+ * @param r             Density ratio (Δρ/ρ)
+ * @param domain_width  Width of computational domain
+ * @param n_peaks       Expected number of instability peaks (default: 4)
+ * @return Non-dimensional gravity magnitude
+ */
+inline double compute_gravity(double lambda, double epsilon, double r,
+                              double domain_width, int n_peaks = 4)
+{
+    const double ell_c = domain_width / n_peaks;
+    return 4.0 * M_PI * M_PI * lambda / (ell_c * ell_c * r * epsilon);
+}
+
 #endif // MATERIAL_PROPERTIES_H

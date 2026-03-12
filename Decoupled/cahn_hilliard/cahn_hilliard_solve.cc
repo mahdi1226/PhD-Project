@@ -149,9 +149,13 @@ SolverInfo CahnHilliardSubsystem<dim>::solve_coupled_system()
         if (converged)
         {
             info.iterations = 1;
-            info.residual = 0.0;
             info.converged = true;
             info.used_direct = true;
+            // Compute post-solve residual ‖Ax − b‖
+            dealii::TrilinosWrappers::MPI::Vector res_vec(system_rhs_);
+            system_matrix_.vmult(res_vec, coupled_solution);
+            res_vec -= system_rhs_;
+            info.residual = res_vec.l2_norm();
         }
     }
 
@@ -224,9 +228,13 @@ SolverInfo CahnHilliardSubsystem<dim>::solve_coupled_system()
         if (converged)
         {
             info.iterations = 1;
-            info.residual = 0.0;
             info.converged = true;
             info.used_direct = true;
+            // Compute post-solve residual ‖Ax − b‖
+            dealii::TrilinosWrappers::MPI::Vector res_vec(system_rhs_);
+            system_matrix_.vmult(res_vec, coupled_solution);
+            res_vec -= system_rhs_;
+            info.residual = res_vec.l2_norm();
         }
     }
 

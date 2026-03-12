@@ -267,6 +267,10 @@ void PhaseFieldProblem<dim>::setup_magnetic_system()
 
     mag_relevant_.reinit(mag_locally_owned_, mag_locally_relevant_, mpi_communicator_);
 
+    // Old solution for time derivative (Eq. 42c)
+    mag_old_solution_.reinit(mag_locally_owned_, mpi_communicator_);
+    mag_old_relevant_.reinit(mag_locally_owned_, mag_locally_relevant_, mpi_communicator_);
+
     // Step 3: Initialize auxiliary vectors for NS assembly / output / diagnostics
     phi_solution_.reinit(phi_locally_owned_, mpi_communicator_);
     Mx_solution_.reinit(M_locally_owned_, mpi_communicator_);
@@ -543,7 +547,9 @@ void PhaseFieldProblem<dim>::initialize_solutions()
     if (params_.enable_magnetic)
     {
         mag_solution_ = 0;
+        mag_old_solution_ = 0;
         mag_relevant_ = 0;
+        mag_old_relevant_ = 0;
 
         // Also zero the extracted component vectors
         Mx_solution_ = 0;

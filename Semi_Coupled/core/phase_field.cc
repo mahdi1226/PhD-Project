@@ -94,7 +94,30 @@ void PhaseFieldProblem<dim>::run()
 
     // Write run configuration
     if (MPIUtils::is_root(mpi_communicator_))
+    {
         write_run_info(output_dir, params_, MPIUtils::size(mpi_communicator_));
+
+        // Append initial setup summary (DoFs, sparsity nnz, cells)
+        const unsigned int n_cells = triangulation_.n_global_active_cells();
+        const unsigned int n_dofs_ch = theta_dof_handler_.n_dofs() + theta_dof_handler_.n_dofs();  // θ + ψ
+        const unsigned int n_dofs_mag = params_.enable_magnetic ? mag_dof_handler_.n_dofs() : 0;
+        const unsigned int n_dofs_mag_M = params_.enable_magnetic ? M_dof_handler_.n_dofs() : 0;
+        const unsigned int n_dofs_mag_phi = params_.enable_magnetic ? phi_dof_handler_.n_dofs() : 0;
+        const unsigned int n_dofs_ns_ux = params_.enable_ns ? ux_dof_handler_.n_dofs() : 0;
+        const unsigned int n_dofs_ns_p = params_.enable_ns ? p_dof_handler_.n_dofs() : 0;
+        const unsigned int n_dofs_ns = params_.enable_ns
+            ? (ux_dof_handler_.n_dofs() + uy_dof_handler_.n_dofs() + p_dof_handler_.n_dofs()) : 0;
+
+        const size_t nnz_ch = ch_matrix_.n_nonzero_elements();
+        const size_t nnz_mag = params_.enable_magnetic ? mag_matrix_.n_nonzero_elements() : 0;
+        const size_t nnz_ns = params_.enable_ns ? ns_matrix_.n_nonzero_elements() : 0;
+
+        append_setup_info(output_dir, n_cells,
+                          n_dofs_ch, n_dofs_mag, n_dofs_ns,
+                          n_dofs_mag_M, n_dofs_mag_phi,
+                          n_dofs_ns_ux, n_dofs_ns_p,
+                          nnz_ch, nnz_mag, nnz_ns);
+    }
 
     // ========================================================================
     // INITIALIZE LOGGERS
@@ -228,8 +251,14 @@ void PhaseFieldProblem<dim>::run()
         }
 
         update_timing_info(data, 0.0, 0.0);
-        update_mesh_info(data, triangulation_.n_global_active_cells(),
-                         theta_dof_handler_.n_dofs());
+        {
+            const unsigned int n_ch = 2 * theta_dof_handler_.n_dofs();  // θ + ψ
+            const unsigned int n_mag = params_.enable_magnetic ? mag_dof_handler_.n_dofs() : 0;
+            const unsigned int n_ns = params_.enable_ns
+                ? (ux_dof_handler_.n_dofs() + uy_dof_handler_.n_dofs() + p_dof_handler_.n_dofs()) : 0;
+            update_mesh_info(data, triangulation_.n_global_active_cells(),
+                             n_ch + n_mag + n_ns, n_ch, n_mag, n_ns);
+        }
 
         // Set initial interface position for delta tracking
         console.set_initial_interface(data.interface_y_max);
@@ -476,8 +505,14 @@ void PhaseFieldProblem<dim>::run()
 
         // Add timing and mesh info
         update_timing_info(data, step_timing.step_total, tracker.elapsed_seconds());
-        update_mesh_info(data, triangulation_.n_global_active_cells(),
-                         theta_dof_handler_.n_dofs());
+        {
+            const unsigned int n_ch = 2 * theta_dof_handler_.n_dofs();
+            const unsigned int n_mag = params_.enable_magnetic ? mag_dof_handler_.n_dofs() : 0;
+            const unsigned int n_ns = params_.enable_ns
+                ? (ux_dof_handler_.n_dofs() + uy_dof_handler_.n_dofs() + p_dof_handler_.n_dofs()) : 0;
+            update_mesh_info(data, triangulation_.n_global_active_cells(),
+                             n_ch + n_mag + n_ns, n_ch, n_mag, n_ns);
+        }
 
         t_diagnostics.stop();
 
@@ -738,7 +773,11 @@ void PhaseFieldProblem<dim>::solve_magnetics(double dt)
     // Update ghosted theta for assembly (from CH solve)
     theta_relevant_ = theta_solution_;
 
-    // Assemble monolithic system (algebraic M = χ·∇φ, no transport)
+    // Store old M+φ for time derivative (Paper Eq. 42c: δM/τ term)
+    mag_old_solution_ = mag_solution_;
+    mag_old_relevant_ = mag_old_solution_;
+
+    // Assemble monolithic system (full Eq. 42c PDE with transport)
     t_assemble.start();
     magnetic_assembler_->assemble(
         mag_matrix_,
@@ -746,7 +785,7 @@ void PhaseFieldProblem<dim>::solve_magnetics(double dt)
         ux_relevant_,
         uy_relevant_,
         theta_relevant_,
-        mag_relevant_,  // unused by assembler (kept for signature compat)
+        mag_old_relevant_,
         dt,
         time_);
     t_assemble.stop();

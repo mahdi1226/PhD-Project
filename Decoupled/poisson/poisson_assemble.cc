@@ -299,7 +299,6 @@ void PoissonSubsystem<dim>::assemble_nonlinear(
     std::vector<double> theta_values(n_q_points);
 
     // Physics parameters
-    const double eps = params_.physics.epsilon;
     const double chi_0 = params_.physics.chi_0;
 
     // Synchronized cell iteration over φ and θ meshes
@@ -325,7 +324,7 @@ void PoissonSubsystem<dim>::assemble_nonlinear(
             const dealii::Point<dim>& x_q = fe_values.quadrature_point(q);
 
             // Susceptibility χ(θ) = χ₀ H(θ/ε)
-            const double chi_q = susceptibility(theta_values[q], eps, chi_0);
+            const double chi_q = susceptibility(theta_values[q], chi_0);
 
             // Coefficient: 1 + χ(θ) = μ(θ) (relative permeability)
             const double mu_q = 1.0 + chi_q;
