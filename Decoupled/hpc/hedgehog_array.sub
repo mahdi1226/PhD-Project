@@ -2,13 +2,14 @@
 #SBATCH --job-name=hedgehog
 #SBATCH --partition=hpcc
 #SBATCH --array=1-12
-#SBATCH --ntasks=4
-#SBATCH --time=28-00:00:00
-#SBATCH --mem=8G
-#SBATCH --out=logs/T%02a_%j.out
-#SBATCH --err=logs/T%02a_%j.err
-#SBATCH --mail-type=begin,end,fail
-#SBATCH --export=all
+#SBATCH --nodes=1
+#SBATCH --ntasks=16
+#SBATCH --time=4-00:00:00
+#SBATCH --mem=128G
+#SBATCH --output=logs/T%02a_%j.out
+#SBATCH --error=logs/T%02a_%j.err
+#SBATCH --mail-type=BEGIN,END,FAIL
+#SBATCH --export=ALL
 
 # ============================================================================
 # Hedgehog Test Matrix — SLURM Job Array
@@ -26,8 +27,8 @@
 #   - hedgehog_tests.dat in hpc/
 # ============================================================================
 
-# Load modules (adjust to match your build environment)
-module load openmpi/4.1.5/gcc/12.2.0
+# Load deal.II module (includes MPI, UMFPACK, MUMPS)
+module load dealii/9.7.1_umfpack_mumps
 
 # Working directory = submission directory (should be Decoupled/)
 cd $SLURM_SUBMIT_DIR
