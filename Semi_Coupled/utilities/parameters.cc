@@ -60,7 +60,7 @@ void Parameters::setup_rosensweig()
     // The -r flag overrides amr_max_level for parametric studies.
     mesh.initial_refinement = 3;      // Start coarse, let AMR refine to target level
     mesh.use_amr = true;
-    mesh.amr_interval = 50;           // Every 50 steps — less mesh perturbation
+    mesh.amr_interval = 5;            // Paper p.520: "refined-coarsened once every 5 time steps"
     mesh.amr_min_level = 1;           // Don't coarsen below level 1 (Hess(φ) accuracy)
     mesh.amr_max_level = 6;           // Paper Fig. 1 default (override with -r)
 
@@ -526,7 +526,12 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
         else if (std::strcmp(argv[i], "--direct") == 0)
         {
             params.solvers.ns.use_iterative = false;
-            params.solvers.ch.use_iterative = false;  // Also use direct for CH
+            params.solvers.ch.use_iterative = false;
+        }
+        else if (std::strcmp(argv[i], "--iterative") == 0)
+        {
+            params.solvers.ns.use_iterative = true;
+            params.solvers.ch.use_iterative = true;
         }
 
         // Block-Gauss-Seidel global iteration
@@ -632,7 +637,8 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             std::cout << "  --no_adaptive_dt      Disable adaptive time stepping (paper default)\n\n";
 
             std::cout << "SOLVER:\n";
-            std::cout << "  --direct              Use direct solver (recommended)\n";
+            std::cout << "  --direct              Use direct solver (MUMPS)\n";
+            std::cout << "  --iterative           Use iterative solver (GMRES+AMG)\n";
             std::cout << "  --bgs_iters N         Max Block-GS iterations (default: 1)\n";
             std::cout << "  --bgs_tol TOL         Block-GS convergence tolerance (default: 1e-2)\n\n";
 

@@ -73,8 +73,6 @@ struct Parameters
     {
         int type = 0;              // 0 = flat pool, 1 = circular droplet, 2 = diamond droplet
         double pool_depth = 0.2;
-        double perturbation = 0.0;
-        int perturbation_modes = 0;
         // Droplet parameters (used when type = 1 or 2)
         double droplet_center_x = 0.5;
         double droplet_center_y = 0.5;
