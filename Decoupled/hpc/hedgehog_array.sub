@@ -27,8 +27,8 @@
 #   - hedgehog_tests.dat in hpc/
 # ============================================================================
 
-# Load deal.II module (includes MPI, UMFPACK, MUMPS)
-module load dealii/9.7.1_umfpack_mumps
+# Load deal.II module (GCC 12.3 + mvapich — must match build compiler)
+module load dealii/9.7.1_gcc_12.3.0_mvapich
 
 # Working directory = submission directory (should be Decoupled/)
 cd $SLURM_SUBMIT_DIR
