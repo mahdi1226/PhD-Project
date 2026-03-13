@@ -275,7 +275,7 @@ void Parameters::setup_droplet()
     mesh.initial_refinement = 5;
     mesh.use_amr = true;
     mesh.amr_interval = 10;
-    mesh.amr_min_level = mesh.initial_refinement - 2;
+    mesh.amr_min_level = 1;  // Coarsen bulk aggressively (away from interface)
     mesh.amr_max_level = mesh.initial_refinement + 2;
 
     // Subsystems - disable magnetic and gravity
@@ -333,7 +333,7 @@ void Parameters::setup_square()
     mesh.initial_refinement = 5;
     mesh.use_amr = true;
     mesh.amr_interval = 10;
-    mesh.amr_min_level = mesh.initial_refinement - 2;
+    mesh.amr_min_level = 1;  // Coarsen bulk aggressively (away from interface)
     mesh.amr_max_level = mesh.initial_refinement + 2;
 
     // Subsystems - disable magnetic and gravity
@@ -409,12 +409,15 @@ void Parameters::setup_elongation()
     dipoles.uniform_field_value[1] = 45.0;
     dipoles.ramp_time = 0.5;  // gentle ramp over 0.5s
 
-    // Mesh: 1×1 base grid, r=7 (h=1/128, 16384 cells), no AMR
-    // Finer mesh needed for smaller droplet — ε/h ≈ 2.56 (well-resolved)
+    // Mesh: 1×1 base grid, r=7, AMR with aggressive bulk coarsening
+    // Interface at r=7 (h=1/128, ε/h ≈ 2.56), bulk coarsens to level 1
     domain.initial_cells_x = 1;
     domain.initial_cells_y = 1;
     mesh.initial_refinement = 7;
-    mesh.use_amr = false;
+    mesh.use_amr = true;
+    mesh.amr_interval = 10;
+    mesh.amr_min_level = 1;   // Coarsen bulk aggressively
+    mesh.amr_max_level = 9;   // Allow extra refinement near interface
 
     // Direct solvers (16K cells — still fast on 4 ranks)
     solvers.ns.use_iterative = false;
