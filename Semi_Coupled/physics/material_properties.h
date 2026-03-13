@@ -18,6 +18,10 @@
 
 #include <cmath>
 
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
 // ============================================================================
 // Smoothed Heaviside and Derivatives (Eq. 17-18, p.501)
 // ============================================================================
@@ -210,10 +214,6 @@ inline double double_well_second_derivative(double theta)
 // Nochetto: "an educated guess" for the scaling between λ and g.
 // With ε=0.01, λ=0.05, r=0.1, ℓ_c=0.25: g ≈ 3×10⁴ (matches paper).
 // ============================================================================
-
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
 
 /**
  * @brief Compute gravity magnitude from Rosensweig instability scaling

@@ -44,7 +44,6 @@ public:
                   const Parameters& params,
                   MPI_Comm comm = MPI_COMM_WORLD)
         : output_dir_(output_dir)
-        , comm_(comm)
         , is_root_(MPIUtils::is_root(comm))
         , step_count_(0)
         , E_internal_prev_(0.0)
@@ -269,7 +268,6 @@ public:
 
 private:
     std::string output_dir_;
-    MPI_Comm comm_;
     bool is_root_;
 
     std::ofstream diagnostics_file_;

@@ -68,11 +68,8 @@ InterfacePosition compute_interface_position(
             vertex_points[v] = cell->vertex(v);
             const unsigned int vertex_dof = cell->vertex_dof_index(v, 0);
 
-            // Handle distributed vector access
-            if (theta_solution.locally_owned_elements().is_element(vertex_dof))
-                vertex_theta[v] = theta_solution[vertex_dof];
-            else
-                vertex_theta[v] = theta_solution[vertex_dof];  // Ghost value
+            // Access vertex value (works for both locally owned and ghost entries)
+            vertex_theta[v] = theta_solution[vertex_dof];
         }
 
         // Check each EDGE (not diagonal) for sign change

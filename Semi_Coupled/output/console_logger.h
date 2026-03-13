@@ -45,7 +45,7 @@ public:
      */
     ConsoleLogger(const Parameters& params, MPI_Comm comm = MPI_COMM_WORLD)
         : params_(params)
-          , comm_(comm)
+
           , is_root_(MPIUtils::is_root(comm))
           , np_(MPIUtils::size(comm))
           , initial_interface_y_(params.ic.pool_depth)
@@ -258,7 +258,6 @@ public:
 
 private:
     const Parameters& params_;
-    MPI_Comm comm_;
     bool is_root_;
     int np_;
     double initial_interface_y_;

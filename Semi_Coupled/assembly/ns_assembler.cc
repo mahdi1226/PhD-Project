@@ -30,11 +30,8 @@
 
 #include <deal.II/base/quadrature_lib.h>
 #include <deal.II/fe/fe_values.h>
-#include <deal.II/fe/fe_interface_values.h>
 #include <deal.II/lac/full_matrix.h>
 
-
-#include <cmath>
 #include <memory>
 
 // ============================================================================
@@ -149,7 +146,6 @@ static void assemble_ns_core(
 
     dealii::Vector<double> local_rhs_ux(dofs_per_cell_vel);
     dealii::Vector<double> local_rhs_uy(dofs_per_cell_vel);
-    dealii::Vector<double> local_rhs_p(dofs_per_cell_p);
 
     std::vector<dealii::types::global_dof_index> ux_local_dofs(dofs_per_cell_vel);
     std::vector<dealii::types::global_dof_index> uy_local_dofs(dofs_per_cell_vel);
@@ -210,7 +206,7 @@ static void assemble_ns_core(
         local_ux_ux = 0; local_ux_uy = 0; local_ux_p = 0;
         local_uy_ux = 0; local_uy_uy = 0; local_uy_p = 0;
         local_p_ux = 0;  local_p_uy = 0;
-        local_rhs_ux = 0; local_rhs_uy = 0; local_rhs_p = 0;
+        local_rhs_ux = 0; local_rhs_uy = 0;
 
         // Get DoF indices
         ux_cell->get_dof_indices(ux_local_dofs);
@@ -402,7 +398,6 @@ static void assemble_ns_core(
         ns_constraints.distribute_local_to_global(local_uy_p, coupled_uy_dofs, coupled_p_dofs, ns_matrix);
         ns_constraints.distribute_local_to_global(local_p_ux, coupled_p_dofs, coupled_ux_dofs, ns_matrix);
         ns_constraints.distribute_local_to_global(local_p_uy, coupled_p_dofs, coupled_uy_dofs, ns_matrix);
-        ns_constraints.distribute_local_to_global(local_rhs_p, coupled_p_dofs, ns_rhs);
 
         // Advance theta cell iterator (for variable viscosity)
         if (use_variable_viscosity)
@@ -415,7 +410,7 @@ static void assemble_ns_core(
 }
 
 // ============================================================================
-// Kelvin force assembly — DG SKEW FORM (Paper Eq. 38, 42e)
+// Kelvin force assembly — SKEW FORM (Paper Eq. 38, 42e)
 //
 // μ₀(M·∇)H in skew-symmetric form: μ₀[(M·∇)H·V + ½ div(V)(H·M)]
 //

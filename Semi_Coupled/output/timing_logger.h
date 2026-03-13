@@ -49,7 +49,6 @@ public:
                  const Parameters& params,
                  MPI_Comm comm = MPI_COMM_WORLD)
         : output_dir_(output_dir)
-        , comm_(comm)
         , is_root_(MPIUtils::is_root(comm))
     {
         if (!is_root_) return;
@@ -166,7 +165,6 @@ public:
 
 private:
     std::string output_dir_;
-    MPI_Comm comm_;
     bool is_root_;
     std::ofstream file_;
 

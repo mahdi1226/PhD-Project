@@ -14,11 +14,6 @@
 #include "physics/material_properties.h"  // compute_gravity()
 
 #include <cmath>
-
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
-
 #include <string>
 #include <ctime>
 #include <fstream>
@@ -26,18 +21,6 @@
 #include <iomanip>
 #include <iostream>
 #include <sys/stat.h>
-
-
-// ============================================================================
-// TEST CONFIGURATION - Change this before each test run!
-// ============================================================================
-#define TEST_ID "A"
-#define TEST_H_FORMULA ": A: H = grad_phi (both assemblers)"
-// Options:
-//   A: H = grad_phi (both assemblers)
-//   B: H = h_a - grad_phi (NS), grad_phi (Mag)
-//   C: H = h_a + grad_phi (NS), grad_phi (Mag)
-
 
 
 // ============================================================================
@@ -394,11 +377,6 @@ inline void write_run_info(const std::string& output_dir,
     file << get_csv_header_stamp(params) << "\n";
     file << "============================================================\n";
 
-    // Test configuration
-    file << "TEST CONFIGURATION:\n";
-    file << "  TEST_ID             = " << TEST_ID << "\n";
-    file << "  H formula           = " << TEST_H_FORMULA << "\n";
-    file << "\n";
     file.close();
     std::cout << "[Info] Run configuration saved to: " << output_dir << "/run_info.txt\n";
 }

@@ -99,7 +99,7 @@ void PhaseFieldProblem<dim>::run()
 
         // Append initial setup summary (DoFs, sparsity nnz, cells)
         const unsigned int n_cells = triangulation_.n_global_active_cells();
-        const unsigned int n_dofs_ch = theta_dof_handler_.n_dofs() + theta_dof_handler_.n_dofs();  // θ + ψ
+        const unsigned int n_dofs_ch = theta_dof_handler_.n_dofs() + psi_dof_handler_.n_dofs();  // θ + ψ
         const unsigned int n_dofs_mag = params_.enable_magnetic ? mag_dof_handler_.n_dofs() : 0;
         const unsigned int n_dofs_mag_M = params_.enable_magnetic ? M_dof_handler_.n_dofs() : 0;
         const unsigned int n_dofs_mag_phi = params_.enable_magnetic ? phi_dof_handler_.n_dofs() : 0;
@@ -626,7 +626,7 @@ void PhaseFieldProblem<dim>::run()
                      + p_dof_handler_.n_dofs()) : 0);
 
             // --- AMR levels ---
-            pdata.amr_min_level = triangulation_.n_global_levels() > 0 ? 0 : 0;
+            pdata.amr_min_level = 0;
             pdata.amr_max_level = triangulation_.n_global_levels() - 1;
 
             // --- Memory ---

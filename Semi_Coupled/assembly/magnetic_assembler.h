@@ -31,7 +31,6 @@
 #include "utilities/parameters.h"
 
 #include <deal.II/dofs/dof_handler.h>
-#include <deal.II/fe/fe_values.h>
 #include <deal.II/lac/affine_constraints.h>
 #include <deal.II/lac/trilinos_sparse_matrix.h>
 #include <deal.II/lac/trilinos_vector.h>
@@ -95,7 +94,6 @@ private:
     const dealii::DoFHandler<dim>& U_dof_handler_;
     const dealii::DoFHandler<dim>& theta_dof_handler_;
     const dealii::AffineConstraints<double>& mag_constraints_;
-    MPI_Comm mpi_communicator_;
 
     // Precomputed: local DoF indices for each M component in the FESystem
     // M_comp_local_dofs_[d] = list of local DoF indices for component d

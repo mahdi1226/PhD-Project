@@ -15,6 +15,7 @@
 
 #include "utilities/parameters.h"
 #include "utilities/mpi_tools.h"
+#include "physics/material_properties.h"
 
 #include <deal.II/dofs/dof_handler.h>
 #include <deal.II/lac/vector.h>
@@ -38,19 +39,6 @@ struct ForceDiagnostics
     double F_mag_max = 0.0;  // max|F_mag|
     double F_grav_max = 0.0; // max|F_grav|
 };
-
-// ============================================================================
-// Helper: Smooth Heaviside function
-// ============================================================================
-namespace force_detail
-{
-    inline double sigmoid(double x)
-    {
-        if (x > 20.0) return 1.0;
-        if (x < -20.0) return 0.0;
-        return 1.0 / (1.0 + std::exp(-x));
-    }
-}
 
 // ============================================================================
 // Compute force diagnostics (parallel version with Trilinos vectors)
@@ -131,7 +119,7 @@ ForceDiagnostics compute_force_diagnostics(
                 const double H_sq = H.norm_square();
 
                 // χ'(θ) = (χ₀/ε) * H(θ/ε) * (1 - H(θ/ε))
-                const double H_sigmoid = force_detail::sigmoid(theta / eps);
+                const double H_sigmoid = heaviside(theta / eps);
                 const double chi_prime = (chi0 / eps) * H_sigmoid * (1.0 - H_sigmoid);
 
                 dealii::Tensor<1, dim> F_mag;
@@ -148,7 +136,7 @@ ForceDiagnostics compute_force_diagnostics(
             // ================================================================
             if (params.enable_gravity)
             {
-                const double H_val = force_detail::sigmoid(theta / eps);
+                const double H_val = heaviside(theta / eps);
                 const double rho = 1.0 + params.physics.r * H_val;
 
                 dealii::Tensor<1, dim> F_grav;
@@ -246,7 +234,7 @@ ForceDiagnostics compute_force_diagnostics(
                 dealii::Tensor<1, dim> H = phi_gradients[q];
                 const double H_sq = H.norm_square();
 
-                const double H_sigmoid = force_detail::sigmoid(theta / eps);
+                const double H_sigmoid = heaviside(theta / eps);
                 const double chi_prime = (chi0 / eps) * H_sigmoid * (1.0 - H_sigmoid);
 
                 dealii::Tensor<1, dim> F_mag;
@@ -261,7 +249,7 @@ ForceDiagnostics compute_force_diagnostics(
             // Gravity force
             if (params.enable_gravity)
             {
-                const double H_val = force_detail::sigmoid(theta / eps);
+                const double H_val = heaviside(theta / eps);
                 const double rho = 1.0 + params.physics.r * H_val;
 
                 dealii::Tensor<1, dim> F_grav;

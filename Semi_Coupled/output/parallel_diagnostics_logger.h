@@ -65,7 +65,6 @@ public:
                                MPI_Comm comm = MPI_COMM_WORLD,
                                bool write_per_rank = false)
         : output_dir_(output_dir)
-        , comm_(comm)
         , is_root_(MPIUtils::is_root(comm))
         , write_per_rank_(write_per_rank)
     {
@@ -168,7 +167,6 @@ public:
 
 private:
     std::string output_dir_;
-    MPI_Comm comm_;
     bool is_root_;
     bool write_per_rank_;
     int rank_ = 0;

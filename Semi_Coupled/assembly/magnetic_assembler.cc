@@ -53,8 +53,8 @@ MagneticAssembler<dim>::MagneticAssembler(
     , U_dof_handler_(U_dof)
     , theta_dof_handler_(theta_dof)
     , mag_constraints_(mag_constraints)
-    , mpi_communicator_(mpi_communicator)
 {
+    (void)mpi_communicator;  // Reserved for future use
     // Precompute M component local DoF mapping.
     // For FESystem(FE_DGQ^dim, FE_Q): components 0..dim-1 are M, component dim is phi.
     // M_comp_local_dofs_[d][i] = local DoF index for the i-th DG basis function

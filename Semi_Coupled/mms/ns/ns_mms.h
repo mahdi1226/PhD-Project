@@ -241,7 +241,6 @@ dealii::Tensor<1, dim> compute_steady_stokes_mms_source(
     const double sin_2py = std::sin(2.0 * M_PI * y / L_y);
 
     const double pi = M_PI;
-    (void)(M_PI * M_PI); // pi2 unused in this function
     const double pi3 = M_PI * M_PI * M_PI;
 
     // ∇²ux = ∂²ux/∂x² + ∂²ux/∂y²
