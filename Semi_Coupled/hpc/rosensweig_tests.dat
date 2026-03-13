@@ -1,0 +1,29 @@
+# Semi_Coupled Rosensweig Test Matrix
+# Format: FLAGS (one test per line, task ID = line number skipping comments/blanks)
+#
+# T1: Baseline with AMR fix (direct solver)
+--rosensweig --run_name T1-rosen-amr5-direct
+# T2: Iterative solver (adds numerical noise)
+--rosensweig --iterative --run_name T2-rosen-amr5-iterative
+# T3: Iterative + paper gravity
+--rosensweig --iterative --gravity 30000 --run_name T3-rosen-amr5-iter-g30k
+# T4: Direct + paper gravity
+--rosensweig --gravity 30000 --run_name T4-rosen-amr5-g30k
+# T5: All fixes combined (iterative + gravity + BGS 2)
+--rosensweig --iterative --gravity 30000 --bgs_iters 2 --run_name T5-rosen-all-fixes
+# T6: 2 BGS iterations (stronger coupling)
+--rosensweig --bgs_iters 2 --run_name T6-rosen-amr5-bgs2
+# T7: 3 BGS iterations
+--rosensweig --bgs_iters 3 --run_name T7-rosen-amr5-bgs3
+# T8: Control — old AMR interval (should stay flat)
+--rosensweig --amr_interval 50 --run_name T8-rosen-amr50-control
+# T9: Coarser mesh (quick diagnostic)
+--rosensweig -r 5 --run_name T9-rosen-amr5-r5
+# T10: Finer mesh
+--rosensweig -r 7 --run_name T10-rosen-amr5-r7
+# T11: Finer time step (10k steps)
+--rosensweig --dt 2e-4 --max_steps 10000 --run_name T11-rosen-amr5-dt2e4
+# T12: Post-audit baseline (same as T1, explicit comparison label)
+--rosensweig --run_name T12-rosen-post-audit-baseline
+# T13: Maximum effort — all fixes + all parameter tweaks
+--rosensweig --iterative --gravity 30000 --bgs_iters 2 --run_name T13-rosen-all-audit-all-params

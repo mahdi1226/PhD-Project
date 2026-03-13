@@ -1,0 +1,52 @@
+#!/bin/bash
+#SBATCH --job-name=rosensweig
+#SBATCH --partition=hpcc
+#SBATCH --array=1-13
+#SBATCH --nodes=1
+#SBATCH --ntasks=16
+#SBATCH --time=1-00:00:00
+#SBATCH --mem=64G
+#SBATCH --output=logs/T%02a_%j.out
+#SBATCH --error=logs/T%02a_%j.err
+#SBATCH --mail-type=BEGIN,END,FAIL
+#SBATCH --export=ALL
+
+# ============================================================================
+# Semi_Coupled Rosensweig Test Matrix — SLURM Job Array
+#
+# Submits 13 tests (T1-T13) as a single job array.
+# Each task reads its config from rosensweig_tests.dat.
+#
+# Usage:
+#   cd ~/Semi_Coupled-HPC/Semi_Coupled
+#   mkdir -p logs
+#   sbatch hpc/rosensweig_array.sub
+# ============================================================================
+
+# Load deal.II module (GCC 12.3 + mvapich — must match build compiler)
+module load dealii/9.7.1_gcc_12.3.0_mvapich
+
+# Working directory = submission directory (should be Semi_Coupled/)
+cd $SLURM_SUBMIT_DIR
+
+# Create logs and Results dirs if missing
+mkdir -p logs Results
+
+# Read test config for this array task
+FLAGS=$(awk -v line=${SLURM_ARRAY_TASK_ID} '!/^#/ && !/^$/ {n++; if (n==line) print}' hpc/rosensweig_tests.dat)
+
+EXE="./cmake-build-release/ferrofluid"
+
+echo "============================================"
+echo "Test T${SLURM_ARRAY_TASK_ID}"
+echo "Flags:  $FLAGS"
+echo "Nodes:  $SLURM_JOB_NODELIST"
+echo "Tasks:  $SLURM_NTASKS"
+echo "Start:  $(date)"
+echo "============================================"
+
+mpirun -np $SLURM_NTASKS $EXE $FLAGS
+
+echo "============================================"
+echo "End:    $(date)"
+echo "============================================"
