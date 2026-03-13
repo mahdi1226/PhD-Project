@@ -482,12 +482,10 @@ void MagnetizationSubsystem<dim>::project_initial_condition(
     const Function<dim>& Mx_exact,
     const Function<dim>& My_exact)
 {
-    QGauss<dim> quadrature(fe_.degree + 2);
-
-    VectorTools::project(dof_handler_, constraints_, quadrature,
-                         Mx_exact, Mx_solution_);
-    VectorTools::project(dof_handler_, constraints_, quadrature,
-                         My_exact, My_solution_);
+    VectorTools::interpolate(dof_handler_, Mx_exact, Mx_solution_);
+    constraints_.distribute(Mx_solution_);
+    VectorTools::interpolate(dof_handler_, My_exact, My_solution_);
+    constraints_.distribute(My_solution_);
 
     invalidate_ghosts();
 }

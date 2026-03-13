@@ -150,17 +150,15 @@ void CahnHilliardSubsystem<dim>::project_initial_condition(
     const dealii::Function<dim>& f_theta,
     const dealii::Function<dim>& f_psi)
 {
-    dealii::VectorTools::project(theta_dof_handler_,
-                                 theta_constraints_,
-                                 dealii::QGauss<dim>(fe_.degree + 2),
-                                 f_theta,
-                                 theta_solution_);
+    dealii::VectorTools::interpolate(theta_dof_handler_,
+                                      f_theta,
+                                      theta_solution_);
+    theta_constraints_.distribute(theta_solution_);
 
-    dealii::VectorTools::project(psi_dof_handler_,
-                                 psi_constraints_,
-                                 dealii::QGauss<dim>(fe_.degree + 2),
-                                 f_psi,
-                                 psi_solution_);
+    dealii::VectorTools::interpolate(psi_dof_handler_,
+                                      f_psi,
+                                      psi_solution_);
+    psi_constraints_.distribute(psi_solution_);
 
     invalidate_ghosts();
     pcout_ << "[CH] Initial condition projected\n";
