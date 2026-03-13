@@ -224,6 +224,33 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
         {
             if (++i >= argc) { std::cerr << "--dt requires a value\n"; std::exit(1); }
             params.time.dt = std::stod(argv[i]);
+            // Recompute max_steps to keep same t_final
+            if (params.time.t_final > 0.0 && params.time.dt > 0.0)
+                params.time.max_steps = static_cast<unsigned int>(
+                    std::ceil(params.time.t_final / params.time.dt));
+        }
+
+        // ---- TEMP: Hedgehog test overrides (remove after testing) ----
+        else if (std::strcmp(argv[i], "--chi0") == 0)
+        {
+            if (++i >= argc) { std::cerr << "--chi0 requires a value\n"; std::exit(1); }
+            params.physics.chi_0 = std::stod(argv[i]);
+        }
+        else if (std::strcmp(argv[i], "--mesh") == 0)
+        {
+            // Format: --mesh NxM (e.g. --mesh 150x90)
+            if (++i >= argc) { std::cerr << "--mesh requires NxM value\n"; std::exit(1); }
+            std::string mesh_str(argv[i]);
+            auto xpos = mesh_str.find('x');
+            if (xpos == std::string::npos) { std::cerr << "--mesh format: NxM\n"; std::exit(1); }
+            params.domain.initial_cells_x = std::stoul(mesh_str.substr(0, xpos));
+            params.domain.initial_cells_y = std::stoul(mesh_str.substr(xpos + 1));
+        }
+        else if (std::strcmp(argv[i], "--ramp-slope") == 0)
+        {
+            if (++i >= argc) { std::cerr << "--ramp-slope requires a value\n"; std::exit(1); }
+            params.dipoles.ramp_slope = std::stod(argv[i]);
+            params.uniform_field.ramp_slope = std::stod(argv[i]);
         }
 
         // ---- Solver overrides ----
@@ -515,7 +542,10 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             std::cout << "    --validation MODE  Validation test (square|droplet|droplet_nofield)\n\n";
             std::cout << "  Overrides (applied after preset):\n";
             std::cout << "    -r, --refinement N  Mesh refinement level\n";
-            std::cout << "    --dt VALUE          Time step size\n\n";
+            std::cout << "    --dt VALUE          Time step size\n";
+            std::cout << "    --chi0 VALUE        Magnetic susceptibility\n";
+            std::cout << "    --mesh NxM          Mesh cells (e.g. 150x90)\n";
+            std::cout << "    --ramp-slope VALUE  Dipole ramp slope\n\n";
             std::cout << "  Subsystem toggles:\n";
             std::cout << "    --mms              MMS verification mode\n";
             std::cout << "    --no_magnetic      Disable magnetic subsystem\n";

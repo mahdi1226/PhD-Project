@@ -71,6 +71,7 @@ inline dealii::Tensor<1, dim> compute_applied_field(
             alpha = params.uniform_field.intensity_max * ramp_factor;
         }
 
+
         for (unsigned int d = 0; d < dim && d < params.uniform_field.direction.size(); ++d)
             h_a[d] = params.uniform_field.direction[d] * alpha;
 
@@ -107,6 +108,7 @@ inline dealii::Tensor<1, dim> compute_applied_field(
                 : 1.0;
             alpha = params.dipoles.intensity_max * ramp_factor;
         }
+
         const double d_x = params.dipoles.direction[0];
         const double d_y = params.dipoles.direction[1];
 

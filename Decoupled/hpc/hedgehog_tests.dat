@@ -1,0 +1,16 @@
+# Hedgehog Test Matrix — one test per line
+# Format: BINARY FLAGS
+# BINARY: bin0 or bin1
+# Lines correspond to SLURM_ARRAY_TASK_ID (1-12)
+bin0 --hedgehog
+bin0 --hedgehog --dt 1e-4
+bin0 --hedgehog --dt 5e-5
+bin0 --hedgehog --chi0 0.5
+bin0 --hedgehog --mesh 150x90
+bin0 --hedgehog --ramp-slope 0.6
+bin1 --hedgehog
+bin1 --hedgehog --dt 1e-4
+bin1 --hedgehog --chi0 0.5
+bin1 --hedgehog --mesh 150x90
+bin1 --hedgehog --dt 1e-4 --mesh 150x90
+bin1 --hedgehog --ramp-slope 0.6

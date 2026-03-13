@@ -1,0 +1,66 @@
+#!/bin/bash
+#SBATCH --job-name=hedgehog
+#SBATCH --partition=hpcc
+#SBATCH --array=1-12
+#SBATCH --ntasks=4
+#SBATCH --time=28-00:00:00
+#SBATCH --mem=8G
+#SBATCH --out=logs/T%02a_%j.out
+#SBATCH --err=logs/T%02a_%j.err
+#SBATCH --mail-type=begin,end,fail
+#SBATCH --export=all
+
+# ============================================================================
+# Hedgehog Test Matrix — SLURM Job Array
+#
+# Submits 12 tests (T1-T12) as a single job array.
+# Each task reads its config from hedgehog_tests.dat.
+#
+# Usage:
+#   cd /path/to/Decoupled
+#   sbatch hpc/hedgehog_array.sub
+#
+# Prerequisites:
+#   - bin0_hedgehog and bin1_hedgehog compiled and in build/
+#   - logs/ directory exists
+#   - hedgehog_tests.dat in hpc/
+# ============================================================================
+
+# Load modules (adjust to match your build environment)
+module load openmpi/4.1.5/gcc/12.2.0
+
+# Working directory = submission directory (should be Decoupled/)
+cd $SLURM_SUBMIT_DIR
+
+# Create logs dir if missing
+mkdir -p logs
+
+# Read test config for this array task
+LINE=$(awk -v line=${SLURM_ARRAY_TASK_ID} '!/^#/ && !/^$/ {n++; if (n==line) print}' hpc/hedgehog_tests.dat)
+BINARY=$(echo "$LINE" | awk '{print $1}')
+FLAGS=$(echo "$LINE" | cut -d' ' -f2-)
+
+# Map binary name to path
+if [ "$BINARY" = "bin0" ]; then
+    EXE="./build/bin0_hedgehog"
+elif [ "$BINARY" = "bin1" ]; then
+    EXE="./build/bin1_hedgehog"
+else
+    echo "ERROR: Unknown binary '$BINARY' for task $SLURM_ARRAY_TASK_ID"
+    exit 1
+fi
+
+echo "============================================"
+echo "Test T${SLURM_ARRAY_TASK_ID}"
+echo "Binary: $BINARY ($EXE)"
+echo "Flags:  $FLAGS"
+echo "Nodes:  $SLURM_JOB_NODELIST"
+echo "Tasks:  $SLURM_NTASKS"
+echo "Start:  $(date)"
+echo "============================================"
+
+mpirun -np $SLURM_NTASKS $EXE $FLAGS
+
+echo "============================================"
+echo "End:    $(date)"
+echo "============================================"

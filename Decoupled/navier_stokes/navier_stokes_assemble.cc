@@ -25,6 +25,7 @@
 #include "physics/skew_forms.h"
 #include "physics/material_properties.h"
 #include "physics/kelvin_force.h"
+#include "physics/applied_field.h"   // TEMP: hedgehog Kelvin fix
 
 #include <deal.II/base/quadrature_lib.h>
 #include <deal.II/fe/fe_values.h>
@@ -509,8 +510,14 @@ void NSSubsystem<dim>::assemble_coupled_internal(
             Tensor<1, dim> M;
             Tensor<1, dim> grad_Mx, grad_My;
 
-            const Tensor<1, dim>& H_vec = phi_gradients[q];
-            const Tensor<2, dim>& grad_H = phi_hessians[q];
+            // TEMP FIX: H = h_a + ∇φ (was H = ∇φ only — missing h_a for nonuniform fields)
+            Tensor<1, dim> H_vec = phi_gradients[q];
+            Tensor<2, dim> grad_H = phi_hessians[q];
+            if (has_applied_field(params_))
+            {
+                H_vec += compute_applied_field<dim>(x_q, params_, current_time);
+                grad_H += compute_applied_field_gradient<dim>(x_q, params_, current_time);
+            }
 
             if (!algebraic_M)
             {
