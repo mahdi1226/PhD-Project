@@ -264,4 +264,4 @@ void CahnHilliardSubsystem<dim>::rebuild_coupled_constraints()
 // Explicit instantiations
 // ============================================================================
 template class CahnHilliardSubsystem<2>;
-template class CahnHilliardSubsystem<3>;
+// template class CahnHilliardSubsystem<3>;  // 2D only

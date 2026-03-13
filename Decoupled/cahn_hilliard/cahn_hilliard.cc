@@ -392,4 +392,4 @@ CahnHilliardSubsystem<dim>::compute_diagnostics() const
 // Explicit instantiations
 // ============================================================================
 template class CahnHilliardSubsystem<2>;
-template class CahnHilliardSubsystem<3>;
+// template class CahnHilliardSubsystem<3>;  // 2D only

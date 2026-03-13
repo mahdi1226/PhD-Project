@@ -403,4 +403,4 @@ NSSubsystem<dim>::compute_diagnostics(double dt) const
 // Explicit instantiations (for methods defined in THIS file only)
 // ============================================================================
 template class NSSubsystem<2>;
-template class NSSubsystem<3>;
+// template class NSSubsystem<3>;  // 2D only

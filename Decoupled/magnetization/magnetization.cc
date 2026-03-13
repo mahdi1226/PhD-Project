@@ -810,4 +810,4 @@ MagnetizationSubsystem<dim>::compute_diagnostics_standalone(
 // Explicit instantiations
 // ============================================================================
 template class MagnetizationSubsystem<2>;
-template class MagnetizationSubsystem<3>;
+// template class MagnetizationSubsystem<3>;  // 2D only

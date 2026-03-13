@@ -626,4 +626,4 @@ double CahnHilliardSubsystem<dim>::compute_sav_inner_product(
 // Explicit instantiations
 // ============================================================================
 template class CahnHilliardSubsystem<2>;
-template class CahnHilliardSubsystem<3>;
+// template class CahnHilliardSubsystem<3>;  // 2D only

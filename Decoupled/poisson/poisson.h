@@ -308,6 +308,6 @@ private:
 // Explicit instantiations (in poisson.cc)
 // ============================================================================
 extern template class PoissonSubsystem<2>;
-extern template class PoissonSubsystem<3>;
+// extern template class PoissonSubsystem<3>;  // 2D only
 
 #endif // POISSON_H

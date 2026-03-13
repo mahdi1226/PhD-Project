@@ -495,6 +495,6 @@ private:
 // Explicit instantiations (defined in .cc files)
 // ============================================================================
 extern template class MagnetizationSubsystem<2>;
-extern template class MagnetizationSubsystem<3>;
+// extern template class MagnetizationSubsystem<3>;  // 2D only
 
 #endif // MAGNETIZATION_SUBSYSTEM_H

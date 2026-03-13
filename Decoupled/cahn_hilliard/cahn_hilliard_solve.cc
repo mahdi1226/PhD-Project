@@ -292,4 +292,4 @@ SolverInfo CahnHilliardSubsystem<dim>::solve_coupled_system()
 // Explicit instantiations
 // ============================================================================
 template class CahnHilliardSubsystem<2>;
-template class CahnHilliardSubsystem<3>;
+// template class CahnHilliardSubsystem<3>;  // 2D only
