@@ -8,10 +8,13 @@
 //
 // Reference: Zhang, He & Yang, SIAM J. Sci. Comput. 43(1), 2021
 //
-// NOTE: The Kelvin diagnostic computes the cell-interior part of the skew
-// form B_h^m (Eq. 38 line 1 from Nochetto). The face-integral correction
-// (line 2) is excluded from diagnostics since it's a discrete consistency
-// term, not a physical force.
+// NOTE on Kelvin form: This diagnostic uses the Nochetto skew decomposition
+//   μ₀[(M·∇)H + ½(∇·M)H]
+// while the NS assembly uses the Korteweg-Helmholtz decomposition:
+//   μ₀[(M·∇)H·v + ½(M×H)·(∇×v)]
+// These are equivalent in weak form but produce different pointwise force
+// densities. Reported magnitudes are approximate — they show the correct
+// order of magnitude but not the exact force the solver applies.
 //
 // All quantities are MPI-reduced for parallel correctness.
 // ============================================================================

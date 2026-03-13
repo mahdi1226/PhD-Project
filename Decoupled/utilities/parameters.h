@@ -1,12 +1,12 @@
 // ============================================================================
 // utilities/parameters.h - Runtime Configuration
 //
-// Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
-//            Zhang, He & Yang, CMAME 371 (2020) — β-term extension
+// Reference: Zhang, He & Yang, SIAM J. Sci. Comput. 43(1), 2021, B167-B193
+//            (Algorithm 3.1: decoupled splitting with SAV)
 //
 // Includes parameters for all subsystems:
-//   Poisson (Eq. 42d), Magnetization (Eq. 42c),
-//   Cahn-Hilliard (Eq. 42a-b), Navier-Stokes (Eq. 42e-f)
+//   Poisson (Eq. 3.15), Magnetization (Eq. 3.14/3.17),
+//   Cahn-Hilliard (Eq. 3.9-3.10), Navier-Stokes (Eq. 3.11-3.13)
 // ============================================================================
 #ifndef PARAMETERS_H
 #define PARAMETERS_H
@@ -169,19 +169,16 @@ struct Parameters
     } mesh;
 
     // ========================================================================
-    // Finite element degrees
+    // Finite element degrees (Zhang Eq 3.6 — ALL continuous Galerkin)
     //
-    // Poisson:        Q2 continuous    (degree_potential = 2)
-    // Magnetization:  DG-Q1 discontinuous  (degree_magnetization = 1)
-    // CH (θ, ψ):     Q2 continuous    (degree_phase = 2)
-    // Velocity:       Q2 continuous    (degree_velocity = 2)
-    // Pressure:       DG-Q1 discontinuous  (degree_pressure = 1)
+    // Poisson φ:       CG Q2  (degree_potential = 2)
+    // Magnetization M: CG Q1  (degree_magnetization = 1)
+    // CH (θ, ψ):       CG Q2  (degree_phase = 2)
+    // Velocity (ux,uy): CG Q2  (degree_velocity = 2)
+    // Pressure p:       CG Q1  (degree_pressure = 1)
     //
     // degree_velocity is included because the Magnetization and CH MMS tests
     // need CG velocity DoFHandlers for the advection input U.
-    //
-    // DG pressure (FE_DGQ) enforces local incompressibility per element,
-    // which is critical for Kelvin force stability (Section 4.1).
     //
     // NOTE: φ MUST be Q2 (not Q1) because the Kelvin force μ₀(M·∇)H
     // requires Hess(φ). With Q1 (bilinear) elements, the Hessian has
@@ -189,15 +186,14 @@ struct Parameters
     // produces cross-derivative forces — vertical M gives only horizontal
     // force, which is physically wrong. Q2 (biquadratic) elements have
     // non-zero ∂²φ/∂x² and ∂²φ/∂y², giving correct force directions.
-    // This matches the Round1/Parallel code (degree_potential = 2).
     // ========================================================================
     struct FE
     {
         unsigned int degree_potential = 2;       // Poisson φ: CG Q2 (MUST be ≥2 for Hess)
-        unsigned int degree_magnetization = 1;   // Magnetization M: DG Q1 (Paper: M_h)
-        unsigned int degree_velocity = 2;        // Velocity U: CG Q2 (Paper: V_h)
-        unsigned int degree_phase = 2;           // CH θ, ψ: CG Q2 (Paper: Θ_h)
-        unsigned int degree_pressure = 1;        // Pressure p: DG Q1 (Paper: Q_h)
+        unsigned int degree_magnetization = 1;   // Magnetization M: CG Q1 (Zhang Eq 3.6: N_h)
+        unsigned int degree_velocity = 2;        // Velocity U: CG Q2 (Zhang Eq 3.6: V_h)
+        unsigned int degree_phase = 2;           // CH θ, ψ: CG Q2 (Zhang Eq 3.6: Y_h)
+        unsigned int degree_pressure = 1;        // Pressure p: CG Q1 (Zhang Eq 3.6: Q_h)
     } fe;
 
     // ========================================================================
@@ -298,10 +294,11 @@ struct Parameters
     // ========================================================================
     // Validation test mode
     //
-    //   --validation droplet   Circle IC, no dipoles, surface tension only
-    //   --validation square    Diamond IC, dipoles active, with gravity
+    //   --validation droplet      Circle IC, no field (pure CH+NS relaxation)
+    //   --validation elongation   Circle IC + applied field → elongates (Zhang §4.5)
+    //   --validation square       Diamond IC, dipoles active, with gravity
     // ========================================================================
-    std::string validation_test;  // "" = production, "droplet", "square"
+    std::string validation_test;  // "" = production, "droplet", "elongation", "square"
     double flat_interface_y = 0.2; // y-position of flat interface IC (Rosensweig)
 
     // ========================================================================

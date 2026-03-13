@@ -14,7 +14,7 @@
 // Inside it, deal.II default naming is used:
 //   solution_00002.pvtu, solution_00002.0.vtu, ...
 //
-// Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
+// Reference: Zhang, He & Yang, SIAM J. Sci. Comput. 43(1), 2021, B167-B193
 // ============================================================================
 
 #include "navier_stokes/navier_stokes.h"

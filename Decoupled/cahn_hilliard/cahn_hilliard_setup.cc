@@ -6,7 +6,7 @@
 //   [0, n_theta)        = θ block
 //   [n_theta, n_total)  = ψ block
 //
-// Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
+// Reference: Zhang, He & Yang, SIAM J. Sci. Comput. 43(1), 2021, B167-B193
 // ============================================================================
 
 #include "cahn_hilliard/cahn_hilliard.h"
@@ -264,4 +264,4 @@ void CahnHilliardSubsystem<dim>::rebuild_coupled_constraints()
 // Explicit instantiations
 // ============================================================================
 template class CahnHilliardSubsystem<2>;
-// template class CahnHilliardSubsystem<3>;  // 2D only
+template class CahnHilliardSubsystem<3>;

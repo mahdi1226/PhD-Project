@@ -212,8 +212,9 @@ public:
         f[0] += 0.5 * div_U_old * ux_new;
         f[1] += 0.5 * div_U_old * uy_new;
 
-        // Pressure gradient: +∇p*ⁿ
-        const auto gp = NSMMS::grad_p<dim>(pt, t_new, L_y_);
+        // Pressure gradient: +∇p*ⁿ⁻¹
+        // Projection method puts (p^{n-1}, ∇·v) on RHS — must use t_old.
+        const auto gp = NSMMS::grad_p<dim>(pt, t_old, L_y_);
         f[0] += gp[0];
         f[1] += gp[1];
 

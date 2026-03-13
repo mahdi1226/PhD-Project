@@ -1,8 +1,8 @@
 // ============================================================================
 // cahn_hilliard/cahn_hilliard_assemble.cc - Coupled θ-ψ Assembly
 //
-// Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
-// Equations 42a-42b (discrete scheme), p.505
+// Reference: Zhang, He & Yang, SIAM J. Sci. Comput. 43(1), 2021, B167-B193
+// Equations 3.9-3.10 (SAV Cahn-Hilliard), Algorithm 3.1 Step 1
 //
 // Paper's discrete scheme:
 //   Eq 42a: (δθ^k/τ, Λ) - (U^{n-1} θ^{n-1}, ∇Λ) - γ(∇ψ^k, ∇Λ) = 0
@@ -80,10 +80,12 @@ void CahnHilliardSubsystem<dim>::assemble_system(
     // Velocity components at quadrature points: u_vals[d][q]
     std::vector<std::vector<double>> u_vals(dim, std::vector<double>(n_q, 0.0));
 
-    // Physics parameters
+    // Physics parameters (Zhang Eq 3.9-3.10)
     const double eps = params_.physics.epsilon;
+    const double lambda = params_.physics.lambda;
     const double gamma = params_.physics.mobility;
-    const double eta = eps;  // stabilization η = ε (paper convention)
+    // Zhang stabilization: S = λ/(4ε) ensures convexity of F₁(θ) = F(θ) + (S/2)θ²
+    const double S = lambda / (4.0 * eps);
 
     // Check if velocity is available (avoid expensive linfty_norm MPI reduction)
     bool use_convection = false;
@@ -194,13 +196,13 @@ void CahnHilliardSubsystem<dim>::assemble_system(
                     local_matrix(i_psi, j_psi) +=
                         psi_j * Upsilon_i * JxW;
 
-                    // ε(∇θ^n, ∇Υ)  — Laplacian of θ
+                    // λε(∇θ^n, ∇Υ)  — Zhang Eq 3.10 Laplacian term
                     local_matrix(i_psi, j_theta) +=
-                        eps * (grad_theta_j * grad_Upsilon_i) * JxW;
+                        lambda * eps * (grad_theta_j * grad_Upsilon_i) * JxW;
 
-                    // (1/η)(θ^n, Υ)  — stabilization
+                    // S(θ^n, Υ)  — Zhang stabilization S = λ/(4ε)
                     local_matrix(i_psi, j_theta) +=
-                        (1.0 / eta) * theta_j * Upsilon_i * JxW;
+                        S * theta_j * Upsilon_i * JxW;
                 }
 
                 // ============================================================
@@ -218,13 +220,13 @@ void CahnHilliardSubsystem<dim>::assemble_system(
                 // ============================================================
                 // Eq 42b RHS
                 // ============================================================
-                // -(1/ε)(f(θ^{n-1}), Υ)
+                // -(λ/ε)(f(θ^{n-1}), Υ) — Zhang Eq 3.10
                 local_rhs(i_psi) -=
-                    (1.0 / eps) * f_old * Upsilon_i * JxW;
+                    (lambda / eps) * f_old * Upsilon_i * JxW;
 
-                // (1/η)(θ^{n-1}, Υ)  — stabilization
+                // S(θ^{n-1}, Υ)  — Zhang stabilization S = λ/(4ε)
                 local_rhs(i_psi) +=
-                    (1.0 / eta) * theta_old_q * Upsilon_i * JxW;
+                    S * theta_old_q * Upsilon_i * JxW;
 
                 // MMS source terms (merged into main loop to avoid
                 // duplicate quadrature iteration)
@@ -626,4 +628,4 @@ double CahnHilliardSubsystem<dim>::compute_sav_inner_product(
 // Explicit instantiations
 // ============================================================================
 template class CahnHilliardSubsystem<2>;
-// template class CahnHilliardSubsystem<3>;  // 2D only
+template class CahnHilliardSubsystem<3>;

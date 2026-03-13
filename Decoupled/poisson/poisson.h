@@ -1,19 +1,17 @@
 // ============================================================================
 // poisson/poisson.h - Magnetostatic Poisson Subsystem (Public Facade)
 //
-// PAPER EQUATION 42d (Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531):
+// Zhang Eq 3.15: (∇φ^k, ∇X) = (h_a^k − M^k, ∇X)    ∀X ∈ Ψ_h
 //
-//   (∇φ^k, ∇X) = (h_a^k − M^k, ∇X)    ∀X ∈ X_h
-//
-//   BCs:       ∇φ·n = 0 on ∂Ω        (pure Neumann)
+//   BCs:       ∂_n φ = (h_a − M)·n    (natural from weak form; encodes h_a)
 //   Null-space: pin DoF 0 = 0
-//   FE space:   X_h = CG Q1
+//   FE space:   Ψ_h = CG Q2 (degree_potential, biquadratic)
 //
 // Properties:
 //   - Constant-coefficient Laplacian: matrix assembled ONCE, AMG built ONCE
 //   - RHS changes each Picard iteration (M^k) and timestep (h_a ramp)
-//   - H = ∇φ is the demagnetizing field
-//   - Total field H_total = h_a + ∇φ computed by other subsystems
+//   - ∇φ IS the TOTAL magnetic field H (Poisson encodes h_a into ∇φ)
+//   - DO NOT add h_a to ∇φ — that would double-count the applied field
 //
 // Parallel:
 //   - Trilinos vectors/matrices
@@ -76,11 +74,11 @@ public:
     // ========================================================================
     // Assemble RHS — call every Picard iteration / timestep
     //
-    // Eq. 42d RHS: (h_a^k − M^k, ∇X) + MMS source (if enabled)
+    // Zhang Eq 3.15 RHS: (h_a^k − M^k, ∇X) + MMS source (if enabled)
     //
     // Inputs from other subsystems:
-    //   M_x, M_y:     magnetization components (DG, ghosted/relevant)
-    //   M_dof_handler: DoFHandler for M (DG elements)
+    //   M_x, M_y:     magnetization components (CG Q1, ghosted/relevant)
+    //   M_dof_handler: DoFHandler for M (CG elements)
     //   current_time:  for h_a ramp and MMS time dependence
     //
     // If M has size 0, assembles with M = 0 (standalone Poisson test).

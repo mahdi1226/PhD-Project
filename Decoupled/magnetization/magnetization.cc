@@ -35,7 +35,7 @@ MagnetizationSubsystem<dim>::MagnetizationSubsystem(
     : params_(params)
     , mpi_comm_(mpi_comm)
     , triangulation_(triangulation)
-    , fe_(1)                           // CG Q1 (Zhang Eq 3.6: N_h ∈ C⁰)
+    , fe_(params.fe.degree_magnetization) // CG Q1 (Zhang Eq 3.6: N_h ∈ C⁰)
     , dof_handler_(triangulation)
     , preconditioner_initialized_(false)
     , ghosts_valid_(false)
@@ -538,6 +538,8 @@ MagnetizationSubsystem<dim>::compute_diagnostics(
     double local_My_integral  = 0.0;
     double local_MH_align_sum = 0.0;
     double local_McrossH_sq   = 0.0;   // ||M×H||²
+    double local_M_L2_sq      = 0.0;   // ||M||²_L2 (for energy)
+    double local_M_dot_H      = 0.0;   // (M,H) inner product (for energy)
     double local_volume       = 0.0;
 
     auto cell_M     = dof_handler_.begin_active();
@@ -603,8 +605,12 @@ MagnetizationSubsystem<dim>::compute_diagnostics(
             local_Mx_integral += Mx_q * JxW;
             local_My_integral += My_q * JxW;
 
-            // -- M·H alignment --
+            // -- Energy integrals (Zhang Theorem 3.1) --
             const double MdotH = Mx_q * H[0] + ((dim > 1) ? My_q * H[1] : 0.0);
+            local_M_L2_sq += (Mx_q * Mx_q + My_q * My_q) * JxW;
+            local_M_dot_H += MdotH * JxW;
+
+            // -- M·H alignment --
             if (M_mag > 1e-14 && H_mag > 1e-14)
                 local_MH_align_sum += (MdotH / (M_mag * H_mag)) * JxW;
 
@@ -617,12 +623,13 @@ MagnetizationSubsystem<dim>::compute_diagnostics(
     }
 
     // MPI reductions — batched to reduce latency
-    // SUM reductions (9 values)
-    double local_sums[9] = {local_M_mag_sum, local_Mx_sum, local_My_sum,
-                            local_equil_sq, local_McrossH_sq, local_volume,
-                            local_Mx_integral, local_My_integral, local_MH_align_sum};
-    double global_sums[9];
-    MPI_Allreduce(local_sums, global_sums, 9, MPI_DOUBLE, MPI_SUM, mpi_comm_);
+    // SUM reductions (11 values)
+    double local_sums[11] = {local_M_mag_sum, local_Mx_sum, local_My_sum,
+                             local_equil_sq, local_McrossH_sq, local_volume,
+                             local_Mx_integral, local_My_integral, local_MH_align_sum,
+                             local_M_L2_sq, local_M_dot_H};
+    double global_sums[11];
+    MPI_Allreduce(local_sums, global_sums, 11, MPI_DOUBLE, MPI_SUM, mpi_comm_);
 
     // MIN reduction (1 value)
     double global_M_mag_min;
@@ -643,6 +650,8 @@ MagnetizationSubsystem<dim>::compute_diagnostics(
     const double global_Mx_integral  = global_sums[6];
     const double global_My_integral  = global_sums[7];
     const double global_MH_align_sum = global_sums[8];
+    const double global_M_L2_sq      = global_sums[9];
+    const double global_M_dot_H      = global_sums[10];
     const double global_M_mag_max    = global_maxes[0];
     const double global_air_max      = global_maxes[1];
 
@@ -660,6 +669,9 @@ MagnetizationSubsystem<dim>::compute_diagnostics(
 
     diag.Mx_integral = global_Mx_integral;
     diag.My_integral = global_My_integral;
+
+    diag.M_L2_norm_sq = global_M_L2_sq;
+    diag.M_dot_H      = global_M_dot_H;
 
     diag.M_H_alignment_mean = global_MH_align_sum * inv_vol;
     diag.M_cross_H_L2       = std::sqrt(global_McrossH_sq);
@@ -711,6 +723,8 @@ MagnetizationSubsystem<dim>::compute_diagnostics_standalone(
     double local_My_integral  = 0.0;
     double local_equil_sq     = 0.0;
     double local_McrossH_sq   = 0.0;
+    double local_M_L2_sq      = 0.0;
+    double local_M_dot_H      = 0.0;
     double local_volume       = 0.0;
 
     auto cell_M   = dof_handler_.begin_active();
@@ -759,6 +773,11 @@ MagnetizationSubsystem<dim>::compute_diagnostics_standalone(
             const double diff_y = (dim > 1) ? My_q - chi_0 * H[1] : 0.0;
             local_equil_sq += (diff_x * diff_x + diff_y * diff_y) * JxW;
 
+            // Energy integrals (Zhang Theorem 3.1)
+            const double MdotH = Mx_q * H[0] + ((dim > 1) ? My_q * H[1] : 0.0);
+            local_M_L2_sq += (Mx_q * Mx_q + My_q * My_q) * JxW;
+            local_M_dot_H += MdotH * JxW;
+
             // M×H
             const double McrossH = Mx_q * H[1] - My_q * H[0];
             local_McrossH_sq += McrossH * McrossH * JxW;
@@ -768,12 +787,13 @@ MagnetizationSubsystem<dim>::compute_diagnostics_standalone(
     }
 
     // MPI reductions — batched by operation type
-    // SUM: M_mag_sum, volume, Mx_integral, My_integral, equil_sq, McrossH_sq
-    double local_sums[6] = {local_M_mag_sum, local_volume,
+    // SUM: M_mag_sum, volume, Mx_integral, My_integral, equil_sq, McrossH_sq, M_L2_sq, M_dot_H
+    double local_sums[8] = {local_M_mag_sum, local_volume,
                             local_Mx_integral, local_My_integral,
-                            local_equil_sq, local_McrossH_sq};
-    double global_sums[6];
-    MPI_Allreduce(local_sums, global_sums, 6, MPI_DOUBLE, MPI_SUM, mpi_comm_);
+                            local_equil_sq, local_McrossH_sq,
+                            local_M_L2_sq, local_M_dot_H};
+    double global_sums[8];
+    MPI_Allreduce(local_sums, global_sums, 8, MPI_DOUBLE, MPI_SUM, mpi_comm_);
 
     const double inv_vol = (global_sums[1] > 0) ? 1.0 / global_sums[1] : 0.0;
     diag.M_magnitude_mean = global_sums[0] * inv_vol;
@@ -781,6 +801,8 @@ MagnetizationSubsystem<dim>::compute_diagnostics_standalone(
     diag.My_integral      = global_sums[3];
     diag.M_equilibrium_departure_L2 = std::sqrt(global_sums[4]);
     diag.M_cross_H_L2              = std::sqrt(global_sums[5]);
+    diag.M_L2_norm_sq              = global_sums[6];
+    diag.M_dot_H                   = global_sums[7];
 
     // MIN
     MPI_Allreduce(&local_M_mag_min, &diag.M_magnitude_min, 1,

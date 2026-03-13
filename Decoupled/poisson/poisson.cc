@@ -1,7 +1,7 @@
 // ============================================================================
 // poisson/poisson.cc - Magnetostatic Poisson Subsystem (Orchestration)
 //
-// PAPER EQUATION 42d (Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531):
+// Zhang Eq 3.15 / Nochetto Eq 42d:
 //   (∇φ^k, ∇X) = (h_a^k − M^k, ∇X)    ∀X ∈ X_h
 //
 // This file contains:

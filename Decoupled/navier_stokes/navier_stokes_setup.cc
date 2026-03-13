@@ -34,6 +34,10 @@
 template <int dim>
 void NSSubsystem<dim>::setup()
 {
+    // Invalidate cached pressure matrix and AMG (mesh may have changed via AMR)
+    p_amg_initialized_ = false;
+    p_matrix_assembled_ = false;
+
     // ========================================================================
     // Step 1: Distribute DoFs
     //
@@ -69,7 +73,8 @@ void NSSubsystem<dim>::setup()
     // ========================================================================
     // Step 3: Build velocity constraints
     //
-    // Hanging nodes + homogeneous Dirichlet u=0 on all boundaries (IDs 0-3).
+    // Hanging nodes + homogeneous Dirichlet u=0 on all boundaries.
+    // Uses get_boundary_ids() to handle arbitrary geometries (not just 0-3).
     // ========================================================================
     ux_constraints_.clear();
     ux_constraints_.reinit(ux_locally_owned_, ux_locally_relevant_);
@@ -79,7 +84,8 @@ void NSSubsystem<dim>::setup()
     dealii::DoFTools::make_hanging_node_constraints(ux_dof_handler_, ux_constraints_);
     dealii::DoFTools::make_hanging_node_constraints(uy_dof_handler_, uy_constraints_);
 
-    for (dealii::types::boundary_id bid = 0; bid <= 3; ++bid)
+    const auto boundary_ids = triangulation_.get_boundary_ids();
+    for (const auto bid : boundary_ids)
     {
         dealii::VectorTools::interpolate_boundary_values(
             ux_dof_handler_, bid,

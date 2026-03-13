@@ -37,6 +37,7 @@
 #include <deal.II/lac/trilinos_sparse_matrix.h>
 #include <deal.II/lac/trilinos_sparsity_pattern.h>
 #include <deal.II/lac/trilinos_vector.h>
+#include <deal.II/lac/trilinos_precondition.h>
 #include <deal.II/base/conditional_ostream.h>
 
 #include "utilities/parameters.h"
@@ -306,6 +307,11 @@ private:
     dealii::TrilinosWrappers::SparseMatrix uy_matrix_;
     dealii::TrilinosWrappers::SparseMatrix p_matrix_;
 
+    // Cached AMG for pressure Poisson (matrix is constant — pure Laplacian)
+    dealii::TrilinosWrappers::PreconditionAMG p_amg_;
+    bool p_amg_initialized_ = false;
+    bool p_matrix_assembled_ = false;  // pressure Laplacian assembled (skip if mesh unchanged)
+
     dealii::TrilinosWrappers::MPI::Vector ux_rhs_;
     dealii::TrilinosWrappers::MPI::Vector uy_rhs_;
     dealii::TrilinosWrappers::MPI::Vector p_rhs_;
@@ -343,8 +349,6 @@ private:
     // ========================================================================
     // Cached state
     // ========================================================================
-    double last_assembled_viscosity_ = 0.0;
-    double last_assembled_dt_        = -1.0;
     double last_assemble_time_       = 0.0;
     SolverInfo last_solve_info_;
 

@@ -175,7 +175,7 @@ static MagMMSResult run_single(
         MagExactMx<dim> exact_Mx(t0, L_y);
         MagExactMy<dim> exact_My(t0, L_y);
 
-        // Project exact MMS solution at t=t0 onto DG space
+        // Project exact MMS solution at t=t0 onto CG space
         mag.project_initial_condition(exact_Mx, exact_My);
     }
 

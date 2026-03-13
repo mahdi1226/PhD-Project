@@ -1,8 +1,8 @@
 // ============================================================================
 // cahn_hilliard/cahn_hilliard.h - Cahn-Hilliard Subsystem Facade
 //
-// Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
-//            Equations 42a-42b (discrete coupled θ-ψ system)
+// Reference: Zhang, He & Yang, SIAM J. Sci. Comput. 43(1), 2021, B167-B193
+//            Algorithm 3.1, Equations 3.9-3.10 (SAV Cahn-Hilliard)
 //
 // Solves the coupled Cahn-Hilliard phase-field equations:
 //

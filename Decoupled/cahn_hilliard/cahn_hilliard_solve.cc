@@ -13,7 +13,7 @@
 // Extraction requires a ghosted coupled vector to safely read off-process
 // values via the index maps.
 //
-// Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
+// Reference: Zhang, He & Yang, SIAM J. Sci. Comput. 43(1), 2021, B167-B193
 // ============================================================================
 
 #include "cahn_hilliard/cahn_hilliard.h"
@@ -292,4 +292,4 @@ SolverInfo CahnHilliardSubsystem<dim>::solve_coupled_system()
 // Explicit instantiations
 // ============================================================================
 template class CahnHilliardSubsystem<2>;
-// template class CahnHilliardSubsystem<3>;  // 2D only
+template class CahnHilliardSubsystem<3>;

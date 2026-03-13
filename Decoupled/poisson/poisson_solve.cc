@@ -1,8 +1,7 @@
 // ============================================================================
 // poisson/poisson_solve.cc - Poisson Solver (CG+AMG or Direct)
 //
-// PAPER EQUATION 42d (Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531):
-//   Solve: A φ = b
+// Zhang Eq 3.15: Solve A φ = b
 //   where A = (∇φ, ∇X) is the constant Laplacian
 //         b = (h_a − M, ∇X) changes per Picard iteration
 //

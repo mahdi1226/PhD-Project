@@ -14,7 +14,7 @@
 //   mpirun -np 4 ./poisson_main --mode temporal
 //   mpirun -np 4 ./poisson_main --ref 2 3 4 5
 //
-// Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) Eq. 42d
+// Reference: Zhang, He & Yang, SIAM J. Sci. Comput. 43(1), 2021, Eq. 3.15
 // ============================================================================
 
 #include "poisson/poisson.h"

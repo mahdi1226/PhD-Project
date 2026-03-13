@@ -8,13 +8,14 @@
 //   theta          Phase field (CG Q2, nodal)
 //   psi            Chemical potential (CG Q2, nodal)
 //   grad_theta     |nabla theta| — interface indicator (DG Q0, cell-averaged)
-//   energy_density eps/2|nabla theta|^2 + (1/eps)F(theta) per cell (DG Q0)
+//   energy_density λε/2|nabla theta|^2 + (λ/eps)F(theta) per cell (DG Q0)
 //   subdomain      MPI partition coloring
 //
-// Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
+// Reference: Zhang, He & Yang, SIAM J. Sci. Comput. 43(1), 2021, B167-B193
 // ============================================================================
 
 #include "cahn_hilliard/cahn_hilliard.h"
+#include "physics/material_properties.h"
 
 #include <deal.II/numerics/data_out.h>
 #include <deal.II/base/utilities.h>
@@ -60,7 +61,8 @@ void CahnHilliardSubsystem<dim>::write_vtu(
     std::vector<double> theta_vals(n_q);
     std::vector<dealii::Tensor<1, dim>> theta_grads(n_q);
 
-    const double eps = params_.physics.epsilon;
+    const double eps    = params_.physics.epsilon;
+    const double lambda = params_.physics.lambda;
 
     auto cell_cg  = theta_dof_handler_.begin_active();
     auto cell_dg0 = dg0_dof.begin_active();
@@ -83,10 +85,12 @@ void CahnHilliardSubsystem<dim>::write_vtu(
             const double JxW = fe_values.JxW(q);
             const double grad_norm = theta_grads[q].norm();
             const double th = theta_vals[q];
-            const double F = 0.25 * (th * th - 1.0) * (th * th - 1.0);
+            const double F = double_well_potential(th);  // (1/16)(θ²-1)²
 
+            // Zhang energy: λε/2|∇θ|² + (λ/ε)F(θ)
             avg_grad_mag += grad_norm * JxW;
-            avg_energy += (0.5 * eps * grad_norm * grad_norm + F / eps) * JxW;
+            avg_energy += (lambda * eps * 0.5 * grad_norm * grad_norm
+                         + lambda / eps * F) * JxW;
             vol += JxW;
         }
 

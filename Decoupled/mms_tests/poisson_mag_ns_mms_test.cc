@@ -1115,7 +1115,7 @@ PoissonMagNSConvergenceResult run_poisson_mag_ns_mms(
         std::cout << "============================================================\n";
         std::cout << "  MPI ranks:  "
                   << dealii::Utilities::MPI::n_mpi_processes(mpi_comm) << "\n";
-        std::cout << "  Time steps: " << n_time_steps << "\n";
+        std::cout << "  Time steps: " << n_time_steps << " (base, ×4 per ref)\n";
         std::cout << "  Picard:     max=50  tol=1e-10  omega=0.35\n";
         std::cout << "  Physics:    mu_0=" << p.physics.mu_0
                   << "  nu=" << p.physics.nu_ferro
@@ -1138,10 +1138,18 @@ PoissonMagNSConvergenceResult run_poisson_mag_ns_mms(
         std::cout << "\n";
     }
 
+    // Scale dt ∝ h² across refinement levels so the O(dt) projection
+    // method splitting error doesn't dominate the spatial error.
+    const unsigned int ref_base = refinements.front();
     for (unsigned int ref : refinements)
+    {
+        unsigned int steps_for_ref = n_time_steps;
+        for (unsigned int r = ref_base; r < ref; ++r)
+            steps_for_ref *= 4;
         result.results.push_back(
-            run_single_level(ref, p, n_time_steps, mpi_comm,
+            run_single_level(ref, p, steps_for_ref, mpi_comm,
                              use_projected_velocity, mag_only));
+    }
 
     result.compute_rates();
     return result;

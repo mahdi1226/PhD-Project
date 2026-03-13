@@ -15,7 +15,7 @@
 //   mpirun -np 4 ./cahn_hilliard_main --ref 2 3 4 5
 //   mpirun -np 4 ./cahn_hilliard_main --steps 500
 //
-// Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) Eq. 42a-42b
+// Reference: Zhang, He & Yang, SIAM J. Sci. Comput. 43(1), 2021, B167-B193
 // ============================================================================
 
 #include "cahn_hilliard/cahn_hilliard.h"

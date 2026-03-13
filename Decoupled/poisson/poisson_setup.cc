@@ -1,9 +1,10 @@
 // ============================================================================
 // poisson/poisson_setup.cc - DoFs, Constraints, Sparsity, Vectors
 //
-// PAPER EQUATION 42d (Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531):
-//   FE space X_h = CG Q1 (piecewise linear, continuous)
-//   BCs: ∇φ·n = 0 on ∂Ω (pure Neumann) → pin DoF 0 = 0
+// Zhang Eq 3.15 / Nochetto Eq 42d:
+//   FE space Ψ_h = CG Q2 (degree_potential, default biquadratic)
+//   BCs: ∂_n φ = (h_a − M)·n on ∂Ω (natural from weak form) → pin DoF 0 = 0
+//   NOTE: ∇φ IS the total field H (Zhang p.B169: h := ∇φ)
 //
 // Called once from setup(), and again after AMR remeshing.
 // ============================================================================

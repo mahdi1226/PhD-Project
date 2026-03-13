@@ -15,7 +15,7 @@
 //   mpirun -np 4 ./magnetization_main --ref 2 3 4 5
 //   mpirun -np 4 ./magnetization_main --steps 100
 //
-// Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) Eq. 42c / 56-57
+// Reference: Zhang, He & Yang, SIAM J. Sci. Comput. 43(1), 2021, Eq. 3.14-3.17
 // ============================================================================
 
 #include "magnetization/magnetization.h"
@@ -136,7 +136,7 @@ void run_relaxation(const Parameters& params, MPI_Comm mpi_comm,
     mag.setup();
     mag.update_ghosts();
 
-    pcout << "  M DoFs: " << mag.get_dof_handler().n_dofs() << " (DG Q1)\n\n";
+    pcout << "  M DoFs: " << mag.get_dof_handler().n_dofs() << " (CG Q1)\n\n";
 
     // ── Time stepping parameters ──
     const double tau_M = params.physics.tau_M;
@@ -487,7 +487,7 @@ int main(int argc, char* argv[])
             if (rank == 0)
             {
                 std::cout << "\n============================================================\n";
-                std::cout << "   Magnetization MMS Convergence (DG"
+                std::cout << "   Magnetization MMS Convergence (CG"
                           << params.fe.degree_magnetization << ")\n";
                 std::cout << "============================================================\n";
                 std::cout << "  Refinements: ";
@@ -512,7 +512,7 @@ int main(int argc, char* argv[])
             }
 
             // Compute and check rates
-            const double expected_L2_rate = params.fe.degree_magnetization + 1;  // DG1 → 2.0
+            const double expected_L2_rate = params.fe.degree_magnetization + 1;  // CG1 → 2.0
             bool pass = false;
 
             if (rank == 0 && results.size() >= 2)

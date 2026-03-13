@@ -218,7 +218,7 @@ namespace VelocityHessian
 //
 // f_u = (U*^n − U*^{n-1})/dt − (ν/2)ΔU*^n
 //       + (U*^{n-1}·∇)U*^n + ½(∇·U*^{n-1})U*^n
-//       + ∇p*^n
+//       + ∇p*^{n-1}    ← uses t_old to match projection method (p_old on RHS)
 //       − μ₀ (M*·∇)H*            [Kelvin term 1, on RHS → subtract]
 //       − μ₀/2 curl(M*×H*)       [Kelvin term 2, on RHS → subtract]
 //       + μ₀·dt b_stab_strong(M*; U*^n)   [LHS stabilization → add]
@@ -270,8 +270,12 @@ public:
         f[0] += 0.5 * div_U_old * NSMMS::ux_val<dim>(pt, t_new, Ly_);
         f[1] += 0.5 * div_U_old * NSMMS::uy_val<dim>(pt, t_new, Ly_);
 
-        // Pressure: +∇p*^n
-        const auto gp = NSMMS::grad_p<dim>(pt, t_new, Ly_);
+        // Pressure: +∇p*^{n-1}
+        // The projection method puts (p^{n-1}, ∇·v) on the RHS of the
+        // velocity predictor (Zhang Step 2, Eq 3.11). The MMS source must
+        // match this by using ∇p* at t_old, NOT t_new. Using t_new would
+        // create an O(dt) splitting error that prevents convergence.
+        const auto gp = NSMMS::grad_p<dim>(pt, t_old, Ly_);
         f[0] += gp[0];
         f[1] += gp[1];
 

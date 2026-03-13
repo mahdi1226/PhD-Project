@@ -224,21 +224,23 @@ void MagnetizationSubsystem<dim>::assemble_system_internal(
             const double JxW = fe_values_M.JxW(q);
             const Point<dim>& x_q = fe_values_M.quadrature_point(q);
 
-            // H_total = h_a + ∇φ  (Zhang: h̃ = h_a + ∇φ)
-            // ∇φ from Poisson is the demagnetizing field only;
-            // must add h_a explicitly for the full magnetic field.
+            // H = ∇φ is the TOTAL effective magnetic field (Zhang p.B169: h := ∇φ).
+            //
+            // The Poisson weak form (∇φ, ∇ψ) = (h_a − M, ∇ψ) has natural BC
+            // ∂_n φ = (h_a − M)·n, which encodes h_a into the solution.
+            // DO NOT add h_a here — that would double-count the applied field.
+            //
+            // Proof: with M=0, (∇φ, ∇ψ) = (h_a, ∇ψ) → ∇φ = h_a. ✓
             Tensor<1, dim> H;
             if (params_.use_reduced_magnetic_field)
             {
+                // Reduced-field mode (no Poisson solve): H = h_a only
                 H = compute_applied_field<dim>(x_q, params_, current_time);
             }
             else
             {
                 for (unsigned int d = 0; d < dim; ++d)
                     H[d] = grad_phi_vals[q][d];
-                // Add applied field: H_total = h_a + ∇φ
-                if (has_applied_field(params_))
-                    H += compute_applied_field<dim>(x_q, params_, current_time);
             }
 
             // χ(θ)

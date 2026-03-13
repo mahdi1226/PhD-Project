@@ -71,7 +71,6 @@ inline dealii::Tensor<1, dim> compute_applied_field(
             alpha = params.uniform_field.intensity_max * ramp_factor;
         }
 
-
         for (unsigned int d = 0; d < dim && d < params.uniform_field.direction.size(); ++d)
             h_a[d] = params.uniform_field.direction[d] * alpha;
 
@@ -123,16 +122,15 @@ inline dealii::Tensor<1, dim> compute_applied_field(
             const double rx = dipole_pos[0] - p[0];
             const double ry = dipole_pos[1] - p[1];
             const double r_sq = rx * rx + ry * ry;
-            const double r_eff_sq = r_sq;  // no regularization (Zhang convention)
 
-            if (r_eff_sq < 1e-12)
+            if (r_sq < 1e-12)
                 continue;
 
-            const double r_eff_sq_sq = r_eff_sq * r_eff_sq;
+            const double r_sq_sq = r_sq * r_sq;
             const double d_dot_r = d_x * rx + d_y * ry;
 
-            h_a[0] += alpha * (-d_x / r_eff_sq + 2.0 * d_dot_r * rx / r_eff_sq_sq);
-            h_a[1] += alpha * (-d_y / r_eff_sq + 2.0 * d_dot_r * ry / r_eff_sq_sq);
+            h_a[0] += alpha * (-d_x / r_sq + 2.0 * d_dot_r * rx / r_sq_sq);
+            h_a[1] += alpha * (-d_y / r_sq + 2.0 * d_dot_r * ry / r_sq_sq);
         }
 
         return h_a;
@@ -146,12 +144,12 @@ inline dealii::Tensor<1, dim> compute_applied_field(
 // For dipole sources: derived from differentiating the dipole formula.
 //
 // Dipole field per source s:
-//   h_a_i = α (-d_i/R² + 2(d·r)r_i/R⁴)
-//   where r = x_s - p,  R² = |r|² + δ²
+//   h_a_i = α (-d_i/r² + 2(d·r)r_i/r⁴)
+//   where r = x_s - p,  r² = |r|² (no regularization, Zhang convention)
 //
 // Jacobian w.r.t. evaluation point p (∂r_k/∂p_j = -δ_{kj}):
-//   ∂(h_a_i)/∂p_j = α/R⁴ [-2 d_i r_j - 2 d_j r_i - 2(d·r)δ_{ij}
-//                          + 8(d·r) r_i r_j / R²]
+//   ∂(h_a_i)/∂p_j = α/r⁴ [-2 d_i r_j - 2 d_j r_i - 2(d·r)δ_{ij}
+//                          + 8(d·r) r_i r_j / r²]
 //
 // Used by Kelvin force: (M·∇)H where H = ∇φ + h_a, ∇H = Hess(φ) + ∇h_a.
 // ============================================================================
@@ -211,24 +209,23 @@ inline dealii::Tensor<2, dim> compute_applied_field_gradient(
             const double ry = dipole_pos[1] - p[1];
             const double r_vec[2] = {rx, ry};
             const double r_sq = rx * rx + ry * ry;
-            const double R2 = r_sq;  // no regularization (Zhang convention)
 
-            if (R2 < 1e-12)
+            if (r_sq < 1e-12)
                 continue;
 
-            const double R4 = R2 * R2;
+            const double r_sq_sq = r_sq * r_sq;
             const double d_dot_r = d_x * rx + d_y * ry;
 
-            // ∂(h_a_i)/∂p_j = α/R⁴ [-2 d_i r_j - 2 d_j r_i
-            //                        - 2(d·r)δ_{ij} + 8(d·r)r_i r_j/R²]
+            // ∂(h_a_i)/∂p_j = α/r⁴ [-2 d_i r_j - 2 d_j r_i
+            //                        - 2(d·r)δ_{ij} + 8(d·r)r_i r_j/r²]
             for (unsigned int i = 0; i < 2; ++i)
                 for (unsigned int j = 0; j < 2; ++j)
                 {
-                    grad_h_a[i][j] += alpha / R4 * (
+                    grad_h_a[i][j] += alpha / r_sq_sq * (
                         - 2.0 * d_vec[i] * r_vec[j]
                         - 2.0 * d_vec[j] * r_vec[i]
                         - 2.0 * d_dot_r * (i == j ? 1.0 : 0.0)
-                        + 8.0 * d_dot_r * r_vec[i] * r_vec[j] / R2);
+                        + 8.0 * d_dot_r * r_vec[i] * r_vec[j] / r_sq);
                 }
         }
 

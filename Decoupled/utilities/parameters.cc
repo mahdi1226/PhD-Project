@@ -229,8 +229,17 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
                 params.time.max_steps = static_cast<unsigned int>(
                     std::ceil(params.time.t_final / params.time.dt));
         }
+        else if (std::strcmp(argv[i], "--t_final") == 0)
+        {
+            if (++i >= argc) { std::cerr << "--t_final requires a value\n"; std::exit(1); }
+            params.time.t_final = std::stod(argv[i]);
+            // Recompute max_steps with current dt
+            if (params.time.dt > 0.0)
+                params.time.max_steps = static_cast<unsigned int>(
+                    std::ceil(params.time.t_final / params.time.dt));
+        }
 
-        // ---- TEMP: Hedgehog test overrides (remove after testing) ----
+        // ---- Physics overrides ----
         else if (std::strcmp(argv[i], "--chi0") == 0)
         {
             if (++i >= argc) { std::cerr << "--chi0 requires a value\n"; std::exit(1); }
@@ -291,7 +300,7 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
         // ---- Validation presets (Zhang, He & Yang, SIAM J. Sci. Comput. 43 (2021)) ----
         else if (std::strcmp(argv[i], "--validation") == 0)
         {
-            if (++i >= argc) { std::cerr << "--validation requires a value (square|droplet)\n"; std::exit(1); }
+            if (++i >= argc) { std::cerr << "--validation requires a value (square|droplet|elongation)\n"; std::exit(1); }
             params.validation_test = argv[i];
 
             if (params.validation_test == "square")
@@ -351,10 +360,10 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
                 params.use_algebraic_magnetization = false;
                 params.sav.S1 = 0.0;   // auto-computed: S = lambda_theta/(4*epsilon) = 1.25
             }
-            else if (params.validation_test == "droplet")
+            else if (params.validation_test == "elongation")
             {
                 // ============================================================
-                // Droplet deformation test (Zhang, He & Yang, SIAM J. Sci.
+                // Droplet elongation test (Zhang, He & Yang, SIAM J. Sci.
                 // Comput. 43 (2021), Section 4.5, Eq 4.8, Fig 4.14-4.16):
                 //
                 // Circle in applied field → elongates vertically.
@@ -418,11 +427,11 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
                 params.use_algebraic_magnetization = false;
                 params.sav.S1 = 0.0;   // auto-computed: S = lambda_theta/(4*epsilon) = 31.25
             }
-            else if (params.validation_test == "droplet_nofield")
+            else if (params.validation_test == "droplet")
             {
                 // ============================================================
-                // Droplet baseline test — NO magnetic field.
-                // Same as droplet (Zhang Eq 4.8) but magnetic OFF.
+                // Droplet relaxation test — NO magnetic field.
+                // Same geometry as elongation (Zhang Eq 4.8) but magnetic OFF.
                 // Circle should remain circular (pure CH + NS relaxation).
                 // ============================================================
                 params.domain.x_min = 0.0;
@@ -464,7 +473,7 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             else
             {
                 std::cerr << "Unknown validation test: " << params.validation_test
-                          << " (use 'square', 'droplet', or 'droplet_nofield')\n";
+                          << " (use 'square', 'droplet', or 'elongation')\n";
                 std::exit(1);
             }
         }
@@ -539,10 +548,11 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             std::cout << "    --rosensweig       Uniform field, 5 dipoles (Section 4.3)\n";
             std::cout << "    --hedgehog         Nonuniform field, 42 dipoles (Section 4.4)\n";
             std::cout << "    --dome             Hedgehog with H=h_a only (no Poisson)\n";
-            std::cout << "    --validation MODE  Validation test (square|droplet|droplet_nofield)\n\n";
+            std::cout << "    --validation MODE  Validation test (square|droplet|elongation)\n\n";
             std::cout << "  Overrides (applied after preset):\n";
             std::cout << "    -r, --refinement N  Mesh refinement level\n";
             std::cout << "    --dt VALUE          Time step size\n";
+            std::cout << "    --t_final VALUE     Final simulation time\n";
             std::cout << "    --chi0 VALUE        Magnetic susceptibility\n";
             std::cout << "    --mesh NxM          Mesh cells (e.g. 150x90)\n";
             std::cout << "    --ramp-slope VALUE  Dipole ramp slope\n\n";

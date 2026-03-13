@@ -25,7 +25,7 @@
 #include "physics/skew_forms.h"
 #include "physics/material_properties.h"
 #include "physics/kelvin_force.h"
-#include "physics/applied_field.h"   // TEMP: hedgehog Kelvin fix
+// Note: applied_field.h not needed here — Poisson encodes h_a into ∇φ.
 
 #include <deal.II/base/quadrature_lib.h>
 #include <deal.II/fe/fe_values.h>
@@ -112,8 +112,6 @@ void NSSubsystem<dim>::assemble_stokes(
     double body_force_time)
 {
     const auto t_start = std::chrono::steady_clock::now();
-    last_assembled_viscosity_ = nu;
-    last_assembled_dt_ = include_time_derivative ? dt : -1.0;
 
     ux_matrix_ = 0;
     uy_matrix_ = 0;
@@ -331,9 +329,6 @@ void NSSubsystem<dim>::assemble_coupled_internal(
 
     const bool algebraic_M = (Mx_relevant == nullptr);
 
-    last_assembled_dt_ = dt;
-    last_assembled_viscosity_ = 0.5 * (params_.physics.nu_water + params_.physics.nu_ferro);
-
     ux_matrix_ = 0;
     uy_matrix_ = 0;
     ux_rhs_    = 0;
@@ -510,14 +505,14 @@ void NSSubsystem<dim>::assemble_coupled_internal(
             Tensor<1, dim> M;
             Tensor<1, dim> grad_Mx, grad_My;
 
-            // TEMP FIX: H = h_a + ∇φ (was H = ∇φ only — missing h_a for nonuniform fields)
-            Tensor<1, dim> H_vec = phi_gradients[q];
-            Tensor<2, dim> grad_H = phi_hessians[q];
-            if (has_applied_field(params_))
-            {
-                H_vec += compute_applied_field<dim>(x_q, params_, current_time);
-                grad_H += compute_applied_field_gradient<dim>(x_q, params_, current_time);
-            }
+            // H = ∇φ is the TOTAL magnetic field (Poisson already encodes h_a).
+            //
+            // Linear Poisson:    (∇φ, ∇X) = (h_a - M, ∇X)  → ∇φ = H
+            // Nonlinear Poisson: ((1+χ)∇φ, ∇X) = (h_a, ∇X) → ∇φ = H
+            //
+            // DO NOT add h_a here — that would double-count the applied field.
+            const Tensor<1, dim>& H_vec = phi_gradients[q];
+            const Tensor<2, dim>& grad_H = phi_hessians[q];
 
             if (!algebraic_M)
             {
@@ -750,8 +745,13 @@ void NSSubsystem<dim>::assemble_pressure_poisson(double dt)
 {
     using namespace dealii;
 
-    p_matrix_ = 0;
-    p_rhs_    = 0;
+    // The pressure Laplacian (∇p, ∇q) is constant-coefficient and only
+    // changes when the mesh changes (AMR). Cache it to avoid redundant assembly.
+    const bool need_matrix = !p_matrix_assembled_;
+
+    if (need_matrix)
+        p_matrix_ = 0;
+    p_rhs_ = 0;
 
     const auto& fe_p   = p_dof_handler_.get_fe();
     const auto& fe_vel = ux_dof_handler_.get_fe();
@@ -767,9 +767,6 @@ void NSSubsystem<dim>::assemble_pressure_poisson(double dt)
     // Velocity FE values (need gradients for divergence of ū)
     FEValues<dim> ux_fe_values(fe_vel, quadrature, update_gradients);
     FEValues<dim> uy_fe_values(fe_vel, quadrature, update_gradients);
-
-    // Pressure FE values for old pressure gradient
-    // (same FE as p, so reuse p_fe_values for shape functions)
 
     FullMatrix<double> local_p_p(dofs_per_cell_p, dofs_per_cell_p);
     Vector<double> local_rhs_p(dofs_per_cell_p);
@@ -795,7 +792,8 @@ void NSSubsystem<dim>::assemble_pressure_poisson(double dt)
         ux_fe_values.reinit(ux_cell);
         uy_fe_values.reinit(uy_cell);
 
-        local_p_p = 0;
+        if (need_matrix)
+            local_p_p = 0;
         local_rhs_p = 0;
 
         p_cell->get_dof_indices(p_local_dofs);
@@ -826,21 +824,32 @@ void NSSubsystem<dim>::assemble_pressure_poisson(double dt)
                 // RHS: +(∇p^{n-1}, ∇q)
                 local_rhs_p(i) += (grad_p_old * grad_q_i) * JxW;
 
-                for (unsigned int j = 0; j < dofs_per_cell_p; ++j)
+                if (need_matrix)
                 {
-                    const Tensor<1, dim>& grad_q_j = p_fe_values.shape_grad(j, q);
+                    for (unsigned int j = 0; j < dofs_per_cell_p; ++j)
+                    {
+                        const Tensor<1, dim>& grad_q_j = p_fe_values.shape_grad(j, q);
 
-                    // LHS: (∇p, ∇q)
-                    local_p_p(i, j) += (grad_q_i * grad_q_j) * JxW;
+                        // LHS: (∇p, ∇q)
+                        local_p_p(i, j) += (grad_q_i * grad_q_j) * JxW;
+                    }
                 }
             }
         }  // end quadrature loop
 
-        p_constraints_.distribute_local_to_global(
-            local_p_p, local_rhs_p, p_local_dofs, p_matrix_, p_rhs_);
+        if (need_matrix)
+            p_constraints_.distribute_local_to_global(
+                local_p_p, local_rhs_p, p_local_dofs, p_matrix_, p_rhs_);
+        else
+            p_constraints_.distribute_local_to_global(
+                local_rhs_p, p_local_dofs, p_rhs_);
     }  // end cell loop
 
-    p_matrix_.compress(VectorOperation::add);
+    if (need_matrix)
+    {
+        p_matrix_.compress(VectorOperation::add);
+        p_matrix_assembled_ = true;
+    }
     p_rhs_.compress(VectorOperation::add);
 }
 

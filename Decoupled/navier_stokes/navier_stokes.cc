@@ -4,8 +4,8 @@
 // Constructor, advance_time(), initialize_zero(), public accessors,
 // ghost management, and diagnostics computation.
 //
-// Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
-//            Equation 42e-42f
+// Reference: Zhang, He & Yang, SIAM J. Sci. Comput. 43(1), 2021, B167-B193
+//            Algorithm 3.1 Steps 2-4, Equations 3.11-3.13
 //
 // Other implementation files:
 //   navier_stokes_setup.cc    — setup(): DoFs, constraints, sparsity, vectors

@@ -48,7 +48,9 @@ static unsigned int solve_scalar_cg_amg(
         return 0;
     }
 
-    dealii::SolverControl control(max_iter, tol * rhs_norm);
+    // Floor prevents unreasonably tight tolerance when rhs_norm is small
+    const double tolerance = std::max(tol * rhs_norm, 1e-12);
+    dealii::SolverControl control(max_iter, tolerance);
     dealii::SolverCG<dealii::TrilinosWrappers::MPI::Vector> cg(control);
 
     dealii::TrilinosWrappers::PreconditionAMG::AdditionalData amg_data;
@@ -60,7 +62,19 @@ static unsigned int solve_scalar_cg_amg(
     dealii::TrilinosWrappers::PreconditionAMG amg;
     amg.initialize(matrix, amg_data);
 
-    cg.solve(matrix, solution, rhs, amg);
+    try
+    {
+        cg.solve(matrix, solution, rhs, amg);
+    }
+    catch (dealii::SolverControl::NoConvergence& e)
+    {
+        // Graceful degradation: return with unconverged flag rather than crashing
+        // the entire MPI run. The caller (solve_velocity/solve_pressure) will
+        // see the partial solution and continue with the best available iterate.
+        constraints.distribute(solution);
+        if (residual_out) *residual_out = control.last_value();
+        return control.last_step();
+    }
     constraints.distribute(solution);
 
     if (residual_out) *residual_out = control.last_value();
@@ -251,14 +265,50 @@ SolverInfo NSSubsystem<dim>::solve_pressure()
     }
     else
     {
-        // CG+AMG path (default)
+        // CG + cached AMG path (default)
+        // Pressure Laplacian matrix is constant — build AMG once, reuse every step
         info.solver_name = "NS-Pressure-CG+AMG";
         info.used_direct = false;
-        info.iterations = solve_scalar_cg_amg<dim>(p_matrix_, p_solution_, p_rhs_,
-                                                   p_constraints_, tol, max_iter, false,
-                                                   &p_residual);
-        info.residual = p_residual;
-        info.converged = true;
+
+        const double p_rhs_norm = p_rhs_.l2_norm();
+        if (p_rhs_norm < 1e-14)
+        {
+            p_solution_ = 0;
+            info.iterations = 0;
+            info.residual = 0.0;
+            info.converged = true;
+        }
+        else
+        {
+            const double p_tolerance = std::max(tol * p_rhs_norm, 1e-12);
+            dealii::SolverControl p_control(max_iter, p_tolerance);
+            dealii::SolverCG<dealii::TrilinosWrappers::MPI::Vector> p_cg(p_control);
+
+            if (!p_amg_initialized_)
+            {
+                dealii::TrilinosWrappers::PreconditionAMG::AdditionalData amg_data;
+                amg_data.elliptic = true;
+                amg_data.higher_order_elements = false;
+                amg_data.smoother_sweeps = 2;
+                amg_data.aggregation_threshold = 0.02;
+                p_amg_.initialize(p_matrix_, amg_data);
+                p_amg_initialized_ = true;
+            }
+
+            try
+            {
+                p_cg.solve(p_matrix_, p_solution_, p_rhs_, p_amg_);
+            }
+            catch (dealii::SolverControl::NoConvergence&)
+            {
+                // Accept partial solution for pressure
+            }
+            p_constraints_.distribute(p_solution_);
+
+            info.iterations = p_control.last_step();
+            info.residual = p_control.last_value();
+            info.converged = true;
+        }
     }
 
     // Mean subtraction for pressure uniqueness

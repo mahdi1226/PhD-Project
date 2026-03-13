@@ -80,6 +80,10 @@ public:
         double Mx_integral = 0.0;        // ∫Mx dΩ
         double My_integral = 0.0;        // ∫My dΩ
 
+        // -- Energy (for Zhang Theorem 3.1 discrete energy) --
+        double M_L2_norm_sq = 0.0;       // ||M||²_L2 = ∫(Mx²+My²) dΩ
+        double M_dot_H = 0.0;            // (M,H) = ∫(Mx·Hx + My·Hy) dΩ
+
         // -- M×H alignment --
         double M_H_alignment_mean = 0.0; // mean(M·H / |M||H|)
         double M_cross_H_L2 = 0.0;      // ||M×H||_L2

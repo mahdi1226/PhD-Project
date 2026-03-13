@@ -11,7 +11,7 @@
 //   H_mag      |grad(phi)| (DG Q0, cell-averaged)
 //   subdomain  MPI partition coloring
 //
-// Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
+// Reference: Zhang, He & Yang, SIAM J. Sci. Comput. 43(1), 2021, B167-B193
 // ============================================================================
 
 #include "poisson/poisson.h"

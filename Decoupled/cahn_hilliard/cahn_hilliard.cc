@@ -1,8 +1,8 @@
 // ============================================================================
 // cahn_hilliard/cahn_hilliard.cc - Orchestration, Accessors, Diagnostics
 //
-// Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
-//            Equations 42a-42b
+// Reference: Zhang, He & Yang, SIAM J. Sci. Comput. 43(1), 2021, B167-B193
+//            Algorithm 3.1, Equations 3.9-3.10
 // ============================================================================
 
 #include "cahn_hilliard/cahn_hilliard.h"
@@ -390,4 +390,4 @@ CahnHilliardSubsystem<dim>::compute_diagnostics() const
 // Explicit instantiations
 // ============================================================================
 template class CahnHilliardSubsystem<2>;
-// template class CahnHilliardSubsystem<3>;  // 2D only
+template class CahnHilliardSubsystem<3>;

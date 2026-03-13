@@ -1,7 +1,7 @@
 // ============================================================================
 // poisson/poisson_assemble.cc - Matrix and RHS Assembly
 //
-// PAPER EQUATION 42d (Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531):
+// Zhang Eq 3.15 / Nochetto Eq 42d:
 //   (∇φ^k, ∇X) = (h_a^k − M^k, ∇X)    ∀X ∈ X_h
 //
 // Matrix: (∇φ, ∇X) — constant-coefficient Laplacian, assembled ONCE
@@ -250,11 +250,15 @@ void PoissonSubsystem<dim>::assemble_rhs(
 // ============================================================================
 // assemble_nonlinear — algebraic magnetization mode
 //
-// With M = χ(θ)·H_total where H_total = h_a + ∇φ,
+// With M = χ(θ)·H where H = ∇φ (the TOTAL field, Zhang p.B169),
 // substituting into (∇φ, ∇X) = (h_a - M, ∇X):
 //
-//   (∇φ, ∇X) = (h_a - χ(θ)(h_a + ∇φ), ∇X)
-//   ((1 + χ(θ))∇φ, ∇X) = ((1 - χ(θ))h_a, ∇X)
+//   (∇φ, ∇X) = (h_a - χ(θ)∇φ, ∇X)
+//   ((1 + χ(θ))∇φ, ∇X) = (h_a, ∇X)
+//
+// NOTE: ∇φ IS the total field because the Poisson natural BC
+// ∂_n φ = (h_a - M)·n encodes h_a into the solution.
+// Do NOT use H = h_a + ∇φ — that double-counts the applied field.
 //
 // Assembles BOTH matrix and RHS (matrix depends on θ, changes each timestep).
 // Rebuilds AMG preconditioner after assembly.
@@ -334,14 +338,15 @@ void PoissonSubsystem<dim>::assemble_nonlinear(
             if (has_applied)
                 h_a = compute_applied_field<dim>(x_q, params_, current_time);
 
-            // RHS: ((1-χ)h_a, ∇X) — from ((1+χ)∇φ, ∇X) = ((1-χ)h_a, ∇X)
-            const dealii::Tensor<1, dim> rhs_source = (1.0 - chi_q) * h_a;
+            // RHS: (h_a, ∇X) — from ((1+χ)∇φ, ∇X) = (h_a, ∇X)
+            // (∇φ is the TOTAL field; M = χ·∇φ; substitution gives this form)
+            const dealii::Tensor<1, dim>& rhs_source = h_a;
 
             for (unsigned int i = 0; i < dofs_per_cell; ++i)
             {
                 const auto& grad_X_i = fe_values.shape_grad(i, q);
 
-                // RHS: ((1-χ)h_a, ∇X_i)
+                // RHS: (h_a, ∇X_i)
                 local_rhs(i) += (rhs_source * grad_X_i) * JxW;
 
                 for (unsigned int j = 0; j < dofs_per_cell; ++j)

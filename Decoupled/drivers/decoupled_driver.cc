@@ -24,7 +24,8 @@
 //   mpirun -np 4 ./ferrofluid_decoupled --rosensweig --refinement 5
 //   mpirun -np 4 ./ferrofluid_decoupled --rosensweig -r 4 --t_final 0.5
 //
-// Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) Eq. 42a-42f
+// Reference: Zhang, He & Yang, SIAM J. Sci. Comput. 43(1), 2021, B167-B193
+//            PDE model: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
 // ============================================================================
 
 #include "poisson/poisson.h"
@@ -72,14 +73,23 @@ constexpr int dim = 2;
 static double compute_discrete_energy(
     const CahnHilliardSubsystem<dim>::Diagnostics& ch_diag,
     const NSSubsystem<dim>::Diagnostics& ns_diag,
-    const MagnetizationSubsystem<dim>::Diagnostics& /*mag_diag*/,
+    const MagnetizationSubsystem<dim>::Diagnostics& mag_diag,
     const PoissonSubsystem<dim>::Diagnostics& /*poi_diag*/,
-    const Parameters& /*params*/)
+    const Parameters& params)
 {
-    // E_kin = ½∫|U|² dΩ  (from NS diagnostics)
-    // E_CH = λε/2∫|∇θ|² dΩ + λ/ε∫F(θ) dΩ  (from CH diagnostics)
-    // Magnetic energy terms would require quadrature over M·H — approximate
-    return ns_diag.E_kin + ch_diag.E_total;
+    // Zhang Theorem 3.1 discrete energy:
+    //   E^n = ½||U||² + E_CH + μ₀/(2τ_M)||M||² − μ₀(M,H) + (r^n)²
+    // The SAV variable (r^n)² is tracked separately in the driver loop.
+    const double E_kin = ns_diag.E_kin;         // ½∫|U|² dΩ
+    const double E_CH  = ch_diag.E_total;       // λε/2∫|∇θ|² + λ/ε∫F(θ)
+
+    // Magnetic energy: μ₀/(2τ_M)||M||² − μ₀(M,H)
+    const double mu0   = params.physics.mu_0;
+    const double tau_M  = params.physics.tau_M;
+    const double E_mag = mu0 / (2.0 * tau_M) * mag_diag.M_L2_norm_sq
+                       - mu0 * mag_diag.M_dot_H;
+
+    return E_kin + E_CH + E_mag;
 }
 
 
@@ -490,6 +500,19 @@ public:
         interface_.flush();
     }
 
+    // Call after AMR to refresh mesh/DoF counts for diagnostics.csv
+    void update_mesh_info(unsigned int n_cells, unsigned int n_dofs,
+                          unsigned int n_dofs_ch, unsigned int n_dofs_poisson,
+                          unsigned int n_dofs_mag, unsigned int n_dofs_ns)
+    {
+        n_cells_        = n_cells;
+        n_dofs_         = n_dofs;
+        n_dofs_ch_      = n_dofs_ch;
+        n_dofs_poisson_ = n_dofs_poisson;
+        n_dofs_mag_     = n_dofs_mag;
+        n_dofs_ns_      = n_dofs_ns;
+    }
+
 private:
     std::string dir_;
     unsigned int rank_;
@@ -571,7 +594,7 @@ public:
 
 
 // ============================================================================
-// Circular droplet IC (validation: --validation droplet)
+// Circular droplet IC (validation: --validation droplet / elongation)
 //
 // θ = tanh((R - |x - x_c|) / (√2 ε))
 // Ferrofluid (θ=+1) inside circle, air (θ=-1) outside.
@@ -641,9 +664,9 @@ private:
 // Fields:
 //   theta, psi           — Cahn-Hilliard (CG Q2)
 //   phi                  — Poisson potential (CG Q1)
-//   Mx, My               — Magnetization (DG Q1)
+//   Mx, My               — Magnetization (CG Q1)
 //   ux, uy               — Velocity (CG Q2)
-//   p                    — Pressure (DG P1)
+//   p                    — Pressure (CG Q1)
 //   H_x, H_y, H_mag     — Derived: H = ∇φ (DG Q0, cell-averaged)
 //   M_mag                — Derived: |M| (DG Q0, cell-averaged)
 //   subdomain            — MPI partition
@@ -955,7 +978,8 @@ static void write_algebraic_M_vtu(
     TrilinosWrappers::MPI::Vector M_mag_vec(dg0_owned, mpi_comm);
     TrilinosWrappers::MPI::Vector chi_vec(dg0_owned, mpi_comm);
 
-    // Compute H = ∇φ, M = χ(θ)(∇φ + h_a) at cell-averaged quadrature points
+    // Compute H = ∇φ (total field), M = χ(θ)·∇φ at cell-averaged quadrature points
+    // Note: ∇φ IS the total field — Poisson ((1+χ)∇φ, ∇X) = (h_a, ∇X) encodes h_a.
     {
         const auto& fe_poi = poisson.get_dof_handler().get_fe();
         const auto& fe_ch  = ch.get_theta_dof_handler().get_fe();
@@ -998,16 +1022,15 @@ static void write_algebraic_M_vtu(
             {
                 const double JxW = fe_vals_poi.JxW(q);
 
-                // H = ∇φ + h_a
-                Tensor<1, dim> h_a = compute_applied_field(
-                    fe_vals_poi.quadrature_point(q), params, time);
-                Tensor<1, dim> H_total = grad_phi[q] + h_a;
+                // H = ∇φ is the TOTAL magnetic field.
+                // DO NOT add h_a — Poisson already encodes it into ∇φ.
+                const Tensor<1, dim>& H_total = grad_phi[q];
 
-                // χ(θ) and M = χ(θ) * H_total
+                // χ(θ) and M = χ(θ) · H
                 const double chi_q = susceptibility(theta_vals[q], chi_0);
                 Tensor<1, dim> M_q = chi_q * H_total;
 
-                avg_H += grad_phi[q] * JxW;  // H_field = ∇φ (without h_a for consistency)
+                avg_H += H_total * JxW;
                 avg_M += M_q * JxW;
                 avg_chi += chi_q * JxW;
                 vol += JxW;
@@ -1269,7 +1292,7 @@ int main(int argc, char* argv[])
             ZeroFunction psi_ic;
             ch.project_initial_condition(theta_ic, psi_ic);
         }
-        else if (params.validation_test == "droplet" || params.validation_test == "droplet_nofield")
+        else if (params.validation_test == "elongation" || params.validation_test == "droplet")
         {
             // Circular droplet at center, R = 0.1
             // (Zhang et al. Section 4.5, Eq 4.8, Fig 4.14)
@@ -1351,12 +1374,12 @@ int main(int argc, char* argv[])
         std::string test_name;
         if (params.validation_test == "square")
             test_name = "square";
-        else if (params.validation_test == "droplet" || params.validation_test == "droplet_nofield")
+        else if (params.validation_test == "elongation" || params.validation_test == "droplet")
         {
             if (params.enable_magnetic)
-                test_name = "droplet_wfield";
+                test_name = "elongation";
             else
-                test_name = "droplet_wofield";
+                test_name = "droplet";
         }
         else if (params.enable_magnetic && params.enable_gravity)
         {
@@ -1463,9 +1486,10 @@ int main(int argc, char* argv[])
     if (params.use_sav)
     {
         // Auto-compute S if not set.
-        // Convexity: (λ/ε)*f'(θ) + S >= 0.
-        // min f'(θ) = -1 at θ=0, so S >= λ/ε.
-        // Zhang uses S = λ/(4ε) (Eq 3.10, p.B172).
+        // Convexity of F₁(θ) = (λ/ε)f(θ) + (S/2)θ² requires F₁''(θ) ≥ 0.
+        // f''(θ) = (3θ²-1)/4, min at θ=0: f''(0) = -1/4.
+        // (λ/ε)(-1/4) + S ≥ 0  →  S ≥ λ/(4ε).
+        // Zhang uses S = λ/(4ε) (Eq 3.10, p.B182).
         if (sav_S1 <= 0.0)
             sav_S1 = params.physics.lambda
                      / (4.0 * params.physics.epsilon);
@@ -1541,10 +1565,10 @@ int main(int argc, char* argv[])
         // Step 1: Cahn-Hilliard (θ^n, ψ^n) using U^{n-1}
         //
         // SAV mode: uses S₁ stabilization and SAV nonlinear scaling
-        // Standard mode: original Nochetto scheme
+        // Standard mode: original Zhang scheme
         //
         // IMPORTANT: Save θ^{n-1} BEFORE CH solve — needed for NS lagging.
-        // Per Nochetto Eq 65d: all θ-dependent coefficients in NS (ν, ρ, χ,
+        // Per Zhang Algorithm 3.1: all θ-dependent coefficients in NS (ν, ρ, χ,
         // capillary θ factor) must use θ^{k-1} for energy stability.
         // ============================================================
         TrilinosWrappers::MPI::Vector theta_old(ch.get_theta_relevant());
