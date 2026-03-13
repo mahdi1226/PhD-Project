@@ -91,11 +91,10 @@ inline double viscosity(double theta, double epsilon, double nu_water, double nu
  */
 inline double susceptibility(double theta, double epsilon, double chi_0)
 {
+    // χ(θ) = χ₀ H(θ/ε)
     // θ = +1 : ferrofluid  → χ = χ₀
     // θ = -1 : non-magnetic → χ = 0
-    if (theta / epsilon > 20.0) return chi_0;  // avoid overflow
-    if (theta / epsilon < -20.0) return 0.0;   // avoid underflow
-    return chi_0 / (1.0 + std::exp(-theta / epsilon));
+    return chi_0 * heaviside(theta / epsilon);
 }
 
 // ============================================================================

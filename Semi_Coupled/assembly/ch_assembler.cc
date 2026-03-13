@@ -4,11 +4,11 @@
 // Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
 // Equations 42a-42b (discrete scheme), p.505
 //
-// Paper's discrete scheme (Eq. 42a-42b, code ψ convention = standard μ):
-//   Eq 42a: (δθ^k/τ, Λ) - (U^{k-1} θ^{k-1}, ∇Λ) + γ(∇ψ^k, ∇Λ) = 0
-//   Eq 42b: (ψ^k, Υ) - ε(∇θ^k, ∇Υ) - (1/ε)(f(θ^{k-1}), Υ) - (1/η)(δθ^k, Υ) = 0
+// Paper's discrete scheme (Eq. 65a-65b / 42a-42b):
+//   Eq 65a: (δθ^k/τ, Λ) - (U^k θ^{k-1}, ∇Λ) - γ(∇ψ^k, ∇Λ) = 0
+//   Eq 65b: (ψ^k, Υ) + ε(∇θ^k, ∇Υ) + (1/ε)(f(θ^{k-1}), Υ) + (1/η)(δθ^k, Υ) = 0
 //
-// Convection: IMPLICIT — (U·∇θ^k) on LHS matrix (unconditionally stable, no CFL limit).
+// Convection: EXPLICIT — θ^{k-1} on RHS (matches paper Eq 65a).
 // The +γ sign (vs paper's -γ) is due to ψ_code = -ψ_paper.
 //
 // where η = ε (stabilization parameter)
@@ -176,11 +176,7 @@ void assemble_ch_system(
                     local_matrix(i_theta, j_theta) += (1.0 / dt) * theta_j * Lambda_i * JxW;
                     local_matrix(i_theta, j_psi) += gamma * (grad_psi_j * grad_Lambda_i) * JxW;
 
-                    // IMPLICIT convection: -(U · ∇Λ_i) θ_j on LHS matrix
-                    // Integration by parts: -∫ U·∇θ Λ dx = ∫ θ (U·∇Λ) dx
-                    // For implicit: move θ^k to LHS → subtract (U·∇Λ_i) θ_j
-                    if (use_velocity_convection)
-                        local_matrix(i_theta, j_theta) -= (U * grad_Lambda_i) * theta_j * JxW;
+                    // Convection is EXPLICIT per paper Eq 65a — θ^{k-1} on RHS, not here.
 
                     // Eq 42b LHS: (ψ^k, Υ) - ε(∇θ^k, ∇Υ) - (1/η)(θ^k, Υ)
                     // Note: Paper has -1/η (θ^k - θ^{k-1}).
@@ -190,9 +186,11 @@ void assemble_ch_system(
                     local_matrix(i_psi, j_theta) -= (1.0 / eta) * theta_j * Upsilon_i * JxW;     // FIX: -1/eta
                 }
 
-                // Eq 42a RHS: (θ^{k-1}/τ, Λ)
-                // Note: convection is IMPLICIT (on LHS), so NO convection term on RHS
+                // Eq 65a RHS: (θ^{k-1}/τ, Λ) + (U θ^{k-1}, ∇Λ)
+                // Convection is EXPLICIT per paper: -(U θ^{k-1}, ∇Λ) on LHS → +(U θ^{k-1}, ∇Λ) on RHS
                 local_rhs(i_theta) += (1.0 / dt) * theta_old_q * Lambda_i * JxW;
+                if (use_velocity_convection)
+                    local_rhs(i_theta) += (U * grad_Lambda_i) * theta_old_q * JxW;
 
                 // Eq 42b RHS: (1/ε)(f(θ^{k-1}), Υ) - (1/η)(θ^{k-1}, Υ)
                 // Paper: -1/ε f - 1/η (θ^k - θ^{k-1}) = 0
@@ -211,9 +209,10 @@ void assemble_ch_system(
 
             // Select theta source based on whether convection is active
             // (psi source is the same in both cases)
+            // Uses EXPLICIT convection source (paper Eq 65a: U·∇θ^{k-1})
             std::unique_ptr<dealii::Function<dim>> source_theta_ptr;
             if (use_velocity_convection)
-                source_theta_ptr = std::make_unique<CHSourceThetaWithImplicitConvection<dim>>(gamma, dt, L_y);
+                source_theta_ptr = std::make_unique<CHSourceThetaWithConvection<dim>>(gamma, dt, L_y);
             else
                 source_theta_ptr = std::make_unique<CHSourceTheta<dim>>(gamma, dt, L_y);
 

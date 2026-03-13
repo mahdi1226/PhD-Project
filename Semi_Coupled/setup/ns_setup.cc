@@ -79,12 +79,16 @@ void setup_ns_coupled_system_parallel(
     const dealii::types::global_dof_index n_local = n_ux_local + n_uy_local + n_p_local;
 
     // Gather n_local from all ranks to compute global offsets
-    // Note: dealii::types::global_dof_index is typically unsigned int (32-bit)
+    // Portable: global_dof_index may be 32-bit (unsigned int) or 64-bit (uint64_t)
+    const MPI_Datatype mpi_dof_type =
+        (sizeof(dealii::types::global_dof_index) == sizeof(unsigned int))
+            ? MPI_UNSIGNED : MPI_UNSIGNED_LONG_LONG;
+
     std::vector<dealii::types::global_dof_index> all_n_local(n_ranks);
     {
         dealii::types::global_dof_index my_n_local = n_local;
-        MPI_Allgather(&my_n_local, 1, MPI_UNSIGNED,
-                      all_n_local.data(), 1, MPI_UNSIGNED, mpi_comm);
+        MPI_Allgather(&my_n_local, 1, mpi_dof_type,
+                      all_n_local.data(), 1, mpi_dof_type, mpi_comm);
     }
 
     // Compute global starting index for this rank (exclusive prefix sum)
@@ -139,18 +143,17 @@ void setup_ns_coupled_system_parallel(
     // ========================================================================
     // For ghost DoFs, we need to know their coupled indices from owning ranks.
     // Use Allreduce with MPI_MIN since invalid_dof_index is the maximum value.
-    // Note: dealii::types::global_dof_index is typically unsigned int (32-bit)
     {
         std::vector<dealii::types::global_dof_index> recv_ux(n_ux);
         std::vector<dealii::types::global_dof_index> recv_uy(n_uy);
         std::vector<dealii::types::global_dof_index> recv_p(n_p);
 
         MPI_Allreduce(ux_to_ns_map.data(), recv_ux.data(),
-                      static_cast<int>(n_ux), MPI_UNSIGNED, MPI_MIN, mpi_comm);
+                      static_cast<int>(n_ux), mpi_dof_type, MPI_MIN, mpi_comm);
         MPI_Allreduce(uy_to_ns_map.data(), recv_uy.data(),
-                      static_cast<int>(n_uy), MPI_UNSIGNED, MPI_MIN, mpi_comm);
+                      static_cast<int>(n_uy), mpi_dof_type, MPI_MIN, mpi_comm);
         MPI_Allreduce(p_to_ns_map.data(), recv_p.data(),
-                      static_cast<int>(n_p), MPI_UNSIGNED, MPI_MIN, mpi_comm);
+                      static_cast<int>(n_p), mpi_dof_type, MPI_MIN, mpi_comm);
 
         ux_to_ns_map = std::move(recv_ux);
         uy_to_ns_map = std::move(recv_uy);

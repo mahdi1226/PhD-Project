@@ -9,6 +9,10 @@
 1. Rosensweig `amr_interval` fixed: 50 → 5 (paper p.520: "refined-coarsened once every 5 time steps")
 2. Added `--iterative` CLI flag (GMRES+AMG instead of MUMPS)
 3. Auto-computed gravity via Eq.103: g = 31,583 (paper used hardcoded 30,000)
+4. **CH convection fixed: implicit θ^k → explicit θ^{k-1}** (paper Eq 65a). Implicit was over-stabilizing the interface.
+5. **BGS mag_old overwrite fixed:** mag_old_solution_ now saved once before BGS loop (was overwritten each BGS iteration).
+6. **Heaviside cutoff consistency:** susceptibility() now calls heaviside() (cutoff 30, was reimplemented with cutoff 20).
+7. **MPI type portability:** MPI_UNSIGNED → sizeof-based type selection in ns_setup.cc.
 
 ## Hypotheses Being Tested
 
@@ -20,12 +24,17 @@
 | BGS coupling too weak (1 pass vs iterated) | T6, T7 |
 | Mesh resolution | T9, T10 |
 | Time step sensitivity | T11 |
-| Hedgehog preset | T12 |
+| CH convection fix alone (explicit vs old implicit) | T12 vs T1 (old binary) |
+| All audit fixes + all parameter fixes combined | T13 |
 
 ## Launch Commands
 
 All tests use 4 MPI ranks. Adjust `-np` for your allocation.
 Launch from the project root (so `./Results/` is written correctly).
+
+**IMPORTANT:** Rebuild binary before running. The audit fixes (items 4-7 above)
+change the CH assembler, driver, material properties, and NS setup. All tests
+below use the updated binary.
 
 ```bash
 # ============================================================
@@ -73,8 +82,17 @@ mpirun -np 4 ./ferrofluid --rosensweig -r 7 --run_name T10-rosen-amr5-r7
 # T11: Finer time step
 mpirun -np 4 ./ferrofluid --rosensweig --dt 2e-4 --max_steps 10000 --run_name T11-rosen-amr5-dt2e4
 
-# T12: Hedgehog preset (different physics: chi=0.9, eps=0.005, 42 dipoles)
-mpirun -np 4 ./ferrofluid --hedgehog -r 6 --run_name T12-hedge-amr5-r6
+# ============================================================
+# AUDIT FIX TESTS — Isolate effect of code corrections
+# ============================================================
+
+# T12: Baseline same as T1 but explicit note that this uses post-audit binary
+#      Compare with any pre-audit T1 results to measure CH convection fix impact
+mpirun -np 4 ./ferrofluid --rosensweig --run_name T12-rosen-post-audit-baseline
+
+# T13: All fixes + all parameter tweaks (paper gravity + iterative + BGS 2)
+#      Maximum-effort run: every fix and every favorable parameter combined
+mpirun -np 4 ./ferrofluid --rosensweig --iterative --gravity 30000 --bgs_iters 2 --run_name T13-rosen-all-audit-all-params
 ```
 
 ## Expected Runtime (4 ranks)
@@ -82,11 +100,11 @@ mpirun -np 4 ./ferrofluid --hedgehog -r 6 --run_name T12-hedge-amr5-r6
 | Test | Steps | Est. Time |
 |------|-------|-----------|
 | T1-T4, T8 | 4000 | 2-4h |
-| T5-T7 | 4000 | 3-6h (BGS adds overhead) |
+| T5-T7, T13 | 4000 | 3-6h (BGS adds overhead) |
 | T9 | 4000 | ~1h (coarser mesh) |
 | T10 | 4000 | 8-10h (finer mesh) |
 | T11 | 10000 | 6-8h |
-| T12 | 60000 | 20-30h (smaller dt, finer mesh) |
+| T12 | 4000 | 2-4h |
 
 ## How to Interpret Results
 
@@ -97,7 +115,9 @@ Check `Results/<run_name>/rosensweig_validation.csv` — look for **n_spikes > 0
 - **T1 has spikes, T8 flat** → AMR frequency was the fix
 - **T1 flat, T2 has spikes** → iterative solver noise needed
 - **T1+T2 flat, T5 has spikes** → needed all fixes combined
-- **All flat** → deeper code bug (assembly, coupling, or sign error)
+- **T12 has spikes** → CH convection fix (explicit θ^{k-1}) was the key
+- **T13 has spikes, T12 flat** → needed both code fixes AND parameter tuning
+- **All flat** → deeper issue (model limitation, missing physics, or boundary conditions)
 
 ## Preset Parameters (for reference)
 

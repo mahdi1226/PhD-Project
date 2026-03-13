@@ -67,6 +67,57 @@ For 2D development and validation, use MUMPS direct solver for all three subsyst
 This isolates physics errors from solver convergence issues. If the simulation blows up,
 it is the weak forms, BCs, or time step -- not iterative solver failure.
 
+## Audit Against Nochetto CMAME 2016 (March 2026)
+
+Full 6-agent code audit comparing every assembler, solver, and material function
+against the paper's equations. Four issues found and fixed:
+
+### Fix 1: CH Convection — Implicit → Explicit (ch_assembler.cc)
+**Paper Eq 65a:** `(delta_theta/tau, Lambda) - (U^k theta^{k-1}, grad Lambda) - gamma(grad psi^k, grad Lambda) = 0`
+
+The convection term uses **explicit** `theta^{k-1}` (previous time step) on the RHS.
+Code had implicit `theta^k` on the LHS matrix, over-stabilizing the interface.
+This is the most likely cause of the flat Rosensweig interface — implicit convection
+damps the perturbations that seed spike formation.
+
+**Change:** Removed implicit convection from LHS, added explicit convection to RHS.
+Updated MMS source to use `CHSourceThetaWithConvection` (explicit).
+
+### Fix 2: BGS mag_old Overwrite (phase_field.cc)
+`mag_old_solution_` was being overwritten at each BGS iteration inside `solve_magnetics()`.
+Paper Eq 42c: `delta_M/tau = (M^k - M^{k-1})/tau` — M^{k-1} must refer to the previous
+**time step**, not the previous BGS pass. Only affects runs with `bgs_iters > 1`.
+
+**Change:** Save `mag_old_solution_` once before the BGS loop, not inside it.
+
+### Fix 3: Heaviside Cutoff Consistency (material_properties.h)
+`susceptibility()` reimplemented its own sigmoid with overflow cutoff at 20, while the
+shared `heaviside()` function uses cutoff 30. Both compute `1/(1+exp(-x))` but with
+different overflow protection thresholds, causing inconsistency at extreme values.
+
+**Change:** `susceptibility()` now calls `heaviside()` directly: `chi_0 * heaviside(theta/epsilon)`.
+
+### Fix 4: MPI Type Portability (ns_setup.cc)
+`MPI_UNSIGNED` was hardcoded for `dealii::types::global_dof_index`, which can be
+`uint64_t` on some builds. This could silently corrupt DoF index communication.
+
+**Change:** Added `sizeof`-based MPI type selection: `MPI_UNSIGNED` for 32-bit,
+`MPI_UNSIGNED_LONG_LONG` for 64-bit.
+
+### Verified Non-Issues (No Change Needed)
+- ILU `ilu_rtol = 1.0`: Correct — rtol=1.0 means "no ILU strengthening" per Trilinos docs.
+- `E_internal_prev_`: Not dead code — used in `log_step()` for energy derivative logging.
+- Missing `constraints.distribute()` in mag solver: Not missing — caller `solve_magnetics()`
+  calls `mag_constraints_.distribute()` after solver returns.
+
+## Elongation Preset Update (March 2026)
+
+Reduced droplet radius from R=0.2 to R=0.1 in `setup_elongation()`:
+- **Old:** 40% diameter/domain ratio, 12.6% area fraction — too large, boundary artifacts
+- **New:** 20% diameter/domain ratio, 3.1% area fraction — room for 3-4x elongation
+- Mesh refined r=6 → r=7 (h=1/128) for proper interface resolution (epsilon/h ~ 2.56)
+- Bm reduced from 40.5 to 20.25 (still strong elongation, less extreme)
+
 ## Project Structure
 - `Semi_Coupled/` -- this project (monolithic electromagnetics)
 - `Archived_Nochetto/` -- previous code with Picard iteration (preserved, not modified)

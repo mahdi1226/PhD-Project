@@ -372,13 +372,16 @@ void Parameters::setup_droplet_uniform_B()
 // Elongation test: ferrofluid droplet in uniform vertical magnetic field
 // Validates monolithic M+φ system in production: Kelvin force → elongation
 //
-// Base: droplet preset (ε=0.02, λ=0.1, R=0.25) — well-validated CH+NS params
-// Adds: magnetic field h_a=(0,10), χ₀=0.5, viscosity contrast ν_ferro=2
+// Geometry: R=0.1 droplet in [0,1]² — 20% diameter ratio, ~3.1% area fraction
+//   Leaves ample room for elongation without boundary interference.
+//
+// Physical parameters adapted from Nochetto CMAME 2016:
+//   ε=0.02, λ=0.1, χ₀=0.5, ν_ferro=2.0, ν_water=1.0
 //
 // Magnetic Bond number: Bm = μ₀ χ₀ H₀² R / (λ/ε)
-//   = 1.0 * 0.5 * 100 * 0.25 / 5.0 = 2.5  (moderate elongation)
+//   = 1.0 * 0.5 * 2025 * 0.1 / 5.0 = 20.25  (moderate-strong elongation)
 //
-// Interface resolution: ε/h = 0.02/(1/64) ≈ 1.3 (adequate)
+// Interface resolution: ε/h = 0.02/(1/128) ≈ 2.56 (well-resolved)
 //
 // Expected: droplet elongates along vertical field direction,
 //   energy reaches quasi-steady state, mass conserved.
@@ -388,8 +391,9 @@ void Parameters::setup_elongation()
     setup_droplet();
     preset_name = "elongation";
 
-    // R=0.2 droplet in [0,1]² — moderate size, room to elongate
-    ic.droplet_radius = 0.2;
+    // R=0.1 droplet in [0,1]² — 20% diameter ratio, 3.1% area fraction
+    // Enough room for 3-4× elongation before boundary effects
+    ic.droplet_radius = 0.1;
 
     // Viscosity contrast (tests variable-viscosity NS coupling)
     physics.nu_ferro = 2.0;
@@ -399,26 +403,27 @@ void Parameters::setup_elongation()
     physics.chi_0 = 0.5;
 
     // Uniform applied field h_a = (0, 45)
-    // Bm = μ₀ χ₀ H₀² R / (λ/ε) = 1.0 * 0.5 * 2025 * 0.2 / 5.0 = 40.5
+    // Bm = μ₀ χ₀ H₀² R / (λ/ε) = 1.0 * 0.5 * 2025 * 0.1 / 5.0 = 20.25
     dipoles.use_uniform_field = true;
     dipoles.uniform_field_value[0] = 0.0;
     dipoles.uniform_field_value[1] = 45.0;
     dipoles.ramp_time = 0.5;  // gentle ramp over 0.5s
 
-    // Mesh: 1×1 base grid, r=6 (h=1/64, 4096 cells), no AMR
+    // Mesh: 1×1 base grid, r=7 (h=1/128, 16384 cells), no AMR
+    // Finer mesh needed for smaller droplet — ε/h ≈ 2.56 (well-resolved)
     domain.initial_cells_x = 1;
     domain.initial_cells_y = 1;
-    mesh.initial_refinement = 6;
+    mesh.initial_refinement = 7;
     mesh.use_amr = false;
 
-    // Direct solvers (4K cells — fast on 2-4 ranks)
+    // Direct solvers (16K cells — still fast on 4 ranks)
     solvers.ns.use_iterative = false;
     solvers.ch.use_iterative = false;
 
     // Time stepping: dt overridable via --dt flag for convergence studies
-    // Default: dt=1e-3, t_final=1.0
+    // Default: dt=1e-3, t_final=1.5
     time.dt = 1e-3;
-    time.t_final = 1.0;
+    time.t_final = 1.5;
     time.max_steps = 10000;  // high cap — t_final controls end
 
     // Output every 50 steps (sparse — convergence cares about final state)

@@ -326,6 +326,14 @@ void PhaseFieldProblem<dim>::run()
                 uy_bgs_prev.reinit(uy_locally_owned_, mpi_communicator_);
             }
 
+            // Save previous time step's magnetization ONCE before BGS loop
+            // (Paper Eq. 42c: δM/τ = (M^k - M^{k-1})/τ, M^{k-1} must not change)
+            if (params_.enable_magnetic)
+            {
+                mag_old_solution_ = mag_solution_;
+                mag_old_relevant_ = mag_old_solution_;
+            }
+
             for (bgs_iter = 0; bgs_iter < max_bgs; ++bgs_iter)
             {
                 // Store current fields for convergence check
@@ -773,9 +781,8 @@ void PhaseFieldProblem<dim>::solve_magnetics(double dt)
     // Update ghosted theta for assembly (from CH solve)
     theta_relevant_ = theta_solution_;
 
-    // Store old M+φ for time derivative (Paper Eq. 42c: δM/τ term)
-    mag_old_solution_ = mag_solution_;
-    mag_old_relevant_ = mag_old_solution_;
+    // mag_old_solution_ is set ONCE per time step, before the BGS loop.
+    // Do NOT overwrite it here — it must always refer to the previous time step's M.
 
     // Assemble monolithic system (full Eq. 42c PDE with transport)
     t_assemble.start();
