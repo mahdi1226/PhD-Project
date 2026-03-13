@@ -97,12 +97,12 @@ void MagnetizationSubsystem<dim>::assemble_system_internal(
     std::vector<Tensor<1, dim>> grad_Mx_old(n_q_cell);
     std::vector<Tensor<1, dim>> grad_My_old(n_q_cell);
 
-    // Velocity FEValues + scratch (only needed for full assembly)
+    // Velocity FEValues + scratch (only needed for full assembly, not RHS-only Picard)
     std::unique_ptr<FEValues<dim>> fe_values_U_ptr;
-    std::vector<double>            Ux_vals(n_q_cell);
-    std::vector<double>            Uy_vals(n_q_cell);
-    std::vector<Tensor<1, dim>>    grad_Ux(n_q_cell);
-    std::vector<Tensor<1, dim>>    grad_Uy(n_q_cell);
+    std::vector<double>            Ux_vals;
+    std::vector<double>            Uy_vals;
+    std::vector<Tensor<1, dim>>    grad_Ux;
+    std::vector<Tensor<1, dim>>    grad_Uy;
 
     if (matrix_and_rhs)
     {
@@ -110,6 +110,10 @@ void MagnetizationSubsystem<dim>::assemble_system_internal(
         fe_values_U_ptr = std::make_unique<FEValues<dim>>(
             fe_U, quadrature_cell,
             update_values | update_gradients);
+        Ux_vals.resize(n_q_cell);
+        Uy_vals.resize(n_q_cell);
+        grad_Ux.resize(n_q_cell);
+        grad_Uy.resize(n_q_cell);
     }
 
     // ========================================================================
@@ -220,7 +224,9 @@ void MagnetizationSubsystem<dim>::assemble_system_internal(
             const double JxW = fe_values_M.JxW(q);
             const Point<dim>& x_q = fe_values_M.quadrature_point(q);
 
-            // H = ∇φ (total field — Poisson encodes h_a via natural BCs)
+            // H_total = h_a + ∇φ  (Zhang: h̃ = h_a + ∇φ)
+            // ∇φ from Poisson is the demagnetizing field only;
+            // must add h_a explicitly for the full magnetic field.
             Tensor<1, dim> H;
             if (params_.use_reduced_magnetic_field)
             {
@@ -230,6 +236,9 @@ void MagnetizationSubsystem<dim>::assemble_system_internal(
             {
                 for (unsigned int d = 0; d < dim; ++d)
                     H[d] = grad_phi_vals[q][d];
+                // Add applied field: H_total = h_a + ∇φ
+                if (has_applied_field(params_))
+                    H += compute_applied_field<dim>(x_q, params_, current_time);
             }
 
             // χ(θ)

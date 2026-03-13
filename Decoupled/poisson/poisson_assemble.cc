@@ -250,11 +250,11 @@ void PoissonSubsystem<dim>::assemble_rhs(
 // ============================================================================
 // assemble_nonlinear — algebraic magnetization mode
 //
-// With m = χ(θ)·∇φ (algebraic: m = χ·h̃ where h̃ = ∇φ),
+// With M = χ(θ)·H_total where H_total = h_a + ∇φ,
 // substituting into (∇φ, ∇X) = (h_a - M, ∇X):
 //
-//   (∇φ, ∇X) = (h_a - χ(θ)∇φ, ∇X)
-//   ((1 + χ(θ))∇φ, ∇X) = (h_a, ∇X)
+//   (∇φ, ∇X) = (h_a - χ(θ)(h_a + ∇φ), ∇X)
+//   ((1 + χ(θ))∇φ, ∇X) = ((1 - χ(θ))h_a, ∇X)
 //
 // Assembles BOTH matrix and RHS (matrix depends on θ, changes each timestep).
 // Rebuilds AMG preconditioner after assembly.
@@ -334,14 +334,14 @@ void PoissonSubsystem<dim>::assemble_nonlinear(
             if (has_applied)
                 h_a = compute_applied_field<dim>(x_q, params_, current_time);
 
-            // RHS: (h_a, ∇X) — from ((1+χ)∇φ, ∇X) = (h_a, ∇X)
-            const dealii::Tensor<1, dim>& rhs_source = h_a;
+            // RHS: ((1-χ)h_a, ∇X) — from ((1+χ)∇φ, ∇X) = ((1-χ)h_a, ∇X)
+            const dealii::Tensor<1, dim> rhs_source = (1.0 - chi_q) * h_a;
 
             for (unsigned int i = 0; i < dofs_per_cell; ++i)
             {
                 const auto& grad_X_i = fe_values.shape_grad(i, q);
 
-                // RHS: (h_a, ∇X_i)
+                // RHS: ((1-χ)h_a, ∇X_i)
                 local_rhs(i) += (rhs_source * grad_X_i) * JxW;
 
                 for (unsigned int j = 0; j < dofs_per_cell; ++j)
