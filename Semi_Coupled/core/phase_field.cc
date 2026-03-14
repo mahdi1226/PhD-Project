@@ -697,8 +697,9 @@ void PhaseFieldProblem<dim>::run()
         // Interface/spike notes (only on change)
         console.print_notes(data);
 
-        // VTK output (every N steps)
-        if (timestep_number_ % output_frequency == 0)
+        // VTK output (every N steps, or final step)
+        if (timestep_number_ % output_frequency == 0
+            || timestep_number_ == params_.time.max_steps)
         {
             CumulativeTimer t;
             t.start();
@@ -732,11 +733,6 @@ void PhaseFieldProblem<dim>::run()
 
         ++timestep_number_;
     }
-
-    // ========================================================================
-    // FINAL OUTPUT
-    // ========================================================================
-    output_results(output_dir);
 
     // ========================================================================
     // FINAL ROSENSWEIG VALIDATION SUMMARY (printed ONCE at end)
