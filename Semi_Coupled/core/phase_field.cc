@@ -1005,6 +1005,8 @@ void PhaseFieldProblem<dim>::solve_ns(double dt)
     else
     {
         // Iterative Block Schur solver
+        const bool use_ilu =
+            (params_.solvers.ns.preconditioner == LinearSolverParams::Preconditioner::ILU);
         last_ns_info_ = solve_ns_system_schur_parallel(
             ns_matrix_,
             ns_rhs_,
@@ -1020,7 +1022,8 @@ void PhaseFieldProblem<dim>::solve_ns(double dt)
             mpi_communicator_,
             nu,
             dt,
-            params_.output.verbose);
+            params_.output.verbose,
+            use_ilu);
     }
 
     // Extract individual solutions

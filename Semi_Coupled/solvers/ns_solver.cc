@@ -51,7 +51,8 @@ SolverInfo solve_ns_system_schur_parallel(
     MPI_Comm mpi_comm,
     double viscosity,
     double dt,
-    bool verbose)
+    bool verbose,
+    bool use_ilu)
 {
     SolverInfo info;
     info.solver_name = "NS-FGMRES-Schur";
@@ -77,11 +78,15 @@ SolverInfo solve_ns_system_schur_parallel(
     // Create block Schur preconditioner with dt for proper scaling
     // Uses improved defaults from constructor: inner_tolerance=1e-1, max_inner_iterations=20
     // Schur scaling: alpha = nu + 1/dt (unsteady) or alpha = nu (steady, dt <= 0)
+    if (verbose && rank == 0)
+        std::cout << "[NS Schur] Building Block Schur preconditioner (use_ilu="
+                  << (use_ilu ? "true" : "false") << ")...\n";
+
     BlockSchurPreconditionerParallel preconditioner(
         matrix, pressure_mass,
         ux_to_ns_map, uy_to_ns_map, p_to_ns_map,
         ns_owned, vel_owned, p_owned,
-        mpi_comm, viscosity, dt);
+        mpi_comm, viscosity, dt, use_ilu);
 
     // DO NOT override defaults - they are already optimized in the constructor!
     // OLD (slow): preconditioner.inner_tolerance = 1e-3;
@@ -497,7 +502,8 @@ SolverInfo solve_ns_system(
     bool verbose,
     bool force_direct,
     bool force_iterative,
-    unsigned int direct_threshold)
+    unsigned int direct_threshold,
+    bool use_ilu)
 {
     const unsigned int n_dofs = matrix.m();
 
@@ -553,7 +559,7 @@ SolverInfo solve_ns_system(
                 pressure_mass,
                 ux_to_ns_map, uy_to_ns_map, p_to_ns_map,
                 ns_owned, vel_owned, p_owned,
-                mpi_comm, viscosity, dt, verbose);
+                mpi_comm, viscosity, dt, verbose, use_ilu);
         }
     }
     else
@@ -563,7 +569,7 @@ SolverInfo solve_ns_system(
             pressure_mass,
             ux_to_ns_map, uy_to_ns_map, p_to_ns_map,
             ns_owned, vel_owned, p_owned,
-            mpi_comm, viscosity, dt, verbose);
+            mpi_comm, viscosity, dt, verbose, use_ilu);
 
         if (!info.converged && !force_iterative && n_dofs < 2 * direct_threshold)
         {

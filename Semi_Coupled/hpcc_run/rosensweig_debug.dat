@@ -18,10 +18,10 @@
 # ============================================================================
 # Group B: Solver type (L6, dt=5e-4)
 # ============================================================================
-# T5: Iterative GMRES+AMG (vs direct MUMPS baseline)
---rosensweig --iterative --run_name D05-iterative
-# T6: Iterative + BGS=2
---rosensweig --iterative --bgs_iters 2 --run_name D06-iterative-bgs2
+# T5: Iterative GMRES+ILU (vs direct baseline)
+--rosensweig --ilu --run_name D05-ilu
+# T6: Iterative ILU + BGS=2
+--rosensweig --ilu --bgs_iters 2 --run_name D06-ilu-bgs2
 #
 # ============================================================================
 # Group C: Temporal refinement (L6, direct, BGS=1)

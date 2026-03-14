@@ -22,6 +22,7 @@
 #include <chrono>
 #include <iostream>
 #include <iomanip>
+#include <memory>
 
 // ============================================================================
 // solve_ch_system - Solve and extract in one call
@@ -94,7 +95,7 @@ SolverInfo solve_ch_system(
     }
 
     // ========================================================================
-    // Iterative solver (GMRES + AMG)
+    // Iterative solver (GMRES + AMG or ILU)
     // ========================================================================
     if (!converged && params.use_iterative)
     {
@@ -104,18 +105,37 @@ SolverInfo solve_ch_system(
 
         dealii::SolverGMRES<dealii::TrilinosWrappers::MPI::Vector> solver(solver_control, gmres_data);
 
-        dealii::TrilinosWrappers::PreconditionAMG preconditioner;
-        dealii::TrilinosWrappers::PreconditionAMG::AdditionalData amg_data;
-        amg_data.smoother_sweeps = 2;
-        amg_data.aggregation_threshold = 1e-4;
-        amg_data.elliptic = false;
-        amg_data.higher_order_elements = true;
+        // Select preconditioner based on params (AMG default, ILU for HPC)
+        std::unique_ptr<dealii::TrilinosWrappers::PreconditionBase> preconditioner;
+
+        if (params.preconditioner == LinearSolverParams::Preconditioner::ILU)
+        {
+            auto ilu = std::make_unique<dealii::TrilinosWrappers::PreconditionILU>();
+            dealii::TrilinosWrappers::PreconditionILU::AdditionalData ilu_data;
+            ilu_data.ilu_fill = 1;
+            ilu_data.ilu_atol = 0.0;
+            ilu_data.ilu_rtol = 1.0;
+            ilu->initialize(matrix, ilu_data);
+            preconditioner = std::move(ilu);
+
+            if (verbose && rank == 0)
+                std::cout << "[CH] Using ILU preconditioner\n";
+        }
+        else
+        {
+            auto amg = std::make_unique<dealii::TrilinosWrappers::PreconditionAMG>();
+            dealii::TrilinosWrappers::PreconditionAMG::AdditionalData amg_data;
+            amg_data.smoother_sweeps = 2;
+            amg_data.aggregation_threshold = 1e-4;
+            amg_data.elliptic = false;
+            amg_data.higher_order_elements = true;
+            amg->initialize(matrix, amg_data);
+            preconditioner = std::move(amg);
+        }
 
         try
         {
-            preconditioner.initialize(matrix, amg_data);
-
-            solver.solve(matrix, coupled_solution, rhs, preconditioner);
+            solver.solve(matrix, coupled_solution, rhs, *preconditioner);
 
             info.iterations = solver_control.last_step();
             info.residual = solver_control.last_value();

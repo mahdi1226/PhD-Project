@@ -28,6 +28,7 @@
 #include <deal.II/lac/solver_gmres.h>
 #include <deal.II/lac/solver_control.h>
 
+#include <memory>
 #include <vector>
 
 // ============================================================================
@@ -62,7 +63,8 @@ public:
         const dealii::IndexSet& p_owned,
         MPI_Comm mpi_comm,
         double viscosity,
-        double dt);
+        double dt,
+        bool use_ilu = false);
 
     /**
      * @brief Apply preconditioner: dst = P^{-1} src
@@ -141,8 +143,8 @@ private:
     // Velocity block and preconditioners
     // ------------------------------------------------------------------------
     dealii::TrilinosWrappers::SparseMatrix velocity_block_;
-    dealii::TrilinosWrappers::PreconditionAMG A_preconditioner_;
-    dealii::TrilinosWrappers::PreconditionAMG S_preconditioner_;
+    std::unique_ptr<dealii::TrilinosWrappers::PreconditionBase> A_preconditioner_;
+    std::unique_ptr<dealii::TrilinosWrappers::PreconditionBase> S_preconditioner_;
 
     // ------------------------------------------------------------------------
     // Physical / scaling parameters

@@ -540,6 +540,14 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             params.solvers.ns.use_iterative = true;
             params.solvers.ch.use_iterative = true;
         }
+        else if (std::strcmp(argv[i], "--ilu") == 0)
+        {
+            // Use ILU preconditioner instead of AMG (for HPC without ML/MueLu)
+            params.solvers.ns.use_iterative = true;
+            params.solvers.ch.use_iterative = true;
+            params.solvers.ns.preconditioner = LinearSolverParams::Preconditioner::ILU;
+            params.solvers.ch.preconditioner = LinearSolverParams::Preconditioner::ILU;
+        }
 
         // Block-Gauss-Seidel global iteration
         else if (std::strcmp(argv[i], "--bgs_iters") == 0)
@@ -646,6 +654,8 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             std::cout << "SOLVER:\n";
             std::cout << "  --direct              Use direct solver (MUMPS)\n";
             std::cout << "  --iterative           Use iterative solver (GMRES+AMG)\n";
+            std::cout << "  --ilu                 Use iterative solver with ILU preconditioner\n";
+            std::cout << "                        (for HPC without AMG/ML; implies --iterative)\n";
             std::cout << "  --bgs_iters N         Max Block-GS iterations (default: 1)\n";
             std::cout << "  --bgs_tol TOL         Block-GS convergence tolerance (default: 1e-2)\n\n";
 

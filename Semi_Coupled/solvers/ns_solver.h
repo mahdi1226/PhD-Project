@@ -38,8 +38,9 @@ SolverInfo solve_ns_system_schur_parallel(
     const dealii::IndexSet& p_owned,
     MPI_Comm mpi_comm,
     double viscosity,
-    double dt = -1.0,      // NEW: time step for Schur scaling (negative = steady)
-    bool verbose = true);
+    double dt = -1.0,      // time step for Schur scaling (negative = steady)
+    bool verbose = true,
+    bool use_ilu = false);  // ILU preconditioner (for HPC without AMG/ML)
 
 // ============================================================================
 // Direct solver with pressure pinning (recommended)
@@ -120,10 +121,11 @@ SolverInfo solve_ns_system(
     const dealii::IndexSet& p_owned,
     MPI_Comm mpi_comm,
     double viscosity,
-    double dt = -1.0,                    // NEW: time step for Schur scaling
+    double dt = -1.0,                    // time step for Schur scaling
     bool verbose = true,
     bool force_direct = false,
     bool force_iterative = false,
-    unsigned int direct_threshold = 50000);
+    unsigned int direct_threshold = 50000,
+    bool use_ilu = false);               // ILU preconditioner (for HPC without AMG/ML)
 
 #endif // NS_SOLVER_H

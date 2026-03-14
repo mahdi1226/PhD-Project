@@ -1,20 +1,19 @@
 // ============================================================================
 // solvers/ns_block_preconditioner.cc - Parallel Block Schur Preconditioner
 //
+// UPDATE (2026-03-14): FIXES
+//   - Epetra 32-bit index fix: velocity block must match system matrix indexing
+//   - Bounds check fix: skip invalid_dof_index entries in component-to-NS maps
+//   - ILU preconditioner support via use_ilu flag (for HPC without ML/MueLu)
+//
 // UPDATE (2026-01-18): CRITICAL FIX for non-contiguous velocity IndexSets
 //   - Uses Trilinos Epetra_Map directly (supports non-contiguous GIDs)
 //   - Bypasses deal.II's SparsityPattern::reinit() which requires LinearMap
 //   - Mathematically correct for separate ux/uy DoFHandlers
 //
 // PHASE-1 FIXES (earlier):
-//   (1) Schur scaling accounts for time discretization:
-//         schur_alpha = nu                (steady / dt<=0)
-//         schur_alpha = nu + 1/dt         (unsteady / dt>0)
-//       and z_p = -(schur_alpha) * M_p^{-1} r_p
-//
-//   (2) Pressure pin consistency:
-//       If global pressure DoF 0 is pinned, enforce r_p[0]=0 and z_p[0]=0
-//
+//   (1) Schur scaling accounts for time discretization
+//   (2) Pressure pin consistency
 //   (3) Improved defaults: inner_tolerance=1e-1, max_inner_iterations=20
 //
 // PHASE-2 FIXES (2026-01-20):
@@ -59,12 +58,10 @@ BlockSchurPreconditionerParallel::BlockSchurPreconditionerParallel(
     const dealii::IndexSet& p_owned,
     MPI_Comm mpi_comm,
     double viscosity,
-    double dt)
+    double dt,
+    bool use_ilu)
     : n_iterations_A(0)
     , n_iterations_S(0)
-    // =========================================================================
-    // IMPROVED DEFAULTS: Looser tolerance OK for preconditioning
-    // =========================================================================
     , inner_tolerance(1e-1)
     , max_inner_iterations(20)
     , system_matrix_ptr_(&system_matrix)
@@ -94,15 +91,25 @@ BlockSchurPreconditionerParallel::BlockSchurPreconditionerParallel(
         pinned_p_local_ = 0;
 
     // Build reverse mappings
+    // FIX: Skip invalid_dof_index entries (remote DoFs not owned or ghosted)
     global_to_vel_.assign(n_total_, -1);
     global_to_p_.assign(n_total_, -1);
 
     for (dealii::types::global_dof_index i = 0; i < n_ux_; ++i)
-        global_to_vel_[ux_map_[i]] = static_cast<int>(i);
+    {
+        if (ux_map_[i] < n_total_)
+            global_to_vel_[ux_map_[i]] = static_cast<int>(i);
+    }
     for (dealii::types::global_dof_index i = 0; i < n_uy_; ++i)
-        global_to_vel_[uy_map_[i]] = static_cast<int>(n_ux_ + i);
+    {
+        if (uy_map_[i] < n_total_)
+            global_to_vel_[uy_map_[i]] = static_cast<int>(n_ux_ + i);
+    }
     for (dealii::types::global_dof_index i = 0; i < n_p_; ++i)
-        global_to_p_[p_map_[i]] = static_cast<int>(i);
+    {
+        if (p_map_[i] < n_total_)
+            global_to_p_[p_map_[i]] = static_cast<int>(i);
+    }
 
     // ========================================================================
     // Build vel_owned_ from matrix rows (determine which velocity DoFs we own)
@@ -171,20 +178,27 @@ BlockSchurPreconditionerParallel::BlockSchurPreconditionerParallel(
     pressure_indices_for_BT_.compress();
 
     // ========================================================================
-    // CRITICAL FIX: Build velocity block using Trilinos directly
+    // Build velocity block using Trilinos directly
     //
     // deal.II's SparsityPattern::reinit() requires LinearMap (contiguous GIDs).
     // With separate ux/uy DoFHandlers, vel_owned_ is typically non-contiguous.
     // Solution: Use Epetra_Map directly which supports non-contiguous GIDs.
+    //
+    // CRITICAL: Must use 32-bit int GIDs to match system matrix index type.
+    //           Using long long GIDs creates a 64-bit indexed matrix that is
+    //           incompatible with deal.II's SparseMatrix::reinit().
     // ========================================================================
 
-    // FIX: Use the communicator from the system matrix to avoid dangling reference
     const Epetra_Comm& epetra_comm = epetra_mat.Comm();
 
-    // Create Epetra_Map with our (possibly non-contiguous) velocity GIDs
+    // Create Epetra_Map with 32-bit int GIDs (matching system matrix)
     const int n_my_vel = static_cast<int>(my_vel_gids.size());
-    Epetra_Map vel_row_map(static_cast<long long>(n_vel_), n_my_vel,
-                           my_vel_gids.data(), 0, epetra_comm);
+    std::vector<int> my_vel_gids_int(n_my_vel);
+    for (int i = 0; i < n_my_vel; ++i)
+        my_vel_gids_int[i] = static_cast<int>(my_vel_gids[i]);
+
+    Epetra_Map vel_row_map(static_cast<int>(n_vel_), n_my_vel,
+                           my_vel_gids_int.data(), 0, epetra_comm);
 
     // ========================================================================
     // Build sparsity pattern for velocity block
@@ -228,7 +242,7 @@ BlockSchurPreconditionerParallel::BlockSchurPreconditionerParallel(
         }
     }
 
-    // Create CrsMatrix with estimated row sizes
+    // Create CrsMatrix with estimated row sizes (32-bit int GIDs)
     auto vel_crs = std::make_unique<Epetra_CrsMatrix>(Copy, vel_row_map, entries_per_row.data(), true);
 
     // Second pass: fill matrix values
@@ -251,7 +265,7 @@ BlockSchurPreconditionerParallel::BlockSchurPreconditionerParallel(
         int* col_indices = nullptr;
         epetra_mat.ExtractMyRowView(local_row, num_entries, values, col_indices);
 
-        // Collect velocity entries for this row
+        // Collect velocity entries (32-bit int column GIDs)
         std::vector<int> col_gids;
         std::vector<double> col_vals;
         col_gids.reserve(num_entries);
@@ -273,41 +287,65 @@ BlockSchurPreconditionerParallel::BlockSchurPreconditionerParallel(
 
         if (!col_gids.empty())
         {
-            int err = vel_crs->InsertGlobalValues(vel_row,
-                                                   static_cast<int>(col_gids.size()),
-                                                   col_vals.data(),
-                                                   col_gids.data());
-            (void)err; // Ignore return for simplicity
+            vel_crs->InsertGlobalValues(vel_row,
+                                        static_cast<int>(col_gids.size()),
+                                        col_vals.data(),
+                                        col_gids.data());
         }
     }
 
     // Finalize the matrix
     vel_crs->FillComplete(vel_row_map, vel_row_map);
 
-    // Wrap in deal.II matrix (vel_crs released automatically)
+    // Wrap in deal.II matrix
     velocity_block_.reinit(*vel_crs);
 
     // ========================================================================
-    // Initialize AMG preconditioners
+    // Initialize preconditioners (AMG or ILU depending on use_ilu flag)
     // ========================================================================
 
-    // AMG for velocity block
-    dealii::TrilinosWrappers::PreconditionAMG::AdditionalData amg_data_A;
-    amg_data_A.elliptic = false;
-    amg_data_A.higher_order_elements = true;
-    amg_data_A.smoother_sweeps = 2;
-    amg_data_A.aggregation_threshold = 0.02;
-    amg_data_A.output_details = false;
-    A_preconditioner_.initialize(velocity_block_, amg_data_A);
+    if (use_ilu)
+    {
+        // ILU preconditioner — works on HPC without ML/MueLu
+        auto A_ilu = std::make_unique<dealii::TrilinosWrappers::PreconditionILU>();
+        dealii::TrilinosWrappers::PreconditionILU::AdditionalData ilu_data_A;
+        ilu_data_A.ilu_fill = 1;
+        ilu_data_A.ilu_atol = 0.0;
+        ilu_data_A.ilu_rtol = 1.0;
+        A_ilu->initialize(velocity_block_, ilu_data_A);
+        A_preconditioner_ = std::move(A_ilu);
 
-    // AMG for pressure mass (Schur complement approximation)
-    dealii::TrilinosWrappers::PreconditionAMG::AdditionalData amg_data_S;
-    amg_data_S.elliptic = true;
-    amg_data_S.higher_order_elements = false;
-    amg_data_S.smoother_sweeps = 1;
-    amg_data_S.aggregation_threshold = 0.02;
-    amg_data_S.output_details = false;
-    S_preconditioner_.initialize(*pressure_mass_ptr_, amg_data_S);
+        auto S_ilu = std::make_unique<dealii::TrilinosWrappers::PreconditionILU>();
+        dealii::TrilinosWrappers::PreconditionILU::AdditionalData ilu_data_S;
+        ilu_data_S.ilu_fill = 0;
+        ilu_data_S.ilu_atol = 0.0;
+        ilu_data_S.ilu_rtol = 1.0;
+        S_ilu->initialize(*pressure_mass_ptr_, ilu_data_S);
+        S_preconditioner_ = std::move(S_ilu);
+    }
+    else
+    {
+        // AMG preconditioner — default (requires ML or MueLu in Trilinos)
+        auto A_amg = std::make_unique<dealii::TrilinosWrappers::PreconditionAMG>();
+        dealii::TrilinosWrappers::PreconditionAMG::AdditionalData amg_data_A;
+        amg_data_A.elliptic = false;
+        amg_data_A.higher_order_elements = true;
+        amg_data_A.smoother_sweeps = 2;
+        amg_data_A.aggregation_threshold = 0.02;
+        amg_data_A.output_details = false;
+        A_amg->initialize(velocity_block_, amg_data_A);
+        A_preconditioner_ = std::move(A_amg);
+
+        auto S_amg = std::make_unique<dealii::TrilinosWrappers::PreconditionAMG>();
+        dealii::TrilinosWrappers::PreconditionAMG::AdditionalData amg_data_S;
+        amg_data_S.elliptic = true;
+        amg_data_S.higher_order_elements = false;
+        amg_data_S.smoother_sweeps = 1;
+        amg_data_S.aggregation_threshold = 0.02;
+        amg_data_S.output_details = false;
+        S_amg->initialize(*pressure_mass_ptr_, amg_data_S);
+        S_preconditioner_ = std::move(S_amg);
+    }
 
     if (rank_ == 0)
     {
@@ -315,6 +353,7 @@ BlockSchurPreconditionerParallel::BlockSchurPreconditionerParallel(
                   << "A = " << n_vel_ << "x" << n_vel_
                   << " (owned: " << vel_owned_.n_elements() << ")"
                   << ", S = " << n_p_ << "x" << n_p_
+                  << ", precond = " << (use_ilu ? "ILU" : "AMG")
                   << ", alpha = " << std::scientific << std::setprecision(2) << schur_alpha_
                   << ", inner_tol = " << inner_tolerance
                   << ", max_inner = " << max_inner_iterations
@@ -358,7 +397,7 @@ void BlockSchurPreconditionerParallel::vmult(
 
         try
         {
-            cg.solve(*pressure_mass_ptr_, z_p, r_p, S_preconditioner_);
+            cg.solve(*pressure_mass_ptr_, z_p, r_p, *S_preconditioner_);
         }
         catch (dealii::SolverControl::NoConvergence&)
         {
@@ -400,7 +439,7 @@ void BlockSchurPreconditionerParallel::vmult(
 
         try
         {
-            gmres.solve(velocity_block_, z_vel, rhs_vel, A_preconditioner_);
+            gmres.solve(velocity_block_, z_vel, rhs_vel, *A_preconditioner_);
         }
         catch (dealii::SolverControl::NoConvergence&)
         {
