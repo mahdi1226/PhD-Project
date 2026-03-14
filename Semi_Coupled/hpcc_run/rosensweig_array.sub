@@ -20,7 +20,7 @@
 # Usage:
 #   cd ~/Semi_Coupled-HPC/Semi_Coupled
 #   mkdir -p logs
-#   sbatch hpc/rosensweig_array.sub
+#   sbatch hpcc_run/rosensweig_array.sub
 # ============================================================================
 
 # Load deal.II module (GCC 12.3 + mvapich — must match build compiler)
@@ -33,7 +33,7 @@ cd $SLURM_SUBMIT_DIR
 mkdir -p logs Results
 
 # Read test config for this array task
-FLAGS=$(awk -v line=${SLURM_ARRAY_TASK_ID} '!/^#/ && !/^$/ {n++; if (n==line) print}' hpc/rosensweig_tests.dat)
+FLAGS=$(awk -v line=${SLURM_ARRAY_TASK_ID} '!/^#/ && !/^$/ {n++; if (n==line) print}' hpcc_run/rosensweig_tests.dat)
 
 EXE="./cmake-build-release/ferrofluid"
 

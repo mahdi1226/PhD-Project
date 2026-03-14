@@ -21,7 +21,7 @@
 # Usage:
 #   cd ~/Semi_Coupled-HPC/Semi_Coupled
 #   mkdir -p logs
-#   sbatch hpc/rosensweig_debug.sub
+#   sbatch hpcc_run/rosensweig_debug.sub
 #
 # Monitor:
 #   squeue -u $USER
@@ -38,7 +38,7 @@ cd $SLURM_SUBMIT_DIR
 mkdir -p logs Results
 
 # Read test config for this array task
-FLAGS=$(awk -v line=${SLURM_ARRAY_TASK_ID} '!/^#/ && !/^$/ {n++; if (n==line) print}' hpc/rosensweig_debug.dat)
+FLAGS=$(awk -v line=${SLURM_ARRAY_TASK_ID} '!/^#/ && !/^$/ {n++; if (n==line) print}' hpcc_run/rosensweig_debug.dat)
 
 EXE="./cmake-build-release/ferrofluid"
 
