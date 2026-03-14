@@ -163,7 +163,10 @@ static void assemble_ns_core(
     std::vector<dealii::Tensor<1, dim>> uy_old_gradients(n_q_points);
 
     // Variable viscosity support
-    const bool use_variable_viscosity = (theta_dof_handler != nullptr) && (theta_solution != nullptr);
+    // Disable when MMS is active: MMS sources assume constant nu, so the
+    // bilinear form must also use constant nu for consistency.
+    const bool use_variable_viscosity = !enable_mms &&
+        (theta_dof_handler != nullptr) && (theta_solution != nullptr);
     std::unique_ptr<dealii::FEValues<dim>> theta_fe_values_ptr;
     std::vector<double> theta_values(n_q_points);
 
@@ -410,12 +413,20 @@ static void assemble_ns_core(
 }
 
 // ============================================================================
-// Kelvin force assembly — SKEW FORM (Paper Eq. 38, 42e)
+// Kelvin force assembly — CELL-ONLY SKEW FORM (Paper Eq. 38, 42e)
 //
 // μ₀(M·∇)H in skew-symmetric form: μ₀[(M·∇)H·V + ½ div(V)(H·M)]
 //
 // H = ∇φ (total magnetic field from Poisson solve)
 // The Poisson equation encodes h_a via the RHS, so ∇φ IS the total field.
+//
+// NOTE: The full B_h^m form (Eq. 57) includes DG face terms
+//   -Σ_F ∫ [[V]]·{W} (U·n_F) dS
+// These are intentionally omitted here. Per Remark 5.4, the face integral
+// vanishes for CG velocity test functions V (since [[V]]=0 on conforming
+// faces). On AMR meshes with hanging nodes, CG continuity is enforced by
+// constraint interpolation, so [[V]]=0 at constrained DoFs as well.
+// The omission is O(h) accurate per the paper's analysis.
 // ============================================================================
 template <int dim>
 static void assemble_kelvin_force(

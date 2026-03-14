@@ -26,6 +26,8 @@
 #include <deal.II/base/utilities.h>
 #include <deal.II/base/mpi.h>
 
+#include <cmath>
+
 template <int dim>
 void setup_ns_coupled_system_parallel(
     const dealii::DoFHandler<dim>& ux_dof_handler,
@@ -139,25 +141,39 @@ void setup_ns_coupled_system_parallel(
     }
 
     // ========================================================================
-    // Step 2c: Exchange mappings for ghost DoFs
+    // Step 2c: Exchange mappings for ghost DoFs via Trilinos ghost import
     // ========================================================================
-    // For ghost DoFs, we need to know their coupled indices from owning ranks.
-    // Use Allreduce with MPI_MIN since invalid_dof_index is the maximum value.
+    // Uses point-to-point MPI (Trilinos Import) to exchange only ghost DoF
+    // mappings. Scales as O(n_ghost) per rank pair, not O(n_total) like
+    // the previous Allreduce approach.
+    // Precision note: double has 53-bit mantissa, sufficient for DoF indices
+    // up to 2^53 ~ 9e15, well beyond any practical mesh size.
     {
-        std::vector<dealii::types::global_dof_index> recv_ux(n_ux);
-        std::vector<dealii::types::global_dof_index> recv_uy(n_uy);
-        std::vector<dealii::types::global_dof_index> recv_p(n_p);
+        auto exchange_ghost_map = [&](const dealii::IndexSet& owned,
+                                      const dealii::IndexSet& relevant,
+                                      std::vector<dealii::types::global_dof_index>& map)
+        {
+            dealii::TrilinosWrappers::MPI::Vector owned_vec;
+            owned_vec.reinit(owned, mpi_comm);
 
-        MPI_Allreduce(ux_to_ns_map.data(), recv_ux.data(),
-                      static_cast<int>(n_ux), mpi_dof_type, MPI_MIN, mpi_comm);
-        MPI_Allreduce(uy_to_ns_map.data(), recv_uy.data(),
-                      static_cast<int>(n_uy), mpi_dof_type, MPI_MIN, mpi_comm);
-        MPI_Allreduce(p_to_ns_map.data(), recv_p.data(),
-                      static_cast<int>(n_p), mpi_dof_type, MPI_MIN, mpi_comm);
+            for (auto it = owned.begin(); it != owned.end(); ++it)
+                owned_vec(*it) = static_cast<double>(map[*it]);
 
-        ux_to_ns_map = std::move(recv_ux);
-        uy_to_ns_map = std::move(recv_uy);
-        p_to_ns_map = std::move(recv_p);
+            dealii::TrilinosWrappers::MPI::Vector ghosted_vec;
+            ghosted_vec.reinit(owned, relevant, mpi_comm);
+            ghosted_vec = owned_vec;
+
+            for (auto it = relevant.begin(); it != relevant.end(); ++it)
+            {
+                if (!owned.is_element(*it))
+                    map[*it] = static_cast<dealii::types::global_dof_index>(
+                        std::round(ghosted_vec(*it)));
+            }
+        };
+
+        exchange_ghost_map(ux_owned, ux_relevant, ux_to_ns_map);
+        exchange_ghost_map(uy_owned, uy_relevant, uy_to_ns_map);
+        exchange_ghost_map(p_owned, p_relevant, p_to_ns_map);
     }
 
     // ========================================================================
