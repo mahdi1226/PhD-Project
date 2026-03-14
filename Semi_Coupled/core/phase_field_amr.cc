@@ -106,12 +106,15 @@ void PhaseFieldProblem<dim>::refine_mesh()
 
     // =========================================================================
     // Step 2c: Force bulk coarsening — override Kelly estimator for pure bulk
-    //   Cells where ALL DoF values satisfy |θ| > 0.95 are deep in the bulk
-    //   (far from interface). Force coarsening to amr_min_level to prevent
-    //   the coarsen→interpolation noise→re-refine oscillation cycle.
+    //   Cells where ALL DoF values satisfy |θ| > threshold are deep in the bulk
+    //   (far from interface). Force coarsening to amr_min_level.
+    //
+    //   IMPORTANT: bulk_threshold must be >= interface_coarsen_threshold (Step 4)
+    //   to avoid an oscillation dead zone. If bulk=0.95 but interface=0.9, cells
+    //   with DoFs in [0.9, 0.95] get coarsened→interpolated→refined every cycle.
     // =========================================================================
     {
-        const double bulk_threshold = 0.95;
+        const double bulk_threshold = 0.99;
         unsigned int force_coarsened = 0;
 
         std::vector<dealii::types::global_dof_index> bulk_dof_indices(
