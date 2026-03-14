@@ -32,10 +32,9 @@ void Parameters::setup_rosensweig()
     physics.nu_ferro = 2.0;
     physics.r = 0.1;              // density ratio (paper value, Section 6.2)
 
-    // Gravity from Nochetto Eq. 103: g = 4π²λ/(ℓ_c²·r·ε), 4 peaks in unit box
-    const double domain_width_rosen = domain.x_max - domain.x_min;
-    physics.gravity = compute_gravity(physics.lambda, physics.epsilon,
-                                      physics.r, domain_width_rosen, 4);
+    // Gravity: Paper Section 6.2, p.522 — "g = (0, −30000)^T in the computer code"
+    // (Eq. 103 gives ~31583 as "an educated guess"; paper uses round 30000)
+    physics.gravity = 30000.0;
 
     dipoles.positions = {
         dealii::Point<2>(-0.5, -15.0),
