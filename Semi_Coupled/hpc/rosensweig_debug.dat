@@ -1,0 +1,50 @@
+# Semi_Coupled Rosensweig Debug Test Matrix
+# Date: 2026-03-14
+# Purpose: Diagnose 3-spike problem (expected 4). All physics at paper values.
+# Format: FLAGS (one test per line, task ID = line number skipping comments/blanks)
+#
+# ============================================================================
+# Group A: BGS coupling strength (L6, dt=5e-4, direct)
+# ============================================================================
+# T1: BASELINE — paper-exact (L6, dt=5e-4, BGS=1, direct MUMPS, g=30000)
+--rosensweig --run_name D01-baseline-L6
+# T2: BGS=2 — tighter CH↔Mag↔NS coupling
+--rosensweig --bgs_iters 2 --run_name D02-bgs2
+# T3: BGS=3
+--rosensweig --bgs_iters 3 --run_name D03-bgs3
+# T4: BGS=5 — near-fully coupled
+--rosensweig --bgs_iters 5 --run_name D04-bgs5
+#
+# ============================================================================
+# Group B: Solver type (L6, dt=5e-4)
+# ============================================================================
+# T5: Iterative GMRES+AMG (vs direct MUMPS baseline)
+--rosensweig --iterative --run_name D05-iterative
+# T6: Iterative + BGS=2
+--rosensweig --iterative --bgs_iters 2 --run_name D06-iterative-bgs2
+#
+# ============================================================================
+# Group C: Temporal refinement (L6, direct, BGS=1)
+# ============================================================================
+# T7: dt=1e-3 — 2x coarser than paper
+--rosensweig --dt 1e-3 --max_steps 2000 --run_name D07-dt1e3
+# T8: dt=2.5e-4 — 2x finer than paper
+--rosensweig --dt 2.5e-4 --max_steps 8000 --run_name D08-dt25e5
+#
+# ============================================================================
+# Group D: Spatial refinement (dt=5e-4, direct, BGS=1)
+# ============================================================================
+# T9: L5 — one level coarser
+--rosensweig -r 5 --run_name D09-L5
+# T10: L7 — one level finer than paper
+--rosensweig -r 7 --run_name D10-L7
+#
+# ============================================================================
+# Group E: AMR settings (L6, dt=5e-4, direct, BGS=1)
+# ============================================================================
+# T11: AMR interval=10 (default=5)
+--rosensweig --amr_interval 10 --run_name D11-amr-int10
+# T12: AMR interval=50 (matches pre-audit Mar 11 run — control)
+--rosensweig --amr_interval 50 --run_name D12-amr-int50
+# T13: NO AMR — uniform L6 mesh (isolates AMR effects)
+--rosensweig --no_amr -r 6 --run_name D13-no-amr-uniform-L6
