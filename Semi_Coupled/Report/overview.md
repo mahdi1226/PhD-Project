@@ -118,6 +118,18 @@ Reduced droplet radius from R=0.2 to R=0.1 in `setup_elongation()`:
 - Mesh refined r=6 → r=7 (h=1/128) for proper interface resolution (epsilon/h ~ 2.56)
 - Bm reduced from 40.5 to 20.25 (still strong elongation, less extreme)
 
+## AMR Coarsening Fix (March 2026)
+
+Droplet, square, and elongation presets had `amr_min_level = initial_refinement - 2`,
+which only coarsened 2 levels below the initial mesh. Bulk cells far from the interface
+stayed unnecessarily fine, wasting DoFs and wall time.
+
+**Change:** Set `amr_min_level = 1` for all three presets (matching Rosensweig/Hedgehog).
+Elongation also changed from uniform mesh (no AMR) to AMR with aggressive bulk coarsening.
+
+A validation script `run_validation.sh` runs square → droplet → elongation back to back.
+Not yet run — validation tests are pending.
+
 ## Project Structure
 - `Semi_Coupled/` -- this project (monolithic electromagnetics)
 - `Archived_Nochetto/` -- previous code with Picard iteration (preserved, not modified)
