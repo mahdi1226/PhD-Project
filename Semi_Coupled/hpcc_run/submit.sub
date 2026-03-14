@@ -1,49 +1,42 @@
 #!/bin/bash
-#SBATCH --job-name=rosen-dbg
+#SBATCH --job-name=rosen
 #SBATCH --partition=hpcc
-#SBATCH --array=1-13
 #SBATCH --nodes=1
 #SBATCH --ntasks=16
-#SBATCH --time=4-00:00:00
+#SBATCH --time=7-00:00:00
 #SBATCH --mem=128G
-#SBATCH --output=logs/D%02a_%j.out
-#SBATCH --error=logs/D%02a_%j.err
+#SBATCH --output=logs/%x_T%02a_%j.out
+#SBATCH --error=logs/%x_T%02a_%j.err
 #SBATCH --mail-type=BEGIN,END,FAIL
 #SBATCH --export=ALL
 
 # ============================================================================
-# Semi_Coupled Rosensweig Debug Matrix — SLURM Job Array
-#
-# 13 tests (D01-D13) investigating 3-spike problem.
-# All physics at paper values; only debugging parameters vary
-# (BGS iters, solver type, dt, mesh level, AMR settings).
+# Generic Semi_Coupled SLURM Array Submission Script
 #
 # Usage:
 #   cd ~/Semi_Coupled-HPC/Semi_Coupled
 #   mkdir -p logs
-#   sbatch hpcc_run/rosensweig_debug.sub
+#   sbatch --array=1-13 hpcc_run/submit.sub hpcc_run/rosensweig_debug.dat
+#   sbatch --array=1-13 hpcc_run/submit.sub hpcc_run/rosensweig_tests.dat
 #
-# Monitor:
-#   squeue -u $USER
-#   tail -f logs/D01_*.out
+# The .dat file is passed as the first argument ($1).
+# --array range must match the number of tests in the .dat file.
 # ============================================================================
 
-# Load deal.II module (GCC 12.3 + mvapich — must match build compiler)
+DAT_FILE="${1:?Usage: sbatch --array=1-N hpcc_run/submit.sub <test_matrix.dat>}"
+
 module load dealii/9.7.1_gcc_12.3.0_mvapich
 
-# Working directory = submission directory (should be Semi_Coupled/)
 cd $SLURM_SUBMIT_DIR
-
-# Create logs and Results dirs if missing
 mkdir -p logs Results
 
-# Read test config for this array task
-FLAGS=$(awk -v line=${SLURM_ARRAY_TASK_ID} '!/^#/ && !/^$/ {n++; if (n==line) print}' hpcc_run/rosensweig_debug.dat)
+FLAGS=$(awk -v line=${SLURM_ARRAY_TASK_ID} '!/^#/ && !/^$/ {n++; if (n==line) print}' "$DAT_FILE")
 
 EXE="./cmake-build-release/ferrofluid"
 
 echo "============================================"
-echo "Rosensweig Debug Test D$(printf '%02d' ${SLURM_ARRAY_TASK_ID})"
+echo "Matrix: $DAT_FILE"
+echo "Test:   T${SLURM_ARRAY_TASK_ID}"
 echo "Flags:  $FLAGS"
 echo "Nodes:  $SLURM_JOB_NODELIST"
 echo "Tasks:  $SLURM_NTASKS"
