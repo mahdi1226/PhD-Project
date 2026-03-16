@@ -211,9 +211,12 @@ where H^k = grad(phi^k) + h_a, and B_h^m is the DG skew-symmetric transport form
 
 ---
 
-## Status
-- [ ] Phase 1: New magnetics module
-- [ ] Phase 2: Integration
-- [ ] Phase 3: Delete old files
-- [ ] Phase 4: Coupled MMS tests
-- [ ] Phase 5: Physical validation
+## Status (Updated March 15, 2026)
+- [x] Phase 1: New magnetics module (monolithic M+φ block system)
+- [x] Phase 2: Integration into full BGS driver
+- [x] Phase 3: Delete old files (Picard iteration code removed)
+- [x] Phase 4: Coupled MMS tests (standalone + coupled MMS passing)
+- [ ] Phase 5: Physical validation — IN PROGRESS
+  - [x] Coarse Rosensweig test (L4, dt=0.002): 4 spikes formed
+  - [ ] v2 test matrix (10 tests, L6): created, pending HPC submission
+  - [ ] Square/droplet/elongation validation: not yet run

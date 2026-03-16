@@ -3,9 +3,12 @@
 //
 // Full PDE assembler for Paper Eq. 42c-42d (Nochetto et al. CMAME 2016).
 //
+// Two modes (selected by --full_mag flag):
+//   SIMPLIFIED (default): Relaxation uses h_a (Section 5/6). No C_M_phi coupling.
+//   FULL (--full_mag):    Relaxation uses ∇φ (Eq 42c). C_M_phi coupling on LHS.
+//
 // Cell terms:
 //   A_M:       (1/dt + 1/tau_M)(M, Z) + (U·∇M)·Z + ½(∇·U)(M·Z)   [mass+transport]
-//   C_M_phi:   -(1/tau_M) chi(theta) (grad phi, Z)                  [relaxation coupling]
 //   C_phi_M:   +(M, grad X)                                         [Poisson coupling]
 //   A_phi:     (grad phi, grad X)                                    [Laplacian]
 //
@@ -13,8 +16,8 @@
 //   -(U·n) [[M]]·{Z}   (assembled componentwise for M, no phi face terms)
 //
 // RHS:
-//   f_M:   (1/dt)(M^{k-1}, Z)   [time derivative]
-//   f_phi: (h_a, grad X)        [applied field]
+//   f_M:   (1/dt)(M^{k-1}, Z) + (1/tau_M) chi(theta) (h_a, Z)   [time + relaxation]
+//   f_phi: (h_a, grad X)                                          [applied field]
 //
 // Sign derivation for C_phi_M:
 //   Paper Eq 42d: (grad phi, grad X) = (h_a - M, grad X)
@@ -325,8 +328,15 @@ void MagneticAssembler<dim>::assemble(
                     // (U·∇)M_j = grad_M_j * U_vec  (Tensor<2,dim> * Tensor<1,dim>)
                     val += (grad_M_j * U_vec) * Z_i + 0.5 * div_U * (M_j * Z_i);
 
-                    // C_M_phi: -(1/tau_M) chi (grad phi_j, Z_i)
-                    val += -relax_coeff * chi_theta * (grad_phi_j * Z_i);
+                    // C_M_phi: Relaxation coupling — depends on --full_mag flag
+                    if (params_.use_full_mag_model)
+                    {
+                        // Full model (Eq 42c): -(1/tau_M) chi(theta) (∇φ_j, Z_i)
+                        // M relaxes toward chi(theta) * ∇φ (full H field)
+                        val += -relax_coeff * chi_theta * (grad_phi_j * Z_i);
+                    }
+                    // else: simplified model (Section 5/6) — no M-phi coupling,
+                    // relaxation source (h_a) on RHS instead
 
                     // C_phi_M: +(M_j, grad X_i)
                     val += M_j * grad_X_i;
@@ -344,6 +354,14 @@ void MagneticAssembler<dim>::assemble(
 
                 // M block: (1/dt)(M^{k-1}, Z_i) — time derivative
                 rhs_val += old_coeff * (M_old_vals[q] * Z_i);
+
+                // M block: relaxation source (depends on --full_mag)
+                if (!params_.use_full_mag_model)
+                {
+                    // Simplified (Section 5/6): +(1/tau_M) chi(theta) (h_a, Z_i)
+                    rhs_val += relax_coeff * chi_theta * (h_a * Z_i);
+                }
+                // Full model: relaxation is on LHS via C_M_phi coupling (no RHS source)
 
                 // phi block: (h_a, grad X_i)
                 rhs_val += h_a * grad_X_i;

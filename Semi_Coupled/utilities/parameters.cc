@@ -57,10 +57,13 @@ void Parameters::setup_rosensweig()
     // Paper Fig. 1: "6 refinement levels in space, 4000 time steps"
     // Paper Fig. 3 parametric study: 4, 5, 6, 7 levels — default to 6 (Fig. 1)
     // The -r flag overrides amr_max_level for parametric studies.
-    mesh.initial_refinement = 3;      // Start coarse, let AMR refine to target level
+    // NOTE: initial_refinement ≥ 3 required — the magnetic Poisson equation (∇²φ = ∇·(h_a - M))
+    // is a GLOBAL problem needing bulk resolution. Level 0 (h=1/10) is too coarse for
+    // magnetic field gradients to trigger the Rosensweig instability.
+    mesh.initial_refinement = 3;       // 10x6 base → 80x48 cells, AMR refines at interface
     mesh.use_amr = true;
     mesh.amr_interval = 5;            // Paper p.520: "refined-coarsened once every 5 time steps"
-    mesh.amr_min_level = 1;           // Don't coarsen below level 1 (Hess(φ) accuracy)
+    mesh.amr_min_level = 1;           // Bulk coarsens to level 1 (NOT 0 — magnetics needs resolution)
     mesh.amr_max_level = 6;           // Paper Fig. 1 default (override with -r)
 
     // Subsystems
@@ -135,11 +138,12 @@ void Parameters::setup_hedgehog()
     time.use_adaptive_dt = false;  // PAPER_MATCH: Paper uses fixed dt
 
     // Mesh (Paper Section 6.3)
-    // Start coarse, let AMR refine up to target level at interface
-    mesh.initial_refinement = 3;      // Start coarse
+    // Start with moderate refinement — magnetic Poisson needs global bulk resolution
+    // (same reasoning as Rosensweig: level 0 too coarse for ∇²φ)
+    mesh.initial_refinement = 3;       // 15x9 base → 120x72 cells, AMR refines at interface
     mesh.use_amr = true;
     mesh.amr_interval = 5;
-    mesh.amr_min_level = 1;           // Coarsen bulk aggressively
+    mesh.amr_min_level = 1;           // Bulk coarsens to level 1 (NOT 0 — magnetics needs resolution)
     mesh.amr_max_level = 7;           // Default: 7 levels (hedgehog needs finer than rosen due to ε=0.005)
 
     // Subsystems
@@ -247,7 +251,7 @@ void Parameters::setup_droplet()
     ic.type = 1;  // Circular droplet
     ic.droplet_center_x = 0.5;
     ic.droplet_center_y = 0.5;
-    ic.droplet_radius = 0.25;
+    ic.droplet_radius = 0.15;
 
     // Physical parameters (mild)
     physics.epsilon = 0.02;       // interface thickness
@@ -270,12 +274,13 @@ void Parameters::setup_droplet()
     time.max_steps = 1000;
     time.use_adaptive_dt = false;
 
-    // Mesh
-    mesh.initial_refinement = 5;
+    // Mesh — 10x10 base, level 2 = 40x40 effective (h=1/40)
+    // Bulk coarsens 2 levels to level 0 (h=1/10)
+    mesh.initial_refinement = 2;
     mesh.use_amr = true;
     mesh.amr_interval = 10;
-    mesh.amr_min_level = 1;  // Coarsen bulk aggressively (away from interface)
-    mesh.amr_max_level = mesh.initial_refinement + 2;
+    mesh.amr_min_level = 0;
+    mesh.amr_max_level = 7;  // -r flag overrides this
 
     // Subsystems - disable magnetic and gravity
     enable_magnetic = false;
@@ -305,7 +310,7 @@ void Parameters::setup_square()
     ic.type = 2;  // Diamond droplet
     ic.droplet_center_x = 0.5;
     ic.droplet_center_y = 0.5;
-    ic.droplet_radius = 0.25; // Half-width of square
+    ic.droplet_radius = 0.15; // Half-width of square
 
     // Physical parameters (mild)
     physics.epsilon = 0.02;       // interface thickness
@@ -328,12 +333,13 @@ void Parameters::setup_square()
     time.max_steps = 500;
     time.use_adaptive_dt = false;
 
-    // Mesh
-    mesh.initial_refinement = 5;
+    // Mesh — 10x10 base, level 2 = 40x40 effective (h=1/40)
+    // Bulk coarsens 2 levels to level 0 (h=1/10)
+    mesh.initial_refinement = 2;
     mesh.use_amr = true;
     mesh.amr_interval = 10;
-    mesh.amr_min_level = 1;  // Coarsen bulk aggressively (away from interface)
-    mesh.amr_max_level = mesh.initial_refinement + 2;
+    mesh.amr_min_level = 0;
+    mesh.amr_max_level = 7;  // -r flag overrides this
 
     // Subsystems - disable magnetic and gravity
     enable_magnetic = false;
@@ -349,23 +355,6 @@ void Parameters::setup_square()
 // Same as setup_droplet() but with magnetic enabled and constant h_a = (0, 1)
 // Tests that uniform field + symmetric droplet → no Kelvin force (no deformation)
 // ============================================================================
-void Parameters::setup_droplet_uniform_B()
-{
-    // Start from base droplet
-    setup_droplet();
-    preset_name = "droplet-uniform-B";
-
-    // Enable magnetic subsystem
-    enable_magnetic = true;
-    physics.chi_0 = 0.5;
-    physics.tau_M = 1e-6;
-
-    // Uniform applied field h_a = (0, 1) — vertical, instant (no ramp)
-    dipoles.use_uniform_field = true;
-    dipoles.uniform_field_value[0] = 0.0;
-    dipoles.uniform_field_value[1] = 1.0;
-    dipoles.ramp_time = 0.0;  // instant
-}
 
 // ============================================================================
 // Elongation test: ferrofluid droplet in uniform vertical magnetic field
@@ -390,9 +379,7 @@ void Parameters::setup_elongation()
     setup_droplet();
     preset_name = "elongation";
 
-    // R=0.1 droplet in [0,1]² — 20% diameter ratio, 3.1% area fraction
-    // Enough room for 3-4× elongation before boundary effects
-    ic.droplet_radius = 0.1;
+    ic.droplet_radius = 0.15;
 
     // Viscosity contrast (tests variable-viscosity NS coupling)
     physics.nu_ferro = 2.0;
@@ -408,15 +395,10 @@ void Parameters::setup_elongation()
     dipoles.uniform_field_value[1] = 45.0;
     dipoles.ramp_time = 0.5;  // gentle ramp over 0.5s
 
-    // Mesh: 1×1 base grid, r=7, AMR with aggressive bulk coarsening
-    // Interface at r=7 (h=1/128, ε/h ≈ 2.56), bulk coarsens to level 1
-    domain.initial_cells_x = 1;
-    domain.initial_cells_y = 1;
-    mesh.initial_refinement = 7;
-    mesh.use_amr = true;
-    mesh.amr_interval = 10;
-    mesh.amr_min_level = 1;   // Coarsen bulk aggressively
-    mesh.amr_max_level = 9;   // Allow extra refinement near interface
+    // Mesh — inherits 10x10 base + initial_refinement=2 from droplet (40x40 effective)
+    // Elongation uses uniform h_a, so level-2 bulk is adequate for magnetic Poisson
+    mesh.amr_max_level = 7;  // -r flag overrides this
+    mesh.amr_min_level = 0;
 
     // Direct solvers (16K cells — still fast on 4 ranks)
     solvers.ns.use_iterative = false;
@@ -465,8 +447,7 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             params.setup_hedgehog();
         else if (std::strcmp(argv[i], "--droplet") == 0)
             params.setup_droplet();
-        else if (std::strcmp(argv[i], "--droplet_uniform_B") == 0)
-            params.setup_droplet_uniform_B();
+
         else if (std::strcmp(argv[i], "--elongation") == 0)
             params.setup_elongation();
         else if (std::strcmp(argv[i], "--square") == 0)
@@ -602,6 +583,14 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
         else if (std::strcmp(argv[i], "--dump-sparsity") == 0)
             params.dump_sparsity = true;
 
+        // Algorithmic variant flags (for parametric studies)
+        else if (std::strcmp(argv[i], "--explicit_ch") == 0)
+            params.use_explicit_ch_convection = true;
+        else if (std::strcmp(argv[i], "--full_mag") == 0)
+            params.use_full_mag_model = true;
+        else if (std::strcmp(argv[i], "--theta_old_chi") == 0)
+            params.use_theta_old_for_chi = true;
+
         // Debugging
         else if (std::strcmp(argv[i], "--mms") == 0)
             params.enable_mms = true;
@@ -630,7 +619,6 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             std::cout << "  --hedgehog      Hedgehog instability (Section 6.3)\n";
             std::cout << "  --dome          Hedgehog with h=ha only (Fig. 7 - dome)\n";
             std::cout << "  --droplet       Simple droplet (no magnetic, no gravity)\n";
-            std::cout << "  --droplet_uniform_B     Droplet + uniform magnetic field\n";
             std::cout << "  --elongation    Ferrofluid droplet elongation in uniform field\n";
             std::cout << "  --square        Square relaxation (no magnetic, no gravity)\n\n";
 
@@ -672,6 +660,11 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             std::cout << "  --renumber-dofs           Apply Cuthill-McKee DoF renumbering (reduces bandwidth)\n";
             std::cout << "  --no-renumber-dofs        Disable DoF renumbering (default)\n";
             std::cout << "  --dump-sparsity           Export sparsity patterns (SVG + gnuplot + bandwidth CSV)\n\n";
+
+            std::cout << "ALGORITHMIC VARIANTS:\n";
+            std::cout << "  --explicit_ch         CH convection uses explicit θ^{k-1} (paper Eq 65a)\n";
+            std::cout << "  --full_mag            Mag relaxation uses ∇φ (full H) instead of h_a\n";
+            std::cout << "  --theta_old_chi       Magnetics uses θ^{n-1} for χ(θ) instead of θ^n\n\n";
 
             std::cout << "DEBUGGING:\n";
             std::cout << "  --mms                 MMS verification mode\n";
@@ -721,6 +714,12 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
                   << (params.enable_ns ? "NS " : "")
                   << (params.enable_gravity ? "Gravity " : "")
                   << (params.enable_mms ? "MMS " : "") << "\n";
+        if (params.use_explicit_ch_convection)
+            std::cout << "  CH convection: EXPLICIT θ^{k-1}\n";
+        if (params.use_full_mag_model)
+            std::cout << "  Mag model: FULL (∇φ relaxation)\n";
+        if (params.use_theta_old_for_chi)
+            std::cout << "  χ(θ): uses θ^{n-1} (previous time step)\n";
         if (params.renumber_dofs)
             std::cout << "  DoF renumbering: Cuthill-McKee ON\n";
         if (params.dump_sparsity)

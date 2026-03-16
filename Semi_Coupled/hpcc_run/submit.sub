@@ -3,7 +3,7 @@
 #SBATCH --partition=hpcc
 #SBATCH --nodes=1
 #SBATCH --ntasks=16
-#SBATCH --time=7-00:00:00
+#SBATCH --time=4-00:00:00
 #SBATCH --mem=128G
 #SBATCH --output=logs/%x_T%02a_%j.out
 #SBATCH --error=logs/%x_T%02a_%j.err
@@ -16,8 +16,8 @@
 # Usage:
 #   cd ~/Semi_Coupled-HPC/Semi_Coupled
 #   mkdir -p logs
+#   sbatch --array=1-10 hpcc_run/submit.sub hpcc_run/rosensweig_v2.dat
 #   sbatch --array=1-13 hpcc_run/submit.sub hpcc_run/rosensweig_debug.dat
-#   sbatch --array=1-13 hpcc_run/submit.sub hpcc_run/rosensweig_tests.dat
 #
 # The .dat file is passed as the first argument ($1).
 # --array range must match the number of tests in the .dat file.

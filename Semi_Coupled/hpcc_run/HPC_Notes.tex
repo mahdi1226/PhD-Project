@@ -1,0 +1,781 @@
+\documentclass[11pt,a4paper]{article}
+% Packages
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[margin=1in]{geometry}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{fancyhdr}
+\usepackage{tcolorbox}
+\usepackage{enumitem}
+\usepackage{titlesec}
+% Colors
+\definecolor{codegreen}{rgb}{0,0.6,0}
+\definecolor{codegray}{rgb}{0.5,0.5,0.5}
+\definecolor{codepurple}{rgb}{0.58,0,0.82}
+\definecolor{backcolour}{rgb}{0.95,0.95,0.92}
+\definecolor{cmdcolor}{rgb}{0.2,0.2,0.6}
+\definecolor{warningcolor}{rgb}{0.8,0.2,0.2}
+\definecolor{tipcolor}{rgb}{0.1,0.5,0.1}
+% Code listing style
+\lstdefinestyle{bashstyle}{
+    backgroundcolor=\color{backcolour},
+    commentstyle=\color{codegreen},
+    keywordstyle=\color{cmdcolor}\bfseries,
+    numberstyle=\tiny\color{codegray},
+    stringstyle=\color{codepurple},
+    basicstyle=\ttfamily\small,
+    breakatwhitespace=false,
+    breaklines=true,
+    captionpos=b,
+    keepspaces=true,
+    numbers=none,
+    numbersep=5pt,
+    showspaces=false,
+    showstringspaces=false,
+    showtabs=false,
+    tabsize=2,
+    frame=single,
+    rulecolor=\color{codegray},
+    xleftmargin=0.5em,
+    xrightmargin=0.5em,
+}
+\lstset{style=bashstyle}
+% Custom boxes
+\newtcolorbox{warningbox}{
+    colback=red!5!white,
+    colframe=red!75!black,
+    title=\textbf{Warning},
+    fonttitle=\bfseries
+}
+\newtcolorbox{tipbox}{
+    colback=green!5!white,
+    colframe=green!50!black,
+    title=\textbf{Tip},
+    fonttitle=\bfseries
+}
+\newtcolorbox{notebox}{
+    colback=blue!5!white,
+    colframe=blue!50!black,
+    title=\textbf{Note},
+    fonttitle=\bfseries
+}
+% Header/Footer
+\pagestyle{fancy}
+\fancyhf{}
+\rhead{HPC Notes: The Mill}
+\lhead{Missouri S\&T}
+\rfoot{Page \thepage}
+% Title formatting
+\titleformat{\section}{\Large\bfseries\color{cmdcolor}}{\thesection}{1em}{}
+\titleformat{\subsection}{\large\bfseries}{\thesubsection}{1em}{}
+% Document info
+\title{\textbf{HPC Notes: The Mill Cluster}\\[0.5em]\large Missouri University of Science \& Technology}
+\author{Research Computing Reference Guide}
+\date{Last Updated: \today}
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+%=============================================================================
+\section{Connection Info}
+%=============================================================================
+\begin{lstlisting}[language=bash]
+# SSH connection
+ssh mg6f4@mill-login-p2.itrss.mst.edu
+# Or use the short alias (if configured in ~/.ssh/config)
+ssh mill
+\end{lstlisting}
+\begin{tipbox}
+Add this to your local \texttt{\textasciitilde/.ssh/config} for easier access:
+\begin{lstlisting}[language=bash]
+Host mill
+    HostName mill-login-p2.itrss.mst.edu
+    User mg6f4
+\end{lstlisting}
+\end{tipbox}
+%=============================================================================
+\section{Quick Reference}
+%=============================================================================
+\begin{lstlisting}[language=bash]
+# Check your jobs
+squeue -u $USER
+# Cancel a job
+scancel <JOBID>
+# Check job history
+sacct -u $USER --starttime=$(date -d "3 days ago" +%Y-%m-%d) \
+      --format=JobID,JobName%15,State,Elapsed,ExitCode
+# Check cluster status
+sinfo -o "%5D %4c %8m %28f %35G"
+\end{lstlisting}
+%=============================================================================
+\section{Module Loading (deal.II)}
+%=============================================================================
+\begin{lstlisting}[language=bash]
+# Load the GCC-based deal.II module (REQUIRED: must use this one)
+module load dealii/9.7.1_gcc_12.3.0_mvapich
+# Verify
+module list
+\end{lstlisting}
+\begin{warningbox}
+Do NOT use \texttt{dealii/9.7.1\_umfpack\_mumps} or other clang-based modules.
+The deal.II library was built with GCC, but those modules load clang as the
+compiler, causing an \textbf{ABI mismatch} (different C++ name mangling for
+\texttt{std::is\_same\_v} and similar templates). Use the GCC module above.
+\end{warningbox}
+\begin{notebox}
+The deal.II installation on The Mill is \textbf{2D only}. If your code has
+3D template instantiations (e.g., \texttt{template class MyClass<3>}),
+comment them out before building.
+
+Additionally, \texttt{VectorTools::project} is not instantiated for
+\texttt{TrilinosWrappers::MPI::Vector}. Use
+\texttt{VectorTools::interpolate} followed by
+\texttt{constraints.distribute()} instead.
+\end{notebox}
+
+\subsection{Available Libraries and Packages}
+The \texttt{dealii/9.7.1\_gcc\_12.3.0\_mvapich} module includes:
+
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Library} & \textbf{Status} & \textbf{Notes} \\
+\midrule
+Trilinos & \checkmark & Core framework \\
+\quad Amesos2 & \checkmark & Direct solver interface (KLU2, Basker) \\
+\quad Belos & \checkmark & Krylov iterative solvers \\
+\quad IFPACK2 & \checkmark & ILU preconditioners \\
+\quad ML/MueLu & \texttimes & AMG not available \\
+PETSc & \checkmark & With Hypre, SuperLU\_dist \\
+\quad SuperLU\_dist & \checkmark & Parallel direct solver (via PETSc) \\
+p4est & \checkmark & Parallel AMR \\
+METIS & \checkmark & Graph partitioning \\
+HDF5 & \checkmark & Data I/O \\
+Kokkos & \checkmark & Performance portability \\
+Ginkgo & \checkmark & GPU-capable solvers \\
+MUMPS & \texttimes & Not available \\
+UMFPACK & \texttimes & Not available \\
+\bottomrule
+\end{tabular}
+\caption{Library availability in the GCC deal.II module}
+\end{table}
+
+\begin{warningbox}
+The only Trilinos direct solver available is \textbf{KLU} (serial, slow).
+The old Amesos interface (\texttt{Amesos\_Superlu}, \texttt{Amesos\_Mumps})
+will fail. Use Amesos2 or switch to PETSc with SuperLU\_dist for
+parallel direct solves.
+\end{warningbox}
+
+\begin{notebox}
+To check what is enabled in the deal.II build:
+\begin{lstlisting}[language=bash]
+grep -i "DEAL_II_WITH_" \
+  /share/apps/src/dealii/dealii-9.7.1/dealii-9.7.1_install/\
+  include/deal.II/base/config.h | grep -v "undef"
+\end{lstlisting}
+To check PETSc packages:
+\begin{lstlisting}[language=bash]
+grep -i "PETSC_HAVE_" \
+  /share/apps/common/SPACK_21/spack/opt/spack/\
+  linux-almalinux8-x86_64/gcc-12.3.0/petsc-*/\
+  include/petscconf.h
+\end{lstlisting}
+\end{notebox}
+\subsection{Available deal.II Modules}
+\begin{lstlisting}[language=bash]
+module avail dealii
+# dealii/9.5.2_gcc_12.3.0_mvapich
+# dealii/9.7.1_gcc_12.3.0_mvapich   <-- USE THIS ONE
+# dealii/9.7.1_umfpack_mumps         (clang ABI mismatch!)
+# dealii/9.7.1_umfpack_openmpi
+# dealii/9.7.1_umfpack               (multi-node MPI, needs source)
+# dealii/9.7.1_umfpack2
+\end{lstlisting}
+
+\begin{notebox}
+The \texttt{dealii/9.7.1\_umfpack} module supports multi-node MPI and has UMFPACK,
+but requires sourcing the spack build environment after loading:
+\begin{lstlisting}[language=bash]
+module load dealii/9.7.1_umfpack
+source /share/apps/common/SPACK_v110_release_a2/spack/opt/\
+spack/linux-x86_64/dealii-9.7.1-kr766e7zm3gq6q7t67vefndkrhcyvmrw/\
+.spack/spack-build-env.txt
+\end{lstlisting}
+Check for ABI compatibility before using this module with your code.
+The \texttt{dealii/9.7.1\_umfpack\_mumps} module has MUMPS and UMFPACK but
+was built with clang, causing link-time ABI mismatch with GCC-compiled code.
+A rebuild with GCC has been requested.
+\end{notebox}
+\subsection{Other Module Commands}
+\begin{lstlisting}[language=bash]
+module avail              # List available modules
+module list               # List loaded modules
+module purge              # Unload all modules
+module unload <name>      # Unload specific module
+module swap <old> <new>   # Swap one module for another
+\end{lstlisting}
+%=============================================================================
+\section{Partitions and Time Limits}
+%=============================================================================
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}llll@{}}
+\toprule
+\textbf{Partition} & \textbf{Max Time} & \textbf{Access} & \textbf{Notes} \\
+\midrule
+requeue & 2 days & Open & May be preempted \\
+general & 2 days & Open & Standard jobs \\
+gpu & 2 days & Open & GPU jobs \\
+interactive & 4 hours & Open & Interactive work \\
+\textbf{hpcc} & \textbf{28 days} & \textbf{Leased} & \textbf{No 2-day limit!} \\
+priority & 28 days & Leased & Priority access \\
+\bottomrule
+\end{tabular}
+\caption{Partition time limits}
+\end{table}
+\begin{tipbox}
+To bypass the 2-day time limit on \texttt{general}, use
+\texttt{--partition=hpcc} (requires leased access).
+The \texttt{hpcc} partition has \textbf{no default time limit}
+--- you set \texttt{--time} yourself (up to 28 days).
+\begin{lstlisting}[language=bash]
+#SBATCH --partition=hpcc
+#SBATCH --time=4-00:00:00    # 4 days (you choose)
+\end{lstlisting}
+\end{tipbox}
+%=============================================================================
+\section{Interactive Sessions}
+%=============================================================================
+\begin{warningbox}
+Never run computations on the login node! Always use interactive sessions or batch jobs.
+\end{warningbox}
+\subsection{Start Interactive Session}
+\begin{lstlisting}[language=bash]
+# Standard (hpcc partition, 1 hour, 8GB, 4 cores)
+salloc --partition=hpcc --time=1:00:00 --mem=8G --ntasks=4
+# For compiling (more cores for parallel make)
+salloc --partition=hpcc --time=1:00:00 --mem=16G --ntasks=16
+# With X11 forwarding (for GUI apps)
+salloc --partition=hpcc --time=1:00:00 --mem=8G --ntasks=4 --x11
+\end{lstlisting}
+\subsection{For MPI Jobs in Interactive Session}
+\begin{lstlisting}[language=bash]
+export SLURM_OVERLAP=1
+mpirun -np 4 ./your_executable
+\end{lstlisting}
+\subsection{Exit Interactive Session}
+\begin{lstlisting}[language=bash]
+exit
+\end{lstlisting}
+%=============================================================================
+\section{Compiling on Compute Nodes}
+%=============================================================================
+\begin{warningbox}
+Always compile on compute nodes to avoid ``Illegal instruction'' errors!
+The login node has different CPU architecture than compute nodes.
+\end{warningbox}
+\begin{lstlisting}[language=bash]
+# 1. Get interactive session
+salloc --partition=hpcc --time=1:00:00 --mem=16G --ntasks=16
+# 2. Load module
+module load dealii/9.7.1_gcc_12.3.0_mvapich
+# 3. Navigate to project and create build directory
+cd ~/Decoupled-HPC/Decoupled
+mkdir -p build && cd build
+# 4. Configure and build
+cmake -DCMAKE_BUILD_TYPE=Release ..
+make -j16
+# 5. Exit when done
+exit
+\end{lstlisting}
+\begin{notebox}
+Project locations on the cluster (sparse git checkouts):
+\begin{itemize}[nosep]
+    \item Decoupled: \texttt{\textasciitilde/Decoupled-HPC/Decoupled/}
+    \item Semi\_Coupled: \texttt{\textasciitilde/Semi\_Coupled-HPC/Semi\_Coupled/}
+\end{itemize}
+To update: \texttt{cd \textasciitilde/<project>-HPC/<project> \&\& git pull}
+\end{notebox}
+%=============================================================================
+\section{Storage Locations}
+%=============================================================================
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}llll@{}}
+\toprule
+\textbf{Location} & \textbf{Path} & \textbf{Size} & \textbf{Purpose} \\
+\midrule
+Home & \texttt{/home/mg6f4} & 50 GB & Code, scripts \\
+Scratch & \texttt{/share/ceph/scratch/mg6f4} & Large & Run output, temp files \\
+Local scratch & \texttt{/local/scratch} & 1.5 TB & Node-local temp \\
+\bottomrule
+\end{tabular}
+\caption{Storage locations on The Mill}
+\end{table}
+\begin{warningbox}
+Nothing is backed up! Always keep copies of important data elsewhere.
+Scratch may be cleaned during maintenance.
+\end{warningbox}
+\begin{lstlisting}[language=bash]
+# Go to scratch
+cd /share/ceph/scratch/$USER
+# or use the shortcut
+cdsc
+\end{lstlisting}
+%=============================================================================
+\section{Simulation Output Locations}
+%=============================================================================
+The ferrofluid solver writes output to several locations depending on the run type:
+\subsection{Decoupled Project Directory Structure}
+\begin{lstlisting}[language=bash]
+~/Decoupled-HPC/Decoupled/
+|-- build/                    # Executables
+|   |-- bin0_hedgehog         # BIN-0: original Kelvin (H=grad(phi))
+|   |-- bin1_hedgehog         # BIN-1: fixed Kelvin (H=h_a+grad(phi))
+|   `-- drivers/
+|       `-- ferrofluid_decoupled  # Main executable
+|-- hpc/                      # HPC submission scripts
+|   |-- hedgehog_array.sub    # SLURM job array (12 tests)
+|   |-- hedgehog_tests.dat    # Test configuration matrix
+|   `-- build_binaries.sh     # Build automation script
+|-- logs/                     # SLURM job output logs
+|   |-- T01_<jobid>.out       # Test 1 stdout
+|   |-- T01_<jobid>.err       # Test 1 stderr
+|   `-- ...
+`-- Results/                  # Simulation output (PVTU, CSV)
+    `-- <timestamp>_<config>/
+        |-- phase_field_*.pvtu
+        |-- velocity_*.pvtu
+        |-- magnetization_*.pvtu
+        |-- magnetic_potential_*.pvtu
+        |-- energy.csv
+        |-- convergence.csv
+        |-- diagnostics.csv
+        `-- warnings.csv
+\end{lstlisting}
+\subsection{Semi\_Coupled Project Directory Structure}
+\begin{lstlisting}[language=bash]
+~/Semi_Coupled-HPC/Semi_Coupled/
+|-- cmake-build-release/      # Executables
+|   `-- ferrofluid             # Main executable
+|-- hpcc_run/                  # HPC submission scripts
+|   |-- submit.sub             # Generic SLURM array script
+|   |-- rosensweig_debug.dat   # Debug test matrix (13 tests)
+|   `-- rosensweig_tests.dat   # Original test matrix
+|-- logs/                      # SLURM job output logs
+|   |-- rosen_T01_<jobid>.out
+|   |-- rosen_T01_<jobid>.err
+|   `-- ...
+`-- Results/                   # Simulation output
+    `-- <timestamp>_<run_name>/
+        |-- solution_*.pvtu
+        |-- energy.csv
+        |-- diagnostics.csv
+        |-- magnetic.csv
+        |-- flow.csv
+        |-- forces.csv
+        |-- interface.csv
+        |-- phase_field.csv
+        |-- solver.csv
+        |-- timing.csv
+        `-- run_info.txt
+\end{lstlisting}
+
+\begin{notebox}
+The Semi\_Coupled generic submission script takes the .dat file as an argument:
+\begin{lstlisting}[language=bash]
+cd ~/Semi_Coupled-HPC/Semi_Coupled
+mkdir -p logs
+sbatch --array=1-13 hpcc_run/submit.sub hpcc_run/rosensweig_debug.dat
+\end{lstlisting}
+\end{notebox}
+
+\subsection{Output File Types}
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Extension} & \textbf{Description} & \textbf{Used For} \\
+\midrule
+\texttt{.pvtu} & Parallel VTK (master file) & ParaView visualization \\
+\texttt{.vtu} & VTK per-process data & Referenced by .pvtu \\
+\texttt{.csv} & Comma-separated values & Diagnostics, convergence rates \\
+\texttt{.out} & SLURM stdout & Job logs, console output \\
+\texttt{.err} & SLURM stderr & Error messages \\
+\bottomrule
+\end{tabular}
+\caption{Common output file types}
+\end{table}
+\subsection{SLURM Log File Locations}
+Job output files are written to the working directory specified in the submission script:
+\begin{lstlisting}[language=bash]
+# Check where a job writes output
+scontrol show job <JOBID> | grep -E "WorkDir|StdOut|StdErr"
+# List output files (most recent first)
+ls -lt logs/*.out logs/*.err | head -10
+\end{lstlisting}
+\subsection{Finding Output Files}
+\begin{lstlisting}[language=bash]
+# Find all PVTU files (parallel VTK)
+find ~/Decoupled-HPC -name "*.pvtu" | head -20
+# Find all CSV results
+find ~/Decoupled-HPC -name "*.csv"
+# Find recent output directories
+ls -lt ~/Decoupled-HPC/Decoupled/Results/ | head -10
+\end{lstlisting}
+%=============================================================================
+\section{Creating Submission Scripts (.sub files)}
+%=============================================================================
+\subsection{Basic Template (with hpcc partition)}
+\begin{lstlisting}[language=bash]
+#!/bin/bash
+#SBATCH --job-name=my_job          # Job name (shows in queue)
+#SBATCH --output=my_job_%j.out     # Standard output (%j = job ID)
+#SBATCH --error=my_job_%j.err      # Standard error
+#SBATCH --partition=hpcc           # hpcc = 28-day access
+#SBATCH --time=4-00:00:00          # Time limit (D-HH:MM:SS)
+#SBATCH --mem=128G                 # Memory
+#SBATCH --nodes=1                  # Number of nodes
+#SBATCH --ntasks=16                # Number of MPI tasks
+#SBATCH --mail-type=BEGIN,END,FAIL # Email notifications
+# Load modules
+module load dealii/9.7.1_gcc_12.3.0_mvapich
+# Change to working directory
+cd $SLURM_SUBMIT_DIR
+# Run executable
+mpirun -np $SLURM_NTASKS ./build/drivers/ferrofluid_decoupled --flags
+\end{lstlisting}
+\begin{warningbox}
+Without \texttt{--partition=hpcc}, jobs are limited to \textbf{2 days}
+on the \texttt{general} partition. Add \texttt{--partition=hpcc} to
+run up to \textbf{28 days}.
+\end{warningbox}
+\subsection{Hedgehog Test Array (12 parallel jobs)}
+\begin{lstlisting}[language=bash]
+#!/bin/bash
+#SBATCH --job-name=hedgehog
+#SBATCH --partition=hpcc
+#SBATCH --array=1-12              # 12 tests in parallel
+#SBATCH --nodes=1                 # Each test on its own node
+#SBATCH --ntasks=16               # 16 MPI ranks per test
+#SBATCH --time=4-00:00:00
+#SBATCH --mem=128G
+#SBATCH --output=logs/T%02a_%j.out
+#SBATCH --error=logs/T%02a_%j.err
+module load dealii/9.7.1_gcc_12.3.0_mvapich
+cd $SLURM_SUBMIT_DIR
+# Read test config for this array task
+LINE=$(awk -v line=${SLURM_ARRAY_TASK_ID} \
+    '!/^#/ && !/^$/ {n++; if (n==line) print}' hpc/hedgehog_tests.dat)
+BINARY=$(echo "$LINE" | awk '{print $1}')
+FLAGS=$(echo "$LINE" | cut -d' ' -f2-)
+# Map binary name to path
+if [ "$BINARY" = "bin0" ]; then EXE="./build/bin0_hedgehog"
+elif [ "$BINARY" = "bin1" ]; then EXE="./build/bin1_hedgehog"
+else echo "ERROR: Unknown binary"; exit 1; fi
+mpirun -np $SLURM_NTASKS $EXE $FLAGS
+\end{lstlisting}
+\subsection{Common SBATCH Options}
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Option} & \textbf{Description} & \textbf{Example} \\
+\midrule
+\texttt{--job-name} & Job name & \texttt{--job-name=my\_sim} \\
+\texttt{--time} & Wall time limit & \texttt{--time=4-00:00:00} \\
+\texttt{--mem} & Total memory & \texttt{--mem=128G} \\
+\texttt{--mem-per-cpu} & Memory per CPU & \texttt{--mem-per-cpu=4G} \\
+\texttt{--ntasks} & Number of MPI tasks & \texttt{--ntasks=16} \\
+\texttt{--nodes} & Number of nodes & \texttt{--nodes=1} \\
+\texttt{--partition} & Queue/partition & \texttt{--partition=hpcc} \\
+\texttt{--array} & Job array & \texttt{--array=1-12} \\
+\texttt{--gres} & GPU resources & \texttt{--gres=gpu:2} \\
+\bottomrule
+\end{tabular}
+\caption{Common SBATCH directives}
+\end{table}
+%=============================================================================
+\section{Job Submission and Management}
+%=============================================================================
+\subsection{Submit Jobs}
+\begin{lstlisting}[language=bash]
+# Single job
+sbatch my_job.sub
+# Job array (e.g., hedgehog tests)
+cd ~/Decoupled-HPC/Decoupled
+mkdir -p logs
+sbatch hpc/hedgehog_array.sub
+# Multiple individual jobs
+for f in *.sub; do sbatch "$f"; done
+\end{lstlisting}
+\subsection{Monitor Jobs}
+\begin{lstlisting}[language=bash]
+# Your jobs
+squeue -u $USER
+# Detailed format
+squeue -u $USER --format="%.10i %.12j %.8T %.12M %.6D %R"
+# All jobs (cluster status)
+squeue
+# Watch continuously (updates every 30 sec)
+watch -n 30 'squeue -u $USER'
+\end{lstlisting}
+\subsection{Job History}
+\begin{lstlisting}[language=bash]
+# Recent jobs (last 3 days)
+sacct -u $USER --starttime=$(date -d "3 days ago" +%Y-%m-%d) \
+      --format=JobID,JobName%15,State,Elapsed,ExitCode
+# Specific job details
+sacct -j <JOBID> --format=JobID,JobName,State,Elapsed,MaxRSS,ExitCode
+\end{lstlisting}
+\subsection{Cancel Jobs}
+\begin{lstlisting}[language=bash]
+# Cancel single job
+scancel <JOBID>
+# Cancel all your jobs
+scancel -u $USER
+# Cancel by job name
+scancel --name=hedgehog
+# Cancel specific array tasks
+scancel <JOBID>_[1-6]    # Cancel tasks 1-6 only
+\end{lstlisting}
+%=============================================================================
+\section{Checking Job Output}
+%=============================================================================
+\begin{lstlisting}[language=bash]
+# Find where job output goes
+scontrol show job <JOBID> | grep -E "WorkDir|StdOut|StdErr"
+# View hedgehog test logs
+cat logs/T01_*.out     # Test 1 output
+cat logs/T01_*.err     # Test 1 errors
+# Tail a running job's output
+tail -f logs/T01_*.out
+# Check all test statuses at once
+for i in $(seq -w 1 12); do
+    echo "=== T$i ==="; tail -1 logs/T${i}_*.out 2>/dev/null
+done
+\end{lstlisting}
+\subsection{Common Exit Codes}
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Code} & \textbf{Meaning} \\
+\midrule
+0 & Success \\
+1 & General error \\
+127 & Command not found (bad path or module) \\
+137 & Killed (out of memory or time) \\
+Illegal instruction & CPU mismatch (recompile on compute node!) \\
+\bottomrule
+\end{tabular}
+\caption{Common exit codes and their meanings}
+\end{table}
+%=============================================================================
+\section{File Transfer}
+%=============================================================================
+\subsection{SCP (from local machine)}
+\begin{lstlisting}[language=bash]
+# Upload
+scp file.txt mg6f4@mill-login-p2.itrss.mst.edu:~/destination/
+# Download
+scp mg6f4@mill-login-p2.itrss.mst.edu:~/file.txt ./local/
+# Recursive (directories)
+scp -r folder/ mg6f4@mill-login-p2.itrss.mst.edu:~/destination/
+\end{lstlisting}
+\subsection{Rsync (better for large transfers)}
+\begin{lstlisting}[language=bash]
+# Upload with progress
+rsync -avz --progress ./local_folder/ \
+      mg6f4@mill-login-p2.itrss.mst.edu:~/remote_folder/
+# Download
+rsync -avz --progress \
+      mg6f4@mill-login-p2.itrss.mst.edu:~/remote_folder/ ./local_folder/
+\end{lstlisting}
+\subsection{Download Hedgehog Results}
+\begin{lstlisting}[language=bash]
+# Run from LOCAL machine
+cd /Users/mahdi/Projects/hpc_results
+# Logs
+rsync -avz --progress \
+    mg6f4@mill-login-p2.itrss.mst.edu:~/Decoupled-HPC/Decoupled/logs/ \
+    ./logs/
+# Simulation results (PVTU + CSV)
+rsync -avz --progress \
+    mg6f4@mill-login-p2.itrss.mst.edu:~/Decoupled-HPC/Decoupled/Results/ \
+    ./Results/
+\end{lstlisting}
+\subsection{Globus}
+For large transfers, use Globus at \url{https://globus.org}
+\begin{itemize}
+    \item Collection name: ``Missouri S\&T Mill''
+\end{itemize}
+%=============================================================================
+\section{Useful One-Liners}
+%=============================================================================
+\begin{lstlisting}[language=bash]
+# Check disk usage in home
+du -sh ~/*
+# Check disk usage in scratch
+du -sh /share/ceph/scratch/$USER/*
+# Count PVTU files in Results
+find ~/Decoupled-HPC/Decoupled/Results -name "*.pvtu" | wc -l
+# Find recent output directories
+ls -lt ~/Decoupled-HPC/Decoupled/Results/ | head -10
+# Check if executables exist
+ls -lh ~/Decoupled-HPC/Decoupled/build/bin*_hedgehog
+# Check running job's resource usage
+sstat -j <JOBID> --format=JobID,MaxRSS,MaxVMSize,AveCPU
+# Find large files
+find ~/Decoupled-HPC -size +100M -exec ls -lh {} \;
+\end{lstlisting}
+%=============================================================================
+\section{Troubleshooting}
+%=============================================================================
+\subsection{``Illegal instruction (core dumped)''}
+\begin{itemize}
+    \item \textbf{Cause:} Compiled on login node, running on compute node with different CPU
+    \item \textbf{Fix:} Recompile on a compute node (see Section 6)
+\end{itemize}
+\subsection{Undefined symbol / ABI mismatch}
+\begin{itemize}
+    \item \textbf{Cause:} Compiled with clang but deal.II was built with GCC
+    \item \textbf{Symptom:} \texttt{undefined symbol: ...is\_same\_v...} during linking
+    \item \textbf{Fix:} Use \texttt{module load dealii/9.7.1\_gcc\_12.3.0\_mvapich}
+\end{itemize}
+\subsection{3D template instantiation errors}
+\begin{itemize}
+    \item \textbf{Cause:} deal.II on The Mill is 2D only
+    \item \textbf{Fix:} Comment out all \texttt{template class MyClass<3>} lines
+\end{itemize}
+\subsection{VectorTools::project linker error}
+\begin{itemize}
+    \item \textbf{Cause:} Not instantiated for \texttt{TrilinosWrappers::MPI::Vector}
+    \item \textbf{Fix:} Replace with \texttt{VectorTools::interpolate} + \texttt{constraints.distribute()}
+\end{itemize}
+\subsection{Exit code 127}
+\begin{itemize}
+    \item \textbf{Cause:} Executable or command not found
+    \item \textbf{Fix:} Check paths, ensure module is loaded in .sub file
+\end{itemize}
+\subsection{Job stuck in queue (PD status)}
+\begin{itemize}
+    \item \textbf{Cause:} Waiting for resources
+    \item \textbf{Check:} \texttt{squeue -u \$USER} shows REASON column
+\end{itemize}
+\subsection{Out of memory (exit code 137)}
+\begin{itemize}
+    \item \textbf{Fix:} Increase \texttt{--mem} in submission script
+\end{itemize}
+\subsection{Job timeout}
+\begin{itemize}
+    \item \textbf{Fix:} Increase \texttt{--time} or use \texttt{--partition=hpcc} for up to 28 days
+\end{itemize}
+
+\subsection{Amesos\_Superlu / Amesos\_Mumps not found}
+\begin{itemize}
+    \item \textbf{Cause:} Trilinos was built without SuperLU or MUMPS. Only KLU is available.
+    \item \textbf{Symptom:} \texttt{You tried to select the solver type <Amesos\_Superlu> but this solver is not supported}
+    \item \textbf{Workaround:} The code falls back to \texttt{Amesos\_Klu} (serial, slow). For better performance, switch to PETSc with SuperLU\_dist or use Amesos2 interface.
+\end{itemize}
+
+\subsection{Jobs pending: ReqNodeNotAvail, Reserved for maintenance}
+\begin{itemize}
+    \item \textbf{Cause:} Job time limit extends past a scheduled maintenance window.
+    \item \textbf{Check:} \texttt{scontrol show reservation} to see maintenance dates.
+    \item \textbf{Fix:} Reduce \texttt{--time} so the job finishes before maintenance starts.
+\end{itemize}
+
+\subsection{Cannot extend running job time limit}
+\begin{itemize}
+    \item \textbf{Cause:} SLURM does not allow regular users to extend jobs past the originally submitted time limit via \texttt{scontrol update}.
+    \item \textbf{Fix:} Submit with sufficient time from the start. If a job will hit its wall time, cancel and resubmit with a longer limit.
+\end{itemize}
+
+\subsection{Iterative solver crash (Unknown exception)}
+\begin{itemize}
+    \item \textbf{Cause:} AMG preconditioner (Trilinos ML/MueLu) not available in the current build.
+    \item \textbf{Symptom:} Job crashes immediately after setup with ``Unknown exception''.
+    \item \textbf{Fix:} Use direct solver instead of \texttt{--iterative}, or wait for MueLu to be added to the build.
+\end{itemize}
+%=============================================================================
+\section{Quick Workflow Summary}
+%=============================================================================
+\begin{lstlisting}[language=bash]
+# 1. Connect
+ssh mill
+# 2. Compile (do this on compute node!)
+salloc --partition=hpcc --time=1:00:00 --mem=16G --ntasks=16
+module load dealii/9.7.1_gcc_12.3.0_mvapich
+cd ~/Decoupled-HPC/Decoupled
+mkdir -p build && cd build
+cmake -DCMAKE_BUILD_TYPE=Release ..
+make -j16
+exit
+# 3. Submit (from login node)
+cd ~/Decoupled-HPC/Decoupled
+mkdir -p logs
+sbatch hpc/hedgehog_array.sub
+# 4. Monitor
+squeue -u $USER
+tail -f logs/T01_*.out
+# 5. Check results
+ls Results/
+# 6. Download results (from LOCAL machine)
+rsync -avz --progress \
+    mg6f4@mill-login-p2.itrss.mst.edu:~/Decoupled-HPC/Decoupled/Results/ \
+    ./local_results/
+\end{lstlisting}
+%=============================================================================
+\section{Citation}
+%=============================================================================
+When publishing research that used The Mill, please cite:
+\begin{notebox}
+DOI: \url{https://doi.org/10.71674/PH64-N397}
+\end{notebox}
+\begin{lstlisting}[language=TeX]
+@Article{Gao2024,
+  author    = {Gao, Stephen and Maurer, Jeremy and
+               Information Technology Research Support Solutions},
+  title     = {The Mill HPC Cluster},
+  year      = {2024},
+  doi       = {10.71674/PH64-N397},
+  publisher = {Missouri University of Science and Technology},
+  url       = {https://scholarsmine.mst.edu/the-mill/1/},
+}
+\end{lstlisting}
+%=============================================================================
+\section*{Appendix: The Mill Hardware}
+%=============================================================================
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}llll@{}}
+\toprule
+\textbf{Model} & \textbf{CPU Cores} & \textbf{Memory} & \textbf{Node Count} \\
+\midrule
+Dell R6525 & 128 & 512 GB & 25 \\
+Dell C6525 & 64 & 256 GB & 160 \\
+Dell C6420 & 40 & 192 GB & 44 \\
+\bottomrule
+\end{tabular}
+\caption{Compute nodes available on The Mill}
+\end{table}
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}lllll@{}}
+\toprule
+\textbf{Model} & \textbf{CPU Cores} & \textbf{Memory} & \textbf{GPU} & \textbf{GPU Count} \\
+\midrule
+Dell XE9680 & 112 & 1 TB & H100 SXM5 & 8 \\
+Dell C4140 & 40 & 192 GB & V100 SXM2 & 4 \\
+Dell R740xd & 40 & 384 GB & V100 PCIe & 2 \\
+\bottomrule
+\end{tabular}
+\caption{GPU nodes available on The Mill}
+\end{table}
+\end{document}

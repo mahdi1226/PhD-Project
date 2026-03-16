@@ -8,7 +8,8 @@
 //   Eq 65a: (δθ^k/τ, Λ) - (U^k θ^{k-1}, ∇Λ) - γ(∇ψ^k, ∇Λ) = 0
 //   Eq 65b: (ψ^k, Υ) + ε(∇θ^k, ∇Υ) + (1/ε)(f(θ^{k-1}), Υ) + (1/η)(δθ^k, Υ) = 0
 //
-// Convection: EXPLICIT — θ^{k-1} on RHS (matches paper Eq 65a).
+// Convection: IMPLICIT in θ^k (default) or EXPLICIT in θ^{k-1} (--explicit_ch).
+// Paper Eq 65a is explicit, but implicit provides U-θ coupling for instability.
 // The +γ sign (vs paper's -γ) is due to ψ_code = -ψ_paper.
 //
 // where η = ε (stabilization parameter)
@@ -172,11 +173,12 @@ void assemble_ch_system(
                     const unsigned int j_theta = j;
                     const unsigned int j_psi = dofs_per_cell + j;
 
-                    // Eq 42a LHS: (θ^k/τ, Λ) + γ(∇ψ^k, ∇Λ)
+                    // Eq 42a LHS: time derivative + diffusion always on LHS
                     local_matrix(i_theta, j_theta) += (1.0 / dt) * theta_j * Lambda_i * JxW;
+                    // Convection: implicit θ^k (default) or explicit θ^{k-1} (--explicit_ch)
+                    if (use_velocity_convection && !params.use_explicit_ch_convection)
+                        local_matrix(i_theta, j_theta) -= (U * grad_Lambda_i) * theta_j * JxW;
                     local_matrix(i_theta, j_psi) += gamma * (grad_psi_j * grad_Lambda_i) * JxW;
-
-                    // Convection is EXPLICIT per paper Eq 65a — θ^{k-1} on RHS, not here.
 
                     // Eq 42b LHS: (ψ^k, Υ) - ε(∇θ^k, ∇Υ) - (1/η)(θ^k, Υ)
                     // Note: Paper has -1/η (θ^k - θ^{k-1}).
@@ -186,10 +188,10 @@ void assemble_ch_system(
                     local_matrix(i_psi, j_theta) -= (1.0 / eta) * theta_j * Upsilon_i * JxW;     // FIX: -1/eta
                 }
 
-                // Eq 65a RHS: (θ^{k-1}/τ, Λ) + (U θ^{k-1}, ∇Λ)
-                // Convection is EXPLICIT per paper: -(U θ^{k-1}, ∇Λ) on LHS → +(U θ^{k-1}, ∇Λ) on RHS
+                // Eq 65a RHS: (θ^{k-1}/τ, Λ)
                 local_rhs(i_theta) += (1.0 / dt) * theta_old_q * Lambda_i * JxW;
-                if (use_velocity_convection)
+                // Explicit CH convection (--explicit_ch): -(U θ^{k-1}, ∇Λ) on RHS
+                if (use_velocity_convection && params.use_explicit_ch_convection)
                     local_rhs(i_theta) += (U * grad_Lambda_i) * theta_old_q * JxW;
 
                 // Eq 42b RHS: (1/ε)(f(θ^{k-1}), Υ) - (1/η)(θ^{k-1}, Υ)

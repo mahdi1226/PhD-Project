@@ -780,6 +780,10 @@ void PhaseFieldProblem<dim>::solve_magnetics(double dt)
     // mag_old_solution_ is set ONCE per time step, before the BGS loop.
     // Do NOT overwrite it here — it must always refer to the previous time step's M.
 
+    // Select theta for χ(θ): θ^n (default) or θ^{n-1} (--theta_old_chi)
+    const auto& theta_for_magnetics = params_.use_theta_old_for_chi
+        ? theta_old_relevant_ : theta_relevant_;
+
     // Assemble monolithic system (full Eq. 42c PDE with transport)
     t_assemble.start();
     magnetic_assembler_->assemble(
@@ -787,7 +791,7 @@ void PhaseFieldProblem<dim>::solve_magnetics(double dt)
         mag_rhs_,
         ux_relevant_,
         uy_relevant_,
-        theta_relevant_,
+        theta_for_magnetics,
         mag_old_relevant_,
         dt,
         time_);

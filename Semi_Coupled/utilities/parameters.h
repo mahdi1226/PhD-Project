@@ -167,6 +167,14 @@ struct Parameters
     dealii::Tensor<1, 2> gravity_direction;
 
     // ========================================================================
+    // Algorithmic variant flags (for parametric studies)
+    // Default: implicit CH convection, simplified mag model, θ^n for χ
+    // ========================================================================
+    bool use_explicit_ch_convection = false;  // --explicit_ch: paper Eq 65a explicit Θ^{k-1}
+    bool use_full_mag_model = false;          // --full_mag: relaxation toward ∇φ (full H)
+    bool use_theta_old_for_chi = false;       // --theta_old_chi: χ(θ^{n-1}) in magnetics
+
+    // ========================================================================
     // Block-Gauss-Seidel global iteration (Paper CMAME 2016, Section 6, p.520)
     // Single pass per time step: [CH] -> [Mag+Poisson] -> [NS]
     // Paper describes BGS structure but does not specify iteration count.
@@ -204,7 +212,6 @@ struct Parameters
     void setup_rosensweig();
     void setup_hedgehog();
     void setup_droplet();
-    void setup_droplet_uniform_B();                  // Droplet + uniform magnetic field
     void setup_elongation();                          // Ferrofluid droplet elongation in uniform field
     void setup_square();                             // Square relaxation test
     void setup_dome();                               // Dome configuration
