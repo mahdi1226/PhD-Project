@@ -87,7 +87,7 @@ SolverInfo solve_ns_system_schur_parallel(
         dealii::TrilinosWrappers::PreconditionILU ilu;
         dealii::TrilinosWrappers::PreconditionILU::AdditionalData ilu_data;
         ilu_data.ilu_fill = 2;
-        ilu_data.ilu_atol = 0.0;
+        ilu_data.ilu_atol = 1e-2;  // regularize zero pivots in pressure block
         ilu_data.ilu_rtol = 1.0;
         ilu.initialize(matrix, ilu_data);
 
