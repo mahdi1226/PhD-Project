@@ -329,8 +329,11 @@ CHMMSResult run_ch_mms_single(
     }
 
     // MMS source terms
-    CHSourceTheta<dim> src_theta(params.physics.mobility, dt, L);
-    CHSourcePsi<dim>   src_psi(params.physics.epsilon, dt, L);
+    const double lambda = params.physics.lambda;
+    const double S_stab = lambda / (4.0 * params.physics.epsilon);
+
+    CHSourceTheta<dim> src_theta(params.physics.mobility, lambda, dt, L);
+    CHSourcePsi<dim>   src_psi(params.physics.epsilon, lambda, S_stab, dt, L);
 
     ch.set_mms_source(
         [&](const Point<dim>& p, double t) -> double {

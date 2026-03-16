@@ -415,9 +415,12 @@ CHMMSResult run_ch_mms_single(
     // Continuous (temporal): S_θ = ∂θ*/∂t + γ Δψ*
     //   → exposes BDF1 truncation error O(dt) for temporal convergence
     // ========================================================================
-    CHSourceTheta<dim> src_theta_discrete(params.physics.mobility, dt, L);
-    CHSourceThetaContinuous<dim> src_theta_continuous(params.physics.mobility, L);
-    CHSourcePsi<dim> src_psi(params.physics.epsilon, dt, L);
+    const double lambda = params.physics.lambda;
+    const double S_stab = lambda / (4.0 * params.physics.epsilon);
+
+    CHSourceTheta<dim> src_theta_discrete(params.physics.mobility, lambda, dt, L);
+    CHSourceThetaContinuous<dim> src_theta_continuous(params.physics.mobility, lambda, dt, L);
+    CHSourcePsi<dim> src_psi(params.physics.epsilon, lambda, S_stab, dt, L);
 
     ch.set_mms_source(
         [&](const dealii::Point<dim>& p, double t) -> double {

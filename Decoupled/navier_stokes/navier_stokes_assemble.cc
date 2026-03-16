@@ -299,7 +299,8 @@ void NSSubsystem<dim>::assemble_stokes(
 // ============================================================================
 // PRIVATE: assemble_coupled_internal() — Unified velocity predictor
 //
-// Zhang Eq 3.11: variable viscosity, Kelvin force, b_stab, capillary, gravity.
+// Zhang Eq 3.11: density-weighted mass (ρ^n) and convection (ρ^{n-1}),
+// variable viscosity, Kelvin force, b_stab, capillary, gravity.
 //
 // M source determined by algebraic_M flag:
 //   false → read M, ∇M from FE vectors (Mx_relevant, My_relevant, M_dof_handler)
@@ -491,7 +492,7 @@ void NSSubsystem<dim>::assemble_coupled_internal(
             // Variable viscosity ν(θ^n)
             const double theta_q = theta_values[q];
             const double theta_old_q = theta_old_values[q];
-            const double nu_q = viscosity(theta_q,
+            const double nu_q = viscosity(theta_q, eps,
                                           params_.physics.nu_water,
                                           params_.physics.nu_ferro);
 
@@ -544,17 +545,28 @@ void NSSubsystem<dim>::assemble_coupled_internal(
             // Kelvin RHS term 2: μ₀/2(m × H̃, ∇×v)
             const double M_cross_H = M[0] * H_vec[1] - M[1] * H_vec[0];
 
-            // Gravity body force: ρ(θ^n)g
+            // Gravity body force: ρ(θ^n)g — density enters ONLY through gravity
+            // (Zhang Eq 3.11 has NO ρ in mass or convection terms)
             Tensor<1, dim> F_gravity;
             if (params_.enable_gravity)
             {
-                const double rho_q = density_ratio(theta_q, eps, params_.physics.r);
-                F_gravity = rho_q * gravity;
+                const double rho_n = density_ratio(theta_q, eps, params_.physics.r);
+                F_gravity = rho_n * gravity;
             }
 
-            // Capillary force: +θ_old·∇ψ on the RHS
-            const Tensor<1, dim> F_capillary = theta_old_q * psi_gradients[q];
+            // Capillary force: θ·∇ψ on the RHS.
+            // Zhang Eq 3.11: -Φ∇W on RHS with Φ=(θ+1)/2, W=-ψ/2:
+            //   -Φ∇W = (θ+1)∇ψ/4 = θ∇ψ/4 + ∇ψ/4
+            // The ∇ψ/4 gradient is absorbed into pressure.
+            // With ψ defined by (ψ,Υ)+λε(∇θ,∇Υ)+(λ/ε)(f,Υ)=0,
+            // ψ ~ λ·O(1), so θ∇ψ/4 ~ (λ/4)·θ·∇(bare potential).
+            // But since ψ already contains the λ factor, the coefficient is 1
+            // (not λ_code): θ∇ψ = θ∇(λ·W_bare) = λ·θ∇W_bare → the /4 from
+            // Φ→θ conversion cancels with the ×4 from ψ→W rescaling.
+            const Tensor<1, dim> F_capillary =
+                theta_old_q * psi_gradients[q];
 
+            // Zhang Eq 3.11: (1/δt)(ũ^n − u^{n-1}, v) — NO density in mass term
             const double mass_coeff = 1.0 / dt;
 
             for (unsigned int i = 0; i < dofs_per_cell_vel; ++i)
@@ -631,7 +643,7 @@ void NSSubsystem<dim>::assemble_coupled_internal(
                     local_ux_ux(i, j) += (nu_q / 4.0) * (T_U_x * T_V_x) * JxW;
                     local_uy_uy(i, j) += (nu_q / 4.0) * (T_U_y * T_V_y) * JxW;
 
-                    // LHS convection
+                    // LHS convection: Zhang Eq 3.11 — b(u^{n-1}, ũ^n, v), NO density
                     if (include_convection)
                     {
                         const double convect_ux = skew_magnetic_cell_value_scalar<dim>(

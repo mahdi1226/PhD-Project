@@ -64,32 +64,36 @@
 #endif
 
 // ============================================================================
-// Coupled CH source: f_θ = (θⁿ − θⁿ⁻¹)/dt + γΔψⁿ + (U*ⁿ⁻¹·∇)θ*ⁿ⁻¹
+// Coupled CH source: f_θ = (θⁿ − θⁿ⁻¹)/dt + [γ + (dt/2)·λ·(θ_old+1)²]Δψⁿ
+//                         + (U*ⁿ⁻¹·∇)θ*ⁿ⁻¹
 //
-// Standard CH source (no convection): S_θ = (θⁿ − θⁿ⁻¹)/dt + γΔψⁿ
-// Coupled addition: + (U*^{n-1}·∇)θ*^{n-1} at time t_old (LAGGED)
-//
-// NOTE: The existing CHSourceTheta uses ∂θ/∂t via backward Euler:
-//       (θ(t_new) - θ(t_old))/dt
-// We need to add the convective term.
+// The second coefficient in the ψ diffusion includes the Zhang Eq 3.9
+// decoupled stabilization: (dt/2)·λ·(θ_old+1)².
 // ============================================================================
 template <int dim>
 class CoupledCHSourceTheta
 {
 public:
-    CoupledCHSourceTheta(double gamma, double dt, double L_y, double Ly_NS)
-        : gamma_(gamma), dt_(dt), L_y_(L_y), Ly_NS_(Ly_NS) {}
+    CoupledCHSourceTheta(double gamma, double lambda, double dt,
+                         double L_y, double Ly_NS)
+        : gamma_(gamma), lambda_(lambda), dt_(dt),
+          L_y_(L_y), Ly_NS_(Ly_NS) {}
 
     double operator()(const dealii::Point<dim>& p, double t_new) const
     {
         const double L[dim] = {1.0, L_y_};  // for CH functions
         const double t_old = t_new - dt_;
 
-        // Standard CH source: (θⁿ − θⁿ⁻¹)/dt + γΔψⁿ
         const double theta_new = CHMMS::theta_exact_value<dim>(p, t_new, L);
         const double theta_old = CHMMS::theta_exact_value<dim>(p, t_old, L);
         const double lap_psi   = CHMMS::lap_psi_exact<dim>(p, t_new, L);
-        double f = (theta_new - theta_old) / dt_ + gamma_ * lap_psi;
+
+        // Zhang Eq 3.9 decoupled stabilization: (dt/2)·λ·(θ_old+1)²
+        const double stab_coupling =
+            0.5 * dt_ * lambda_ * (theta_old + 1.0) * (theta_old + 1.0);
+
+        double f = (theta_new - theta_old) / dt_
+                 + (gamma_ + stab_coupling) * lap_psi;
 
         // Convection: (U*^{n-1}·∇)θ*^{n-1} evaluated at t_old
         // (production code uses LAGGED transport: θ_old and U_old)
@@ -102,21 +106,23 @@ public:
     }
 
 private:
-    double gamma_, dt_, L_y_, Ly_NS_;
+    double gamma_, lambda_, dt_, L_y_, Ly_NS_;
 };
 
 // ============================================================================
-// Coupled CH source: f_ψ = ψⁿ − εΔθⁿ + (1/ε)f(θⁿ⁻¹) + (S₁/dt)(θⁿ − θⁿ⁻¹)
+// Coupled CH source: f_ψ = ψⁿ − λεΔθⁿ + (λ/ε)f(θⁿ⁻¹) + S(θⁿ − θⁿ⁻¹)
 //
 // This is the same as the standalone CHSourcePsi (no velocity coupling in
-// the ψ equation). The stabilization parameter S₁ replaces 1/η = 1/ε.
+// the ψ equation). The stabilization parameter S = λ/(4ε) (Zhang p.B182).
 // ============================================================================
 template <int dim>
 class CoupledCHSourcePsi
 {
 public:
-    CoupledCHSourcePsi(double epsilon, double S1, double dt, double L_y)
-        : epsilon_(epsilon), S1_(S1), dt_(dt), L_y_(L_y) {}
+    CoupledCHSourcePsi(double epsilon, double lambda, double S_stab,
+                       double dt, double L_y)
+        : epsilon_(epsilon), lambda_(lambda), S_stab_(S_stab),
+          dt_(dt), L_y_(L_y) {}
 
     double operator()(const dealii::Point<dim>& p, double t_new) const
     {
@@ -131,15 +137,15 @@ public:
         // f(θ) = (θ³ − θ)/4 (derivative of bulk potential F(θ) = (θ²−1)²/16)
         const double f_old = 0.25 * (theta_old * theta_old * theta_old - theta_old);
 
-        // f_ψ = ψ^n − εΔθ^n + (1/ε)f(θ^{n-1}) + (1/η)(θ^n − θ^{n-1})
-        // where η = ε, so (1/η) = S1_ = 1/ε. Note: NO 1/dt factor.
-        return psi_new - epsilon_ * lap_theta
-               + (1.0 / epsilon_) * f_old
-               + S1_ * (theta_new - theta_old);
+        // f_ψ = ψ^n − λεΔθ^n + (λ/ε)f(θ^{n-1}) + S(θ^n − θ^{n-1})
+        // where S = λ/(4ε) (Zhang p.B182)
+        return psi_new - lambda_ * epsilon_ * lap_theta
+               + (lambda_ / epsilon_) * f_old
+               + S_stab_ * (theta_new - theta_old);
     }
 
 private:
-    double epsilon_, S1_, dt_, L_y_;
+    double epsilon_, lambda_, S_stab_, dt_, L_y_;
 };
 
 // ============================================================================
@@ -192,7 +198,7 @@ public:
         //   for divergence-free U]
         const double L[dim] = {1.0, L_y_};
         const double theta_val = CHMMS::theta_exact_value<dim>(pt, t_new, L);
-        const double nu_val = viscosity(theta_val,
+        const double nu_val = viscosity(theta_val, params_.physics.epsilon,
                                         params_.physics.nu_water,
                                         params_.physics.nu_ferro);
         const auto lap_U = NSMMS::laplacian_U<dim>(pt, t_new, L_y_);

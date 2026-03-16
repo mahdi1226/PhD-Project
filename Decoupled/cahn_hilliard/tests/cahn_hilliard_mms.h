@@ -17,8 +17,8 @@
 //   ch.setup();
 //
 //   // Wrap source terms into facade callbacks
-//   CHSourceTheta<dim> s_theta(gamma, dt, L_y);
-//   CHSourcePsi<dim>   s_psi(epsilon, dt, L_y);
+//   CHSourceTheta<dim> s_theta(gamma, lambda, dt, L_y);
+//   CHSourcePsi<dim>   s_psi(epsilon, lambda, S_stab, dt, L_y);
 //   ch.set_mms_source(
 //       [&](const Point<dim>& p, double t) { s_theta.set_time(t); return s_theta.value(p); },
 //       [&](const Point<dim>& p, double t) { s_psi.set_time(t);   return s_psi.value(p); });
@@ -244,24 +244,27 @@ private:
 // ============================================================================
 // Source terms for standalone CH (no convection)
 //
-// Eq 42a forcing: S_θ = (θⁿ - θⁿ⁻¹)/dt + γ Δψⁿ
-// Eq 42b forcing: S_ψ = ψⁿ - ε Δθⁿ + (1/ε) f(θⁿ⁻¹) + (1/η)(θⁿ - θⁿ⁻¹)
+// Eq 42a forcing:
+//   S_θ = (θⁿ - θⁿ⁻¹)/dt + [γ + (dt/2)·λ·(θⁿ⁻¹+1)²] Δψⁿ
+//   The second coefficient is the Zhang Eq 3.9 decoupled stabilization.
 //
-// where f(θ) = θ³ - θ,  η = ε
+// Eq 42b forcing:
+//   S_ψ = ψⁿ - λε Δθⁿ + (λ/ε) f(θⁿ⁻¹) + S(θⁿ - θⁿ⁻¹)
+//   where f(θ) = (θ³ - θ)/4,  S = λ/(4ε)
 // ============================================================================
 
 template <int dim>
 class CHSourceTheta : public dealii::Function<dim>
 {
 public:
-    CHSourceTheta(double gamma, double dt, const double L[dim])
-        : dealii::Function<dim>(1), gamma_(gamma), dt_(dt)
+    CHSourceTheta(double gamma, double lambda, double dt, const double L[dim])
+        : dealii::Function<dim>(1), gamma_(gamma), lambda_(lambda), dt_(dt)
     {
         for (unsigned int d = 0; d < dim; ++d) L_[d] = L[d];
     }
 
-    CHSourceTheta(double gamma, double dt, double L_y)
-        : dealii::Function<dim>(1), gamma_(gamma), dt_(dt)
+    CHSourceTheta(double gamma, double lambda, double dt, double L_y)
+        : dealii::Function<dim>(1), gamma_(gamma), lambda_(lambda), dt_(dt)
     {
         L_[0] = 1.0;
         if constexpr (dim >= 2) L_[1] = L_y;
@@ -278,11 +281,16 @@ public:
         const double theta_old = CHMMS::theta_exact_value<dim>(p, t_old, L_);
         const double lap_psi_n = CHMMS::lap_psi_exact<dim>(p, t, L_);
 
-        return (theta_n - theta_old) / dt_ + gamma_ * lap_psi_n;
+        // Zhang Eq 3.9 decoupled stabilization: (dt/2)·λ·(θ_old+1)²
+        const double stab_coupling =
+            0.5 * dt_ * lambda_ * (theta_old + 1.0) * (theta_old + 1.0);
+
+        return (theta_n - theta_old) / dt_
+             + (gamma_ + stab_coupling) * lap_psi_n;
     }
 
 private:
-    double gamma_, dt_;
+    double gamma_, lambda_, dt_;
     double L_[dim];
 };
 
@@ -291,14 +299,18 @@ template <int dim>
 class CHSourcePsi : public dealii::Function<dim>
 {
 public:
-    CHSourcePsi(double epsilon, double dt, const double L[dim])
-        : dealii::Function<dim>(1), epsilon_(epsilon), dt_(dt)
+    CHSourcePsi(double epsilon, double lambda, double S_stab,
+                double dt, const double L[dim])
+        : dealii::Function<dim>(1),
+          epsilon_(epsilon), lambda_(lambda), S_stab_(S_stab), dt_(dt)
     {
         for (unsigned int d = 0; d < dim; ++d) L_[d] = L[d];
     }
 
-    CHSourcePsi(double epsilon, double dt, double L_y)
-        : dealii::Function<dim>(1), epsilon_(epsilon), dt_(dt)
+    CHSourcePsi(double epsilon, double lambda, double S_stab,
+                double dt, double L_y)
+        : dealii::Function<dim>(1),
+          epsilon_(epsilon), lambda_(lambda), S_stab_(S_stab), dt_(dt)
     {
         L_[0] = 1.0;
         if constexpr (dim >= 2) L_[1] = L_y;
@@ -319,17 +331,17 @@ public:
         // f(θ^{n-1}) = (θ³ - θ)/4  (from F(θ) = (θ²-1)²/16)
         const double f_old = 0.25 * (theta_old * theta_old * theta_old - theta_old);
 
-        // η = ε  (stabilization)
-        const double eta = epsilon_;
-
+        // ψ equation (Zhang Eq 3.10 in θ-space):
+        //   (ψ, Υ) + λε(∇θ, ∇Υ) + (λ/ε)(f_θ, Υ) + S(δθ, Υ) = 0
+        // where S = λ/(4ε)
         return psi_n
-             - epsilon_ * lap_theta_n
-             + (1.0 / epsilon_) * f_old
-             + (1.0 / eta) * (theta_n - theta_old);
+             - lambda_ * epsilon_ * lap_theta_n
+             + (lambda_ / epsilon_) * f_old
+             + S_stab_ * (theta_n - theta_old);
     }
 
 private:
-    double epsilon_, dt_;
+    double epsilon_, lambda_, S_stab_, dt_;
     double L_[dim];
 };
 
@@ -340,16 +352,16 @@ private:
 // Uses ∂θ*/∂t (continuous) instead of (θ*^n - θ*^{n-1})/dt (discrete).
 // The BDF1 truncation error then appears as O(dt) in the solution.
 //
-// S_θ_continuous = ∂θ*/∂t + γ Δψ*
-// S_ψ: keep discrete stabilization (1/η)(θ*^n - θ*^{n-1}) — algebraic, not time evolution
+// S_θ_continuous = ∂θ*/∂t + [γ + (dt/2)·λ·(θ*_old+1)²] Δψ*
+// S_ψ: keep discrete stabilization S(θ*^n - θ*^{n-1}) — algebraic, not time evolution
 // ============================================================================
 
 template <int dim>
 class CHSourceThetaContinuous : public dealii::Function<dim>
 {
 public:
-    CHSourceThetaContinuous(double gamma, const double L[dim])
-        : dealii::Function<dim>(1), gamma_(gamma)
+    CHSourceThetaContinuous(double gamma, double lambda, double dt, const double L[dim])
+        : dealii::Function<dim>(1), gamma_(gamma), lambda_(lambda), dt_(dt)
     {
         for (unsigned int d = 0; d < dim; ++d) L_[d] = L[d];
     }
@@ -358,16 +370,20 @@ public:
                  const unsigned int /*component*/ = 0) const override
     {
         const double t = this->get_time();
+        const double t_old = t - dt_;
 
-        // ∂θ*/∂t = 4t³ ∏_d cos(πx_d/L_d)
+        const double theta_old = CHMMS::theta_exact_value<dim>(p, t_old, L_);
         const double dtheta_dt = CHMMS::theta_exact_dt<dim>(p, t, L_);
         const double lap_psi_n = CHMMS::lap_psi_exact<dim>(p, t, L_);
 
-        return dtheta_dt + gamma_ * lap_psi_n;
+        const double stab_coupling =
+            0.5 * dt_ * lambda_ * (theta_old + 1.0) * (theta_old + 1.0);
+
+        return dtheta_dt + (gamma_ + stab_coupling) * lap_psi_n;
     }
 
 private:
-    double gamma_;
+    double gamma_, lambda_, dt_;
     double L_[dim];
 };
 

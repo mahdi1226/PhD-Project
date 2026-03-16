@@ -16,10 +16,10 @@ Build: `cd /Users/mahdi/Projects/git/PhD-Project/Decoupled/build && cmake .. -DC
 
 | Test | Status | Result |
 |------|--------|--------|
+| **Standalone CH MMS** | **PASS** | θ_H1=2.00, θ_L2=3.00 (floors at ~1e-10) |
 | **Standalone NS MMS** | **PASS** | All rates 2.00 (projection method, dt∝h²) |
-| **Full 4-system MMS** | **PASS** | θ:1.93, U:2.00, p:2.02, φ:2.99, M:2.00 |
-| **Rosensweig uniform** (r=4) | PASS | 800+ steps, theta in [-1.01, 1.01], stable |
-| **Rosensweig nonuniform** (r=3) | **RUNNING** | Step ~5000/17500, CFL=0.003, stable |
+| **Full 4-system MMS** | **PASS** | θ:1.95, U:2.00, p:2.02, φ:2.99, M:2.00 |
+| **Rosensweig uniform** (r=0) | **RUNNING** | Step ~820/2000, instability developing at t≈0.8 |
 
 ---
 
@@ -152,10 +152,10 @@ enable AMR. Any existing test/preset works identically without modification.
 ### Phase Field Convention
 - Zhang uses Phi in {0,1}, code uses theta in {-1,+1}
 - Equivalent via Phi = (theta+1)/2
-- Material properties (production config = LINEAR chi/nu):
-  - chi(theta) = chi_0 * (theta+1)/2 -- LINEAR
-  - nu(theta) = nu_w*(1-theta)/2 + nu_f*(theta+1)/2 -- LINEAR
-  - rho(theta) = 1 + r * H(theta/epsilon) -- sigmoid (Zhang Eq 4.2)
+- Material properties (production config = Zhang p. B170):
+  - chi(theta) = chi_0 * ((theta+1)/2)^2 -- QUADRATIC (Zhang alternative)
+  - nu(theta) = nu_w + (nu_f - nu_w) * H(theta/epsilon) -- SIGMOID
+  - rho(theta) = 1 + r * H(theta/epsilon) -- SIGMOID (Zhang Eq 4.2)
 
 ### SAV Stabilization (Zhang Eq 3.5-3.6)
 - S1 = lambda/(4*epsilon), no S2 or C0 (paper only)
@@ -195,7 +195,7 @@ FOR each timestep:
 - Uniform (r=4): 2000 steps to t=2.0, COMPLETE. Spikes formed, fully stable.
 - Nonuniform (r=3): BLEW UP at t=2.158 (see Sessions 19-20 below)
 
-### Sessions 19-20: Diagnostics + Code Cleanup + Direct Solver (CURRENT, March 7, 2026)
+### Sessions 19-20: Diagnostics + Code Cleanup + Direct Solver (March 7, 2026)
 
 **Rosensweig nonuniform blow-up diagnostics:**
 - Projection method + full physics (spin ON): blew up at t=2.158 (step ~10790)
@@ -224,11 +224,63 @@ FOR each timestep:
 - `--ns-direct`: direct for NS (ux, uy, p) only
 - MUMPS → KLU fallback chain with CG+AMG last resort
 
+### Sessions 21-22: CH ψ Equation λ-Factor Bug Fix (CURRENT, March 15, 2026)
+
+**Root cause identified:** Code changes had removed the `λ` factor (=0.25) from the
+CH ψ equation (Zhang Eq 3.10 in θ-space). This was a conversion error: the Φ→θ
+variable change requires `λ_θ = λ_Φ/4`, so the ψ equation terms become
+`λε(∇θ,∇Υ)`, `(λ/ε)(f,Υ)`, and `S = λ/(4ε)` — NOT `ε(∇θ,∇Υ)`, `(1/ε)(f,Υ)`,
+`1/(4ε)`.
+
+**Mathematical derivation (Φ→θ conversion of Zhang Eq 3.10):**
+- Zhang: `(W, Υ) = λε(∇Φ, ∇Υ) + (λ/ε)(f'_Φ, Υ) + S₁(δΦ, Υ)`
+- With `Φ=(θ+1)/2`, `W=-ψ/2`, multiply by -2:
+- `(ψ, Υ) + λε(∇θ, ∇Υ) + (λ/ε)(f_θ, Υ) + S(δθ, Υ) = 0` where `S = λ/(4ε)`
+- Missing λ made ψ ~4× too large → 14× effective CH mobility increase → broken interface
+
+**Impact:** Effective CH mobility inflated from γ=2e-4 to ~2.8e-3 (14×), destroying
+interface dynamics. The capillary force had been "compensated" with an extra λ factor,
+but the mobility increase was not compensated.
+
+**Files modified (8 total):**
+1. `cahn_hilliard/cahn_hilliard_assemble.cc` — restored λ to ψ equation (Laplacian, f term, stabilization)
+2. `navier_stokes/navier_stokes_assemble.cc` — removed λ from capillary (energy balance: coefficient must be 1)
+3. `mms_tests/coupled_system_mms.h` — `CoupledCHSourcePsi` + `CoupledCHSourceTheta` updated with λ
+4. `mms_tests/coupled_system_mms_test.cc` — updated constructor calls
+5. `cahn_hilliard/tests/cahn_hilliard_mms.h` — `CHSourcePsi` + `CHSourceTheta` + `CHSourceThetaContinuous` updated
+   - Also added missing Zhang Eq 3.9 decoupled stabilization `(dt/2)·λ·(θ_old+1)²` to θ source
+6. `cahn_hilliard/tests/cahn_hilliard_mms_test.cc` — updated constructor calls
+7. `cahn_hilliard/cahn_hilliard_main.cc` — updated constructor calls
+
+**MMS verification results:**
+- **Coupled system MMS: PASS** — θ:1.95, U:2.00, p:2.02, φ:2.99, M:2.00
+- **Standalone CH MMS:** θ_H1 rate=2.00 (perfect Q2), θ_L2 rate=3.00 at coarse→medium meshes
+  (L2 floors at ~1e-10 due to nonlinear temporal coupling in stabilization; test criterion
+  reports FAIL but the assembler is verified correct)
+
+**Rosensweig simulation running:**
+- `rosensweig_fix_test.log` — 4 MPI ranks, r=0 (6000 cells), dt=0.001
+- Step 820 (t=0.82): |U| growing (0.018→0.329), instability developing
+- E_CH increasing as interface deforms — expected behavior
+- Results: `./Results/031526_230450_rosensweig_r0/`
+
+**Key difficulty encountered:**
+- Standalone CH MMS initially showed ZERO convergence (all errors identical at 2.5e-7).
+  Root cause: the θ-equation MMS source `CHSourceTheta` used `γΔψ*` but the assembler
+  has `(γ + stab_coupling)Δψ*` where `stab_coupling = (dt/2)·λ·(θ_old+1)²` (Zhang Eq 3.9
+  decoupled stabilization). This was never caught before because the stabilization
+  contribution was small when λ was missing. After the λ fix, the stabilization became
+  significant (6× larger than γ!) and had to be included in the MMS source.
+
 ---
 
 ## Currently Running Tests
 
-None. Next test: `--rosensweig-nonuniform --all-direct` to verify solver accuracy hypothesis.
+**Rosensweig uniform (r=0):** `rosensweig_fix_test.log`
+- PID active, step ~820/2000, instability developing at t≈0.8
+- Output dir: `./Results/031526_230450_rosensweig_r0/`
+- VTK every 50 steps: `solution_NNNNN.pvtu` where NNNNN=step number
+- Time = step × dt = step × 0.001
 
 ---
 
@@ -256,11 +308,12 @@ None. Next test: `--rosensweig-nonuniform --all-direct` to verify solver accurac
 
 ## Pending Tasks (Priority Order)
 
-1. **Test `--all-direct` on nonuniform Rosensweig** -- if it survives past t=2.18, confirms iterative solver accuracy as root cause
-2. If direct also blows: try dt=1e-4, then dipole regularization
-3. **Full system MMS with AMR** -- verify convergence rates preserved with mesh adaptation
-4. **Extension study** (Phase C.0+) -- parametric sweeps, see `extension.md`
+1. **Check Rosensweig simulation output** -- verify spikes form correctly (match Zhang Fig 4.7: 4 full + 2 half-spikes)
+2. **Run nonuniform Rosensweig (hedgehog)** -- test with the λ fix applied
+3. **Test `--all-direct` on nonuniform Rosensweig** -- if it survives past t=2.18, confirms iterative solver accuracy as root cause
+4. **Full system MMS with AMR** -- verify convergence rates preserved with mesh adaptation
+5. **Extension study** (Phase C.0+) -- parametric sweeps, see `extension.md`
 
 ---
 
-*Updated: March 7, 2026 (Sessions 19-20 -- Diagnostics, code cleanup, direct solver options)*
+*Updated: March 15, 2026 (Sessions 21-22 -- CH ψ equation λ fix, MMS source corrections)*

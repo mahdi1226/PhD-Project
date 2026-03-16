@@ -146,7 +146,7 @@ static CoupledMMSResult run_single_level(
     // ----------------------------------------------------------------
     // 3. MMS source injection
     //
-    // CH: Uses standard (non-SAV) assembler with convection by U*
+    // CH: Uses Zhang stabilized assembler with convection by U*
     // NS: Uses assemble_coupled with MMS source for force residual
     // Poisson: Uses set_mms_source for −Δφ* − ∇·M*
     // Mag: Uses set_mms_source for transport + relaxation residual
@@ -154,14 +154,15 @@ static CoupledMMSResult run_single_level(
 
     // CH source: θ-equation with convection
     const double L[dim] = {1.0, L_y};
+    const double lambda = params.physics.lambda;
     CoupledCHSourceTheta<dim> coupled_ch_theta_src(
-        params.physics.mobility, dt, L_y, L_y);
+        params.physics.mobility, lambda, dt, L_y, L_y);
 
     // CH source: ψ-equation (no convection coupling)
-    // S1 = 1/ε for standard (non-SAV) assembly
-    const double S1_val = 1.0 / params.physics.epsilon;
+    // Stabilization: S = λ/(4ε) (Zhang p.B182)
+    const double S_stab = lambda / (4.0 * params.physics.epsilon);
     CoupledCHSourcePsi<dim> coupled_ch_psi_src(
-        params.physics.epsilon, S1_val, dt, L_y);
+        params.physics.epsilon, lambda, S_stab, dt, L_y);
 
     ch.set_mms_source(
         [&](const Point<dim>& pt, double t) -> double {
