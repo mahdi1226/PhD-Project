@@ -30,6 +30,7 @@
 #include <deal.II/dofs/dof_handler.h>
 #include <deal.II/dofs/dof_tools.h>
 #include <deal.II/fe/fe_q.h>
+#include <deal.II/fe/fe_dgq.h>
 #include <deal.II/fe/fe_values.h>
 #include <deal.II/lac/trilinos_sparse_matrix.h>
 #include <deal.II/lac/trilinos_vector.h>
@@ -483,7 +484,7 @@ static NSMMSConvergenceResult run_phase_internal(
         // Finite elements from params.fe
         // ====================================================================
         dealii::FE_Q<dim> fe_vel(params.fe.degree_velocity);
-        dealii::FE_Q<dim> fe_p(params.fe.degree_pressure);
+        dealii::FE_DGQ<dim> fe_p(params.fe.degree_pressure);
 
         // DoF handlers
         dealii::DoFHandler<dim> ux_dof_handler(triangulation);

@@ -36,6 +36,7 @@
 #include <deal.II/grid/grid_tools.h>
 #include <deal.II/dofs/dof_handler.h>
 #include <deal.II/fe/fe_q.h>
+#include <deal.II/fe/fe_dgq.h>
 #include <deal.II/lac/sparse_matrix.h>
 #include <deal.II/lac/sparsity_pattern.h>
 #include <deal.II/lac/vector.h>
@@ -116,10 +117,10 @@ NSMMSResult run_single_refinement_varnu(
     result.h = dealii::GridTools::minimal_cell_diameter(triangulation);
 
     // ========================================================================
-    // Setup NS (Taylor-Hood Q2-Q1)
+    // Setup NS (Q2 velocity, DG Q1 pressure — paper A1)
     // ========================================================================
     dealii::FE_Q<dim> fe_velocity(params.fe.degree_velocity);
-    dealii::FE_Q<dim> fe_pressure(params.fe.degree_pressure);
+    dealii::FE_DGQ<dim> fe_pressure(params.fe.degree_pressure);
 
     dealii::DoFHandler<dim> ux_dof_handler(triangulation);
     dealii::DoFHandler<dim> uy_dof_handler(triangulation);

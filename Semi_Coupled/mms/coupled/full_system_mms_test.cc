@@ -236,9 +236,9 @@ static CoupledMMSResult run_full_system_single(
     const unsigned int n_psi = psi_dof.n_dofs();
     const unsigned int n_ch = n_theta + n_psi;
 
-    // NS DoFs (Q2 velocity, CG pressure)
+    // NS DoFs (Q2 velocity, DG pressure — paper A1)
     dealii::FE_Q<dim> fe_vel(params.fe.degree_velocity);
-    dealii::FE_Q<dim> fe_p(params.fe.degree_pressure);
+    dealii::FE_DGQ<dim> fe_p(params.fe.degree_pressure);
     dealii::DoFHandler<dim> ux_dof(triangulation), uy_dof(triangulation), p_dof(triangulation);
     ux_dof.distribute_dofs(fe_vel);
     uy_dof.distribute_dofs(fe_vel);

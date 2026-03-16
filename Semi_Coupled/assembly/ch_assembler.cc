@@ -209,12 +209,18 @@ void assemble_ch_system(
         {
             const double L_y = params.domain.y_max - params.domain.y_min;
 
-            // Select theta source based on whether convection is active
-            // (psi source is the same in both cases)
-            // Uses EXPLICIT convection source (paper Eq 65a: U·∇θ^{k-1})
+            // Select theta source based on convection mode:
+            // - No convection: CHSourceTheta (no U·∇θ term)
+            // - Explicit (--explicit_ch): CHSourceThetaWithConvection (U·∇θ^{k-1})
+            // - Implicit (default): CHSourceThetaWithImplicitConvection (U·∇θ^k)
             std::unique_ptr<dealii::Function<dim>> source_theta_ptr;
             if (use_velocity_convection)
-                source_theta_ptr = std::make_unique<CHSourceThetaWithConvection<dim>>(gamma, dt, L_y);
+            {
+                if (params.use_explicit_ch_convection)
+                    source_theta_ptr = std::make_unique<CHSourceThetaWithConvection<dim>>(gamma, dt, L_y);
+                else
+                    source_theta_ptr = std::make_unique<CHSourceThetaWithImplicitConvection<dim>>(gamma, dt, L_y);
+            }
             else
                 source_theta_ptr = std::make_unique<CHSourceTheta<dim>>(gamma, dt, L_y);
 

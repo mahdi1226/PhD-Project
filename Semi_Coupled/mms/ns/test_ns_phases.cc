@@ -36,6 +36,7 @@
 #include <deal.II/dofs/dof_handler.h>
 #include <deal.II/dofs/dof_tools.h>
 #include <deal.II/fe/fe_q.h>
+#include <deal.II/fe/fe_dgq.h>
 #include <deal.II/fe/fe_values.h>
 #include <deal.II/lac/trilinos_sparse_matrix.h>
 #include <deal.II/lac/trilinos_vector.h>
@@ -306,9 +307,9 @@ int run_phase_test(
         const double h = dealii::GridTools::minimal_cell_diameter(triangulation) / std::sqrt(2.0);
         h_values.push_back(h);
 
-        // Finite elements: Q2-Q1 Taylor-Hood
+        // Finite elements: Q2 velocity, DG Q1 pressure (paper A1)
         dealii::FE_Q<dim> fe_Q2(2);
-        dealii::FE_Q<dim> fe_Q1(1);
+        dealii::FE_DGQ<dim> fe_Q1(1);
 
         // DoF handlers
         dealii::DoFHandler<dim> ux_dof_handler(triangulation);
