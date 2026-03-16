@@ -168,10 +168,9 @@ struct Parameters
 
     // ========================================================================
     // Algorithmic variant flags (for parametric studies)
-    // Default: implicit CH convection, simplified mag model, θ^n for χ
+    // Default: implicit CH convection, θ^n for χ
     // ========================================================================
     bool use_explicit_ch_convection = false;  // --explicit_ch: paper Eq 65a explicit Θ^{k-1}
-    bool use_full_mag_model = false;          // --full_mag: relaxation toward ∇φ (full H)
     bool use_theta_old_for_chi = false;       // --theta_old_chi: χ(θ^{n-1}) in magnetics
 
     // ========================================================================

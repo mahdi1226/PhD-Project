@@ -110,35 +110,31 @@ different overflow protection thresholds, causing inconsistency at extreme value
 - Missing `constraints.distribute()` in mag solver: Not missing — caller `solve_magnetics()`
   calls `mag_constraints_.distribute()` after solver returns.
 
-## Simplified Magnetization Model (March 2026)
+## Magnetization Model — Full H = ∇φ + h_a (Paper Eq 42c)
 
-After the audit, the code was also updated to use the paper's **simplified magnetization
-model** from Sections 5-6 (instead of the full model from Sections 3-4).
-
-### The Difficulty
-The original monolithic magnetics system uses the full model (Eq 42c):
+The magnetization assembler implements the paper's full model (Eq 42c):
 ```
 (1/T)(M^k, Z) = (1/T) chi(theta) H^k Z,   where H^k = grad(phi^k) + h_a
 ```
-This means the RHS of the magnetization equation depends on grad(phi^k) — a trial
-function in the monolithic system — creating the LHS C_M_phi coupling block:
-```
-C_M_phi:  -(1/T) chi(theta) (grad phi^k, Z)
-```
-However, Section 5 (p.518-519) explicitly states: "if h = h_a (i.e., drop the
-demagnetizing self-field from the relaxation source), the Rosensweig instability
-still manifests" and this is used for their numerical experiments (Section 6).
+In the monolithic system, grad(phi^k) is a trial function. The relaxation term
+splits into LHS and RHS:
+- **LHS (C_M_phi coupling):** `-(1/T) chi(theta) (∇φ_j, Z_i)` — couples M to φ
+- **RHS (h_a source):** `+(1/T) chi(theta) (h_a, Z_i)` — known applied field
 
-### What We Changed
-- **Simplified model (default):** Relaxation source uses h_a directly on the RHS:
-  `(1/T) chi(theta) (h_a, Z)`. The C_M_phi coupling block is zeroed out.
-- **Full model (`--full_mag`):** Restores the original C_M_phi coupling with grad(phi^k).
-- The Poisson equation (42d) is **unchanged in both models** — it always sees M^k as
-  a source. The only difference is whether the magnetization relaxation target is
-  h_a (simplified) or grad(phi)+h_a (full).
+### History: Incorrect "Simplified Model" (removed March 15, 2026)
+A previous version introduced a `--full_mag` / simplified split based on a misreading
+of the paper. Section 5 (p.518-519) discusses h = h_a as a **negative control** for the
+dome test (Figure 7), not as a simplification used in the actual numerical experiments.
+The "simplified" mode dropped the C_M_phi coupling entirely, relaxing M toward
+chi(theta)*h_a only — a hybrid not described in the paper. Additionally, the full-model
+branch had a bug: the h_a RHS term was incorrectly guarded by `if (!use_full_mag_model)`,
+so --full_mag runs relaxed toward chi(theta)*∇φ only, missing h_a entirely.
 
-### Observation After Both Fixes (Audit + Simplified Mag)
-A coarse test (L4, dt=0.002, 500 steps to t=1.0) with both fixes applied produced
+Both issues are now fixed: the full model (H = ∇φ + h_a) is hardcoded, the simplified
+mode and --full_mag flag are removed.
+
+### Observation After Audit Fixes
+A coarse test (L4, dt=0.002, 500 steps to t=1.0) with audit fixes produced
 **4 spikes** — the correct number from the paper. This was the first time the code
 generated any spikes at all. However:
 - Onset was delayed compared to the paper (~t=0.9 vs paper's earlier onset)
@@ -150,37 +146,29 @@ This observation motivated the v2 algorithmic isolation study (see below).
 ## Algorithmic Variant CLI Flags (March 2026)
 
 To systematically isolate which algorithmic choices affect the Rosensweig pattern,
-three new boolean CLI flags were added:
+two boolean CLI flags were added:
 
 | Flag | Parameter | Default | Effect |
 |------|-----------|---------|--------|
 | `--explicit_ch` | `use_explicit_ch_convection` | `false` | CH convection uses θ^{k-1} (explicit, paper Eq 65a) instead of θ^k (implicit) |
-| `--full_mag` | `use_full_mag_model` | `false` | Mag relaxation uses ∇φ (full H) instead of h_a (simplified) |
 | `--theta_old_chi` | `use_theta_old_for_chi` | `false` | Magnetics uses θ^{n-1} for χ(θ) instead of θ^n from CH |
 
 ### Why These Flags Exist
-The paper describes multiple valid algorithmic choices:
 - **CH convection:** Paper Eq 65a uses explicit θ^{k-1}, but implicit θ^k provides
   better U-θ coupling for instability-driven flows. Both are valid first-order schemes.
-- **Mag model:** Sections 3-4 (full) vs Sections 5-6 (simplified). Both are used
-  in the paper for different purposes.
 - **θ time level for χ(θ):** Theorem 4.1's energy stability proof assumes θ^{n-1}
   (frozen from previous time step), but using θ^n (fresh from CH solve) provides
   tighter coupling within the BGS iteration.
 
-None of these are "wrong" — they represent different points in the accuracy-stability
-tradeoff space. The test matrix below systematically explores this space.
-
 ### Files Modified
-- `utilities/parameters.h` — 3 bool fields added (lines 173-175)
+- `utilities/parameters.h` — 2 bool fields added
 - `utilities/parameters.cc` — CLI parsing + help text + verbose output
-- `assembly/ch_assembler.cc` — Conditional implicit/explicit convection (line 179-195)
-- `assembly/magnetic_assembler.cc` — Conditional full/simplified + θ time level
+- `assembly/ch_assembler.cc` — Conditional implicit/explicit convection
 - `core/phase_field.cc` — Conditional θ_old vs θ pass to magnetic assembler
 
 ## Rosensweig v2 Test Matrix — Algorithmic Isolation Study (March 2026)
 
-**Location:** `hpcc_run/rosensweig_v2.dat` (10 tests, SLURM array job)
+**Location:** `hpcc_run/rosensweig_v2.dat` (8 tests, SLURM array job)
 
 **Goal:** Run at paper resolution (L6, dt=5e-4) to isolate which algorithmic choices
 affect onset time, spike count, and pattern quality. Each test changes ONE variable
@@ -190,30 +178,28 @@ from the baseline.
 
 | ID | Flags | What Changes | Hypothesis |
 |----|-------|-------------|------------|
-| T1 | baseline | — | Reference: implicit CH + simplified mag + θ^n |
-| T2 | `--full_mag` | Mag model | Does full model (∇φ relaxation) change pattern? |
-| T3 | `--theta_old_chi` | χ(θ) time level | Does freezing θ^{n-1} for χ affect onset? |
-| T4 | `--explicit_ch` | CH convection | Control — expect flat (explicit kills instability) |
-| T5 | `--full_mag --theta_old_chi` | Both mag changes | Combined: full model + frozen θ^{n-1} |
+| T1 | baseline | — | Reference: implicit CH + full mag (Eq 42c) + θ^n |
+| T2 | `--theta_old_chi` | χ(θ) time level | Does freezing θ^{n-1} for χ affect onset? |
+| T3 | `--explicit_ch` | CH convection | Control — expect flat (explicit kills instability) |
 
 ### Group B: Coupling Strength (L6, dt=5e-4, ILU)
 
 | ID | Flags | What Changes | Hypothesis |
 |----|-------|-------------|------------|
-| T6 | `--bgs_iters 2` | BGS iterations | Tighter coupling — improves pattern? |
-| T7 | `--bgs_iters 3` | BGS iterations | Even tighter — convergence check |
+| T4 | `--bgs_iters 2` | BGS iterations | Tighter coupling — improves pattern? |
+| T5 | `--bgs_iters 3` | BGS iterations | Even tighter — convergence check |
 
 ### Group C: Resolution (ILU, BGS=1)
 
 | ID | Flags | What Changes | Hypothesis |
 |----|-------|-------------|------------|
-| T8 | `--dt 2.5e-4 --max_steps 8000` | dt (2× finer) | Earlier onset? Better wavelength? |
-| T9 | `-r 7` | Mesh (L7) | Finer mesh → different spike count/shape? |
-| T10 | `--no_amr -r 6` | AMR off | Isolate AMR artifacts from physics |
+| T6 | `--dt 2.5e-4 --max_steps 8000` | dt (2× finer) | Earlier onset? Better wavelength? |
+| T7 | `-r 7` | Mesh (L7) | Finer mesh → different spike count/shape? |
+| T8 | `--no_amr -r 6` | AMR off | Isolate AMR artifacts from physics |
 
 ### How to Submit
 ```bash
-sbatch --array=1-10 hpcc_run/submit.sub hpcc_run/rosensweig_v2.dat
+sbatch --array=1-8 hpcc_run/submit.sub hpcc_run/rosensweig_v2.dat
 ```
 
 ### What to Look For
@@ -224,14 +210,12 @@ For each test, extract from `diagnostics.csv`:
 4. **Energy stability:** E_total monotonically decreasing?
 
 ### Key Comparisons
-- T1 vs T2: Does mag model matter? → If yes, simplified model is critical
-- T1 vs T3: Does θ time level for χ matter? → Force balance timing
-- T1 vs T4: Confirms explicit CH kills instability (control)
-- T1 vs T5: Combined paper-theoretic setup — energy stability aligned
-- T1 vs T6/T7: Does BGS coupling fix pattern? → BGS lag issue
-- T1 vs T8: Does dt refinement fix onset? → First-order time error
-- T1 vs T9: Does mesh refinement fix wavelength? → Mesh-dependent selection
-- T1 vs T10: Does AMR affect pattern? → AMR artifact check
+- T1 vs T2: Does θ time level for χ matter? → Force balance timing
+- T1 vs T3: Confirms explicit CH kills instability (control)
+- T1 vs T4/T5: Does BGS coupling fix pattern? → BGS lag issue
+- T1 vs T6: Does dt refinement fix onset? → First-order time error
+- T1 vs T7: Does mesh refinement fix wavelength? → Mesh-dependent selection
+- T1 vs T8: Does AMR affect pattern? → AMR artifact check
 
 ## Elongation Preset Update (March 2026)
 
@@ -265,9 +249,9 @@ Not yet run — validation tests are pending.
 ### Completed
 - Monolithic M+φ system (Eq 42c-42d) implemented and MMS-verified
 - Full audit against Nochetto CMAME 2016 — 4 fixes applied
-- Simplified magnetization model (Sections 5-6) as default
-- 3 algorithmic variant CLI flags (`--explicit_ch`, `--full_mag`, `--theta_old_chi`)
-- v2 test matrix (10 tests) created in `hpcc_run/rosensweig_v2.dat`
+- Full mag model (H = ∇φ + h_a) hardcoded per paper Eq 42c
+- 2 algorithmic variant CLI flags (`--explicit_ch`, `--theta_old_chi`)
+- v2 test matrix (8 tests) created in `hpcc_run/rosensweig_v2.dat`
 - Coarse test (L4) produces 4 spikes — first successful spike formation
 
 ### Pending

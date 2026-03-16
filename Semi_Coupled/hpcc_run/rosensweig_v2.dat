@@ -1,34 +1,30 @@
 # Semi_Coupled Rosensweig v2 Test Matrix — Algorithmic Isolation Study
-# Usage: sbatch --array=1-10 hpcc_run/submit.sub hpcc_run/rosensweig_v2.dat
+# Usage: sbatch --array=1-8 hpcc_run/submit.sub hpcc_run/rosensweig_v2.dat
 #
-# Baseline = implicit CH + simplified mag + theta^n for chi + BGS=1 + L6 + dt=5e-4
-# Each test changes ONE variable from T1 (except T5 which combines two).
+# Baseline = implicit CH + full mag (Eq 42c) + theta^n for chi + BGS=1 + L6 + dt=5e-4
+# Each test changes ONE variable from T1.
 #
 # === Group A: Algorithmic Variants (L6, dt=5e-4, ILU, BGS=1) ===
 #
-# T1: Baseline
+# T1: Baseline (paper Eq 42c-42d, implicit CH, H = grad(phi) + h_a)
 --rosensweig --ilu --run_name T01-baseline
-# T2: Full mag model (relaxation toward grad(phi) instead of h_a)
---rosensweig --ilu --full_mag --run_name T02-full-mag
-# T3: theta^{n-1} for chi in magnetics (instead of theta^n from CH)
---rosensweig --ilu --theta_old_chi --run_name T03-theta-old-chi
-# T4: Explicit CH convection (paper Eq 65a — control, expect no instability)
---rosensweig --ilu --explicit_ch --run_name T04-explicit-ch
-# T5: Full mag + theta^{n-1} for chi (paper-theoretic combination)
---rosensweig --ilu --full_mag --theta_old_chi --run_name T05-full-old-chi
+# T2: theta^{n-1} for chi in magnetics (instead of theta^n from CH)
+--rosensweig --ilu --theta_old_chi --run_name T02-theta-old-chi
+# T3: Explicit CH convection (paper Eq 65a — control, expect no instability)
+--rosensweig --ilu --explicit_ch --run_name T03-explicit-ch
 #
 # === Group B: Coupling Strength (L6, dt=5e-4, ILU) ===
 #
-# T6: 2 BGS iterations (tighter coupling)
---rosensweig --ilu --bgs_iters 2 --run_name T06-bgs2
-# T7: 3 BGS iterations (even tighter)
---rosensweig --ilu --bgs_iters 3 --run_name T07-bgs3
+# T4: 2 BGS iterations (tighter coupling)
+--rosensweig --ilu --bgs_iters 2 --run_name T04-bgs2
+# T5: 3 BGS iterations (even tighter)
+--rosensweig --ilu --bgs_iters 3 --run_name T05-bgs3
 #
 # === Group C: Resolution (ILU, BGS=1) ===
 #
-# T8: Finer time step (dt=2.5e-4, 8000 steps)
---rosensweig --ilu --dt 2.5e-4 --max_steps 8000 --run_name T08-fine-dt
-# T9: Finer mesh (L7)
---rosensweig --ilu -r 7 --run_name T09-L7
-# T10: No AMR (uniform L6)
---rosensweig --ilu --no_amr -r 6 --run_name T10-no-amr
+# T6: Finer time step (dt=2.5e-4, 8000 steps)
+--rosensweig --ilu --dt 2.5e-4 --max_steps 8000 --run_name T06-fine-dt
+# T7: Finer mesh (L7)
+--rosensweig --ilu -r 7 --run_name T07-L7
+# T8: No AMR (uniform L6)
+--rosensweig --ilu --no_amr -r 6 --run_name T08-no-amr

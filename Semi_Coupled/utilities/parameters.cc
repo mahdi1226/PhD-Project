@@ -586,8 +586,6 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
         // Algorithmic variant flags (for parametric studies)
         else if (std::strcmp(argv[i], "--explicit_ch") == 0)
             params.use_explicit_ch_convection = true;
-        else if (std::strcmp(argv[i], "--full_mag") == 0)
-            params.use_full_mag_model = true;
         else if (std::strcmp(argv[i], "--theta_old_chi") == 0)
             params.use_theta_old_for_chi = true;
 
@@ -663,7 +661,6 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
 
             std::cout << "ALGORITHMIC VARIANTS:\n";
             std::cout << "  --explicit_ch         CH convection uses explicit θ^{k-1} (paper Eq 65a)\n";
-            std::cout << "  --full_mag            Mag relaxation uses ∇φ (full H) instead of h_a\n";
             std::cout << "  --theta_old_chi       Magnetics uses θ^{n-1} for χ(θ) instead of θ^n\n\n";
 
             std::cout << "DEBUGGING:\n";
@@ -716,8 +713,6 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
                   << (params.enable_mms ? "MMS " : "") << "\n";
         if (params.use_explicit_ch_convection)
             std::cout << "  CH convection: EXPLICIT θ^{k-1}\n";
-        if (params.use_full_mag_model)
-            std::cout << "  Mag model: FULL (∇φ relaxation)\n";
         if (params.use_theta_old_for_chi)
             std::cout << "  χ(θ): uses θ^{n-1} (previous time step)\n";
         if (params.renumber_dofs)
