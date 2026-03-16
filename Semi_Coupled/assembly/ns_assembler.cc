@@ -9,8 +9,7 @@
 //   - Kelvin force μ₀(M·∇)H via kelvin_force.h (Eq. 38)
 //   - Optional MMS support via enable_mms flag
 //
-// FIX: Kelvin force now uses total field H = h_a + h_d (not just h_d = ∇φ)
-// FIX: Added missing face term to Kelvin force assembly (Eq. 38)
+// Kelvin force uses total field H = h_a + ∇φ (Eq. 42c)
 //
 // ============================================================================
 
@@ -417,8 +416,9 @@ static void assemble_ns_core(
 //
 // μ₀(M·∇)H in skew-symmetric form: μ₀[(M·∇)H·V + ½ div(V)(H·M)]
 //
-// H = ∇φ (total magnetic field from Poisson solve)
-// The Poisson equation encodes h_a via the RHS, so ∇φ IS the total field.
+// H = ∇φ + h_a (total magnetic field, Eq. 42c)
+// ∇φ alone is NOT the total field — the Poisson RHS is div(M - h_a),
+// so ∇φ captures only the demagnetization contribution h_d.
 //
 // NOTE: The full B_h^m form (Eq. 57) includes DG face terms
 //   -Σ_F ∫ [[V]]·{W} (U·n_F) dS
@@ -455,8 +455,10 @@ static void assemble_kelvin_force(
     const unsigned int n_q_points = quadrature.size();
 
     // FEValues for velocity (test functions) - need gradients for div(V) in B_h^m
+    // update_quadrature_points needed for h_a evaluation
     dealii::FEValues<dim> ux_fe_values(fe_vel, quadrature,
-        dealii::update_values | dealii::update_gradients | dealii::update_JxW_values);
+        dealii::update_values | dealii::update_gradients | dealii::update_JxW_values
+        | dealii::update_quadrature_points);
     dealii::FEValues<dim> uy_fe_values(fe_vel, quadrature,
         dealii::update_values | dealii::update_gradients);
 
@@ -518,15 +520,19 @@ static void assemble_kelvin_force(
         {
             const double JxW = ux_fe_values.JxW(q);
 
-            // H = ∇φ (total magnetic field from Poisson solve)
+            // H = ∇φ + h_a (total magnetic field, Eq. 42c)
+            const dealii::Tensor<1, dim> h_a = compute_applied_field<dim>(
+                ux_fe_values.quadrature_point(q), params, current_time);
             dealii::Tensor<1, dim> H;
-            H[0] = phi_gradients[q][0];
-            H[1] = phi_gradients[q][1];
+            H[0] = phi_gradients[q][0] + h_a[0];
+            H[1] = phi_gradients[q][1] + h_a[1];
 
             // M vector
             dealii::Tensor<1, dim> M = KelvinForce::make_M_vector<dim>(Mx_values[q], My_values[q]);
 
-            // (M·∇)H = M·Hess(φ) since H = ∇φ
+            // (M·∇)H = M·Hess(φ) + (M·∇)h_a
+            // For uniform h_a (Rosensweig), ∇h_a = 0 so this reduces to M·Hess(φ).
+            // For non-uniform h_a (dipoles), this is an approximation that neglects (M·∇)h_a.
             dealii::Tensor<1, dim> M_grad_H = KelvinForce::compute_M_grad_H<dim>(M, phi_hessians[q]);
 
             // Assemble RHS contributions using test function gradients
