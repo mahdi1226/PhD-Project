@@ -388,7 +388,9 @@ void setup_ns_pressure_constraints_parallel(
     p_constraints.clear();
     p_constraints.reinit(p_owned, p_relevant);
 
-    // DG pressure: no hanging node constraints
+    // CG pressure: add hanging node constraints for AMR
+    dealii::DoFTools::make_hanging_node_constraints(p_dof_handler, p_constraints);
+
     // Pin DoF 0 to fix pressure constant
     if (p_dof_handler.locally_owned_dofs().is_element(0))
     {

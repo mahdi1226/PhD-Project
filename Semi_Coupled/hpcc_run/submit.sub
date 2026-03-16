@@ -16,7 +16,7 @@
 # Usage:
 #   cd ~/Semi_Coupled-HPC/Semi_Coupled
 #   mkdir -p logs
-#   sbatch --array=1-8 hpcc_run/submit.sub hpcc_run/rosensweig_v2.dat
+#   sbatch --array=1-10 hpcc_run/submit.sub hpcc_run/rosensweig_v2.dat
 #   sbatch --array=1-13 hpcc_run/submit.sub hpcc_run/rosensweig_debug.dat
 #
 # The .dat file is passed as the first argument ($1).

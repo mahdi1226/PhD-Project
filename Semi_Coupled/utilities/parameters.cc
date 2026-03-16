@@ -588,6 +588,8 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             params.use_explicit_ch_convection = true;
         else if (std::strcmp(argv[i], "--theta_old_chi") == 0)
             params.use_theta_old_for_chi = true;
+        else if (std::strcmp(argv[i], "--simplified_mag") == 0)
+            params.use_simplified_mag = true;
 
         // Debugging
         else if (std::strcmp(argv[i], "--mms") == 0)
@@ -661,7 +663,8 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
 
             std::cout << "ALGORITHMIC VARIANTS:\n";
             std::cout << "  --explicit_ch         CH convection uses explicit θ^{k-1} (paper Eq 65a)\n";
-            std::cout << "  --theta_old_chi       Magnetics uses θ^{n-1} for χ(θ) instead of θ^n\n\n";
+            std::cout << "  --theta_old_chi       Magnetics uses θ^{n-1} for χ(θ) instead of θ^n\n";
+            std::cout << "  --simplified_mag      M relaxes toward χ·h_a (skip ∇φ coupling)\n\n";
 
             std::cout << "DEBUGGING:\n";
             std::cout << "  --mms                 MMS verification mode\n";
@@ -715,6 +718,8 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             std::cout << "  CH convection: EXPLICIT θ^{k-1}\n";
         if (params.use_theta_old_for_chi)
             std::cout << "  χ(θ): uses θ^{n-1} (previous time step)\n";
+        if (params.use_simplified_mag)
+            std::cout << "  Mag model: SIMPLIFIED (M→χ·h_a, skip ∇φ coupling)\n";
         if (params.renumber_dofs)
             std::cout << "  DoF renumbering: Cuthill-McKee ON\n";
         if (params.dump_sparsity)

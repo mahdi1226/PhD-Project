@@ -328,7 +328,9 @@ void MagneticAssembler<dim>::assemble(
                     // C_M_phi: -(1/tau_M) chi(theta) (∇φ_j, Z_i)
                     // Paper Eq 42c: M relaxes toward chi(theta) * H where H = ∇φ + h_a
                     // ∇φ part is trial function → LHS; h_a part is known → RHS
-                    val += -relax_coeff * chi_theta * (grad_phi_j * Z_i);
+                    // --simplified_mag: skip this term (M relaxes toward χ·h_a only)
+                    if (!params_.use_simplified_mag)
+                        val += -relax_coeff * chi_theta * (grad_phi_j * Z_i);
 
                     // C_phi_M: +(M_j, grad X_i)
                     val += M_j * grad_X_i;

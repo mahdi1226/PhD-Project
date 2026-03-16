@@ -484,7 +484,7 @@ static NSMMSConvergenceResult run_phase_internal(
         // Finite elements from params.fe
         // ====================================================================
         dealii::FE_Q<dim> fe_vel(params.fe.degree_velocity);
-        dealii::FE_DGQ<dim> fe_p(params.fe.degree_pressure);
+        dealii::FE_Q<dim> fe_p(params.fe.degree_pressure);
 
         // DoF handlers
         dealii::DoFHandler<dim> ux_dof_handler(triangulation);
@@ -698,6 +698,61 @@ static NSMMSConvergenceResult run_phase_internal(
         res.total_time = std::chrono::duration<double>(end_time - start_time).count();
 
         result.results.push_back(res);
+
+        // Pressure diagnostics
+        {
+            double local_p_max = 0.0, local_p_min = 1e30;
+            double local_exact_p_max = 0.0;
+            for (auto it = p_owned.begin(); it != p_owned.end(); ++it)
+            {
+                const double val = p_solution[*it];
+                local_p_max = std::max(local_p_max, val);
+                local_p_min = std::min(local_p_min, val);
+            }
+            double global_p_max = 0.0, global_p_min = 0.0;
+            MPI_Allreduce(&local_p_max, &global_p_max, 1, MPI_DOUBLE, MPI_MAX, mpi_comm);
+            MPI_Allreduce(&local_p_min, &global_p_min, 1, MPI_DOUBLE, MPI_MIN, mpi_comm);
+
+            // Exact pressure range
+            NSExactPressure<dim> exact_p_diag(current_time, L_y);
+            double local_exact_max = 0.0, local_exact_min = 1e30;
+            dealii::QGauss<dim> q_diag(3);
+            dealii::FEValues<dim> fe_diag(p_dof_handler.get_fe(), q_diag,
+                dealii::update_quadrature_points);
+            for (auto cell = p_dof_handler.begin_active(); cell != p_dof_handler.end(); ++cell)
+            {
+                if (!cell->is_locally_owned()) continue;
+                fe_diag.reinit(cell);
+                for (unsigned int q = 0; q < q_diag.size(); ++q)
+                {
+                    const double ev = exact_p_diag.value(fe_diag.quadrature_point(q));
+                    local_exact_max = std::max(local_exact_max, ev);
+                    local_exact_min = std::min(local_exact_min, ev);
+                }
+            }
+            double global_exact_max = 0.0, global_exact_min = 0.0;
+            MPI_Allreduce(&local_exact_max, &global_exact_max, 1, MPI_DOUBLE, MPI_MAX, mpi_comm);
+            MPI_Allreduce(&local_exact_min, &global_exact_min, 1, MPI_DOUBLE, MPI_MIN, mpi_comm);
+
+            pcout << "  [P DIAG] p_h range: [" << std::scientific << std::setprecision(4)
+                  << global_p_min << ", " << global_p_max << "]"
+                  << "  p* range: [" << global_exact_min << ", " << global_exact_max << "]\n";
+
+            // Print first 8 pressure DoF values vs interpolated exact
+            if (this_mpi_rank == 0 && ref <= 3)
+            {
+                dealii::TrilinosWrappers::MPI::Vector exact_p_vec(p_owned, mpi_comm);
+                dealii::VectorTools::interpolate(p_dof_handler, exact_p_diag, exact_p_vec);
+
+                unsigned int count = 0;
+                pcout << "  [P DIAG] First DoF values (h vs exact):\n";
+                for (auto it = p_owned.begin(); it != p_owned.end() && count < 8; ++it, ++count)
+                {
+                    pcout << "    DoF " << *it << ": p_h=" << std::setprecision(6)
+                          << p_solution[*it] << "  p*=" << exact_p_vec[*it] << "\n";
+                }
+            }
+        }
 
         pcout << "ux_L2=" << std::scientific << std::setprecision(2) << res.ux_L2
               << ", p_L2=" << res.p_L2

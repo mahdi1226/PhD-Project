@@ -309,7 +309,7 @@ int run_phase_test(
 
         // Finite elements: Q2 velocity, DG Q1 pressure (paper A1)
         dealii::FE_Q<dim> fe_Q2(2);
-        dealii::FE_DGQ<dim> fe_Q1(1);
+        dealii::FE_Q<dim> fe_Q1(1);
 
         // DoF handlers
         dealii::DoFHandler<dim> ux_dof_handler(triangulation);

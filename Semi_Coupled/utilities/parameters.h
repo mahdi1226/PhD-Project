@@ -172,6 +172,7 @@ struct Parameters
     // ========================================================================
     bool use_explicit_ch_convection = false;  // --explicit_ch: paper Eq 65a explicit Θ^{k-1}
     bool use_theta_old_for_chi = false;       // --theta_old_chi: χ(θ^{n-1}) in magnetics
+    bool use_simplified_mag = false;          // --simplified_mag: relax M toward χ·h_a (not χ·H)
 
     // ========================================================================
     // Block-Gauss-Seidel global iteration (Paper CMAME 2016, Section 6, p.520)

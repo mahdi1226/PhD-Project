@@ -117,10 +117,10 @@ NSMMSResult run_single_refinement_varnu(
     result.h = dealii::GridTools::minimal_cell_diameter(triangulation);
 
     // ========================================================================
-    // Setup NS (Q2 velocity, DG Q1 pressure — paper A1)
+    // Setup NS (Q2 velocity, CG Q1 pressure — Taylor-Hood)
     // ========================================================================
     dealii::FE_Q<dim> fe_velocity(params.fe.degree_velocity);
-    dealii::FE_DGQ<dim> fe_pressure(params.fe.degree_pressure);
+    dealii::FE_Q<dim> fe_pressure(params.fe.degree_pressure);
 
     dealii::DoFHandler<dim> ux_dof_handler(triangulation);
     dealii::DoFHandler<dim> uy_dof_handler(triangulation);

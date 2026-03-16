@@ -1,5 +1,5 @@
 # Semi_Coupled Rosensweig v2 Test Matrix — Algorithmic Isolation Study
-# Usage: sbatch --array=1-8 hpcc_run/submit.sub hpcc_run/rosensweig_v2.dat
+# Usage: sbatch --array=1-10 hpcc_run/submit.sub hpcc_run/rosensweig_v2.dat
 #
 # Baseline = implicit CH + full mag (Eq 42c) + theta^n for chi + BGS=1 + L6 + dt=5e-4
 # Each test changes ONE variable from T1.
@@ -12,19 +12,23 @@
 --rosensweig --ilu --theta_old_chi --run_name T02-theta-old-chi
 # T3: Explicit CH convection (paper Eq 65a — control, expect no instability)
 --rosensweig --ilu --explicit_ch --run_name T03-explicit-ch
+# T4: Simplified mag (M relaxes toward chi*h_a, skip grad(phi) coupling)
+--rosensweig --ilu --simplified_mag --run_name T04-simplified-mag
 #
 # === Group B: Coupling Strength (L6, dt=5e-4, ILU) ===
 #
-# T4: 2 BGS iterations (tighter coupling)
---rosensweig --ilu --bgs_iters 2 --run_name T04-bgs2
-# T5: 3 BGS iterations (even tighter)
---rosensweig --ilu --bgs_iters 3 --run_name T05-bgs3
+# T5: 2 BGS iterations (tighter coupling)
+--rosensweig --ilu --bgs_iters 2 --run_name T05-bgs2
+# T6: 3 BGS iterations (even tighter)
+--rosensweig --ilu --bgs_iters 3 --run_name T06-bgs3
 #
 # === Group C: Resolution (ILU, BGS=1) ===
 #
-# T6: Finer time step (dt=2.5e-4, 8000 steps)
---rosensweig --ilu --dt 2.5e-4 --max_steps 8000 --run_name T06-fine-dt
-# T7: Finer mesh (L7)
---rosensweig --ilu -r 7 --run_name T07-L7
-# T8: No AMR (uniform L6)
---rosensweig --ilu --no_amr -r 6 --run_name T08-no-amr
+# T7: Finer time step (dt=2.5e-4, 8000 steps)
+--rosensweig --ilu --dt 2.5e-4 --max_steps 8000 --run_name T07-fine-dt
+# T8: Finer mesh (L7)
+--rosensweig --ilu -r 7 --run_name T08-L7
+# T9: No AMR (uniform L6)
+--rosensweig --ilu --no_amr -r 6 --run_name T09-no-amr
+# T10: Paper Section 5 baseline (simplified mag + theta_old for chi)
+--rosensweig --ilu --simplified_mag --theta_old_chi --run_name T10-paper-sec5
