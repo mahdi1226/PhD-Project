@@ -51,12 +51,18 @@ void Parameters::setup_rosensweig()
     physics.enable_beta_term = true;
 
     // Physics — Cahn-Hilliard
-    // Zhang Eq 4.4 uses Φ∈{0,1}. Our code uses θ∈{-1,+1} with θ=2Φ-1.
-    // double_well F(θ)=(θ²-1)²/16 already has the Φ→θ conversion baked in.
-    // λ_θ = λ_Φ/4, γ_θ = 4·M_Φ, ch_reaction_scale = 1.0 (default).
-    physics.lambda = 0.25;            // Zhang λ=1 → θ-space: λ_Φ/4
-    physics.mobility = 8e-4;          // Zhang M=2e-4 → θ-space: 4×M_Φ
-    // ch_reaction_scale = 1.0 (default) — F'(θ) already includes 1/4 factor
+    // Zhang uses Φ∈{0,1} with F(Φ) = (1/(4ε))Φ²(Φ-1)², f = F'(Φ).
+    // Our code uses θ = 2Φ-1 ∈ {-1,+1}, giving f_code(θ) = (θ³-θ)/4,
+    // and chemical potential ψ (related to Zhang's W by W = -(1/2)ψ).
+    //
+    // Correct θ-space dynamics (derived from Zhang Eq 2.4 with θ=2Φ-1):
+    //   θ_t + u·∇θ = -M(∇ψ, ∇Λ)  (mobility term)
+    //             + -(δt/8)(θ+1)²(∇ψ, ∇Λ)  (SUPG stabilization)
+    //
+    // So γ = M = 2e-4 (direct, NO factor-4 needed).
+    // λ_code = 0.25 enters only in SUPG: (dt/2)·λ_code·(θ+1)² = (dt/8)(θ+1)².
+    physics.lambda = 0.25;            // λ_code = λ_Φ/4 (enters SUPG + capillary)
+    physics.mobility = 2e-4;          // γ = M = 2e-4 (Zhang Eq 4.4)
 
     // Physics — Navier-Stokes
     physics.nu_water = 1.0;       // Zhang Eq 4.4: ν_w = 1
@@ -92,9 +98,8 @@ void Parameters::setup_rosensweig()
     enable_gravity = true;
     use_reduced_magnetic_field = false;
 
-    // Zhang's SAV scheme — use FULL magnetization PDE (not algebraic)
-    use_algebraic_magnetization = false;  // Zhang solves mag PDE (Eq 3.15-3.16)
-    sav.S1 = 0.0;   // auto-computed: S = lambda_theta/(4*epsilon) = 12.5
+    // Zhang solves full magnetization PDE (Eq 3.14-3.16), not algebraic m=χh
+    use_algebraic_magnetization = false;
 }
 
 // ============================================================================
@@ -337,10 +342,10 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
                 params.dipoles.ramp_slope = 0.0;
 
                 // Zhang Eq 4.1 / Section 4.2: same params as MMS
-                // Zhang uses Φ∈{0,1}. Convert: λ_θ = λ_Φ/4, M_θ = 4·M_Φ.
+                // Zhang uses Φ∈{0,1}. γ = M (direct). λ_code = λ_Φ/4.
                 params.physics.epsilon  = 0.05;    // ε = 0.05
-                params.physics.lambda   = 0.25;    // Zhang λ=1 → θ-space: 1/4
-                params.physics.mobility = 0.2;     // Zhang M=0.05 → θ-space: 4×
+                params.physics.lambda   = 0.25;    // λ_code = λ_Φ/4
+                params.physics.mobility = 0.05;    // γ = M = 0.05 (Zhang Eq 4.1)
                 params.physics.mu_0     = 1.0;     // μ = 1
                 params.physics.chi_0    = 1.0;     // χ₀ = 1
                 params.physics.tau_M    = 1.0;     // τ = 1
@@ -358,7 +363,6 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
                 params.mesh.initial_refinement = 6;  // h = 2π/64 ≈ 0.098
 
                 params.use_algebraic_magnetization = false;
-                params.sav.S1 = 0.0;   // auto-computed: S = lambda_theta/(4*epsilon) = 1.25
             }
             else if (params.validation_test == "elongation")
             {
@@ -370,7 +374,7 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
                 //
                 // Domain: [0,1]², h = 1/128 (r=7)
                 // IC: circle at center, R = 0.1
-                // ε = 2e-3, M_Φ = 2e-4 (θ-space: 8e-4), β = 1, λ_Φ = 1 (θ-space: 0.25), τ = 1e-4
+                // ε = 2e-3, M = 2e-4 (γ = M, direct), β = 1, λ_Φ = 1 (λ_code = 0.25), τ = 1e-4
                 // ν_f = ν_w = 1, r = 0 (uniform density), no gravity
                 // μ₀ = 0.1, χ₀ = 2
                 // Applied field: 5 dipoles at y=-15, ramp slope=1000 (no cap)
@@ -407,11 +411,10 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
                 params.physics.tau_M    = 1e-4;    // Zhang Eq 4.8: τ = 1e-4
                 params.physics.beta     = 1.0;     // Zhang Eq 4.8: β = 1
                 params.physics.enable_beta_term = true;
-                // Zhang Eq 4.8 specifies λ=1, M=2e-4 in Φ∈{0,1} convention.
-                // Code uses θ∈{-1,+1}: F(θ)=¼(θ²-1)² gives 4× surface energy
-                // vs G(Φ)=Φ²(1-Φ)². Convert: λ_θ = λ_Φ/4, M_θ = 4·M_Φ.
-                params.physics.lambda   = 0.25;    // Zhang λ=1 → θ-space: 1/4
-                params.physics.mobility = 8e-4;    // Zhang M=2e-4 → θ-space: 4×
+                // Zhang Eq 4.8 specifies λ=1, M=2e-4 in Φ-space.
+                // γ = M (direct). λ_code = λ_Φ/4.
+                params.physics.lambda   = 0.25;    // λ_code = λ_Φ/4
+                params.physics.mobility = 2e-4;    // γ = M = 2e-4 (Zhang Eq 4.8)
                 params.physics.nu_water = 1.0;     // Zhang Eq 4.8: ν_w = 1
                 params.physics.nu_ferro = 1.0;     // Zhang Eq 4.8: ν_f = 1
                 params.physics.r        = 0.0;     // uniform density
@@ -423,9 +426,8 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
 
                 params.mesh.initial_refinement = 7;  // h = 1/128
 
-                // Zhang's SAV scheme — use FULL magnetization PDE
+                // Full magnetization PDE (Zhang Eq 3.14-3.16)
                 params.use_algebraic_magnetization = false;
-                params.sav.S1 = 0.0;   // auto-computed: S = lambda_theta/(4*epsilon) = 31.25
             }
             else if (params.validation_test == "droplet")
             {
@@ -453,9 +455,9 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
                 params.physics.chi_0    = 2.0;
                 params.physics.mu_0     = 0.1;
                 params.physics.tau_M    = 1e-6;
-                // Zhang Φ∈{0,1} → θ-space: λ_θ = λ_Φ/4, M_θ = 4·M_Φ
-                params.physics.lambda   = 0.25;    // Zhang λ=1 → θ-space: 1/4
-                params.physics.mobility = 8e-4;    // Zhang M=2e-4 → θ-space: 4×
+                // γ = M (direct). λ_code = λ_Φ/4.
+                params.physics.lambda   = 0.25;    // λ_code = λ_Φ/4
+                params.physics.mobility = 2e-4;    // γ = M = 2e-4
                 params.physics.nu_water = 1.0;
                 params.physics.nu_ferro = 1.0;
                 params.physics.r        = 0.0;
@@ -468,7 +470,6 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
                 params.mesh.initial_refinement = 7;
 
                 params.use_algebraic_magnetization = true;
-                params.sav.S1 = 0.0;   // auto-computed: S = lambda_theta/(4*epsilon) = 31.25
             }
             else
             {

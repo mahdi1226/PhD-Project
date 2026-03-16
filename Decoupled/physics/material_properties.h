@@ -9,7 +9,7 @@
 //
 // Material property interpolation:
 //   χ(Φ) = χ₀·Φ²                      → χ(θ) = χ₀·((θ+1)/2)²  (QUADRATIC)
-//   ν(Φ) = ν_w·(1-Φ) + ν_f·Φ         → ν(θ) = ν_w·(1-θ)/2 + ν_f·(θ+1)/2 (LINEAR)
+//   ν(Φ) = ν_w + (ν_f-ν_w)·H((1-2Φ)/ε) → ν(θ) = ν_w + (ν_f-ν_w)·H(θ/ε) (SIGMOID)
 //   ρ(Φ) = 1 + r/(1+exp((1-2Φ)/ε))   → ρ(θ) = 1 + r·H(θ/ε)  (SIGMOID)
 //
 // Zhang p. B170: "one can use an alternative choice χ(Φ) = Φ²χ₀
@@ -38,7 +38,7 @@
 //   Matching:  λ_θ = λ_Φ/4,  F_θ = (θ²-1)²/16
 //
 //   Navier-Stokes:
-//     - Viscosity  ν(θ) = ν_w + (ν_f-ν_w)·H(θ/ε)  (sigmoid, Zhang p. B170)
+//     - Viscosity  ν(θ) = ν_w + (ν_f−ν_w)·H(θ/ε)  (sigmoid, Zhang p. B170)
 //     - Density    ρ(θ) = 1 + r·H(θ/ε)             (sigmoid, Zhang Eq 4.2)
 // ============================================================================
 #ifndef MATERIAL_PROPERTIES_H
@@ -123,38 +123,38 @@ inline double permeability(double theta, double chi_0)
 }
 
 // ============================================================================
-// Viscosity (LINEAR in Φ)
+// Viscosity (SIGMOID — Zhang p. B170)
 //
-//   Code:   ν(θ) = ν_w·(1-θ)/2 + ν_f·(θ+1)/2
+//   Zhang:  ν(Φ) = ν_w + (ν_f − ν_w) / (1 + exp((1−2Φ)/ε))
+//   Code:   ν(θ) = ν_w + (ν_f − ν_w) · H(θ/ε)
+//
+// Proof: With Φ=(θ+1)/2, (1−2Φ)/ε = −θ/ε,
+//   so 1/(1+exp((1−2Φ)/ε)) = 1/(1+exp(−θ/ε)) = H(θ/ε).  ✓
 //
 // Interpolates between non-magnetic and ferrofluid phases:
-//   θ = +1 (ferrofluid)    → ν = ν_f   (higher viscosity)
-//   θ = -1 (non-magnetic)  → ν = ν_w   (lower viscosity)
+//   θ = +1 (ferrofluid)    → ν ≈ ν_f   (higher viscosity)
+//   θ = -1 (non-magnetic)  → ν ≈ ν_w   (lower viscosity)
 //
 // Used in NS assembly: (ν(θ) D(U), D(V))
 //
 // CRITICAL: Must use θ^{n-1} (LAGGED) for energy stability.
 //
 // Rosensweig (Zhang Eq 4.4): ν_w = 1.0, ν_f = 2.0  →  ν ∈ [1, 2]
-//
-// NOTE: Zhang p. B170 defines ν via sigmoid, but linear interpolation
-//   is better resolved by the mesh and produces stable, symmetric results.
 // ============================================================================
 
 /**
- * @brief Viscosity ν(θ) = ν_w·(1-Φ) + ν_f·Φ  (linear interpolation)
+ * @brief Viscosity ν(θ) = ν_w + (ν_f − ν_w)·H(θ/ε)  (sigmoid, Zhang p. B170)
  *
  * @param theta     Phase field value (use θ^{n-1} for energy stability!)
- * @param epsilon   Interface thickness ε (unused — linear interpolation)
+ * @param epsilon   Interface thickness ε
  * @param nu_water  Viscosity of non-magnetic phase ν_w
  * @param nu_ferro  Viscosity of ferrofluid phase ν_f
  * @return Interpolated viscosity
  */
-inline double viscosity(double theta, double nu_water, double nu_ferro)
+inline double viscosity(double theta, double epsilon,
+                        double nu_water, double nu_ferro)
 {
-    const double phi = 0.5 * (theta + 1.0);
-    const double phi_clamped = (phi < 0.0) ? 0.0 : (phi > 1.0 ? 1.0 : phi);
-    return nu_water * (1.0 - phi_clamped) + nu_ferro * phi_clamped;
+    return nu_water + (nu_ferro - nu_water) * heaviside(theta / epsilon);
 }
 
 // ============================================================================

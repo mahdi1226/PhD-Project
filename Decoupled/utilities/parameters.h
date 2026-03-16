@@ -2,7 +2,7 @@
 // utilities/parameters.h - Runtime Configuration
 //
 // Reference: Zhang, He & Yang, SIAM J. Sci. Comput. 43(1), 2021, B167-B193
-//            (Algorithm 3.1: decoupled splitting with SAV)
+//            Algorithm 3.1: fully decoupled splitting
 //
 // Includes parameters for all subsystems:
 //   Poisson (Eq. 3.15), Magnetization (Eq. 3.14/3.17),
@@ -326,32 +326,11 @@ struct Parameters
     bool dump_sparsity = false;
 
     // ========================================================================
-    // Zhang's SAV+ZEC energy stabilization framework
-    //
-    // Reference: Zhang, He & Yang, SIAM J. Sci. Comput. 43(1) B167-B193 (2021)
-    //
-    // SAV: Scalar Auxiliary Variable r(t) = sqrt(E1(theta) + C0)
-    //   Enables unconditionally energy-stable time stepping by replacing
-    //   the nonlinear f(theta)/eps with (r/sqrt(E1+C0)) * f(theta)/eps
-    //
-    // ZEC: Zero Energy Contribution property (b_stab in NS assembly)
-    //   Allows explicit Kelvin force treatment while maintaining energy balance
-    //
-    // S: CH stabilization parameter (Zhang Eq 3.10)
-    //   S >= lambda/(4*epsilon) ensures convexity of modified potential
-    //   Auto-computed if set to 0.
-    //
     // Algebraic magnetization: m = chi(theta) * h  (no PDE)
     //   Eliminates magnetization subsystem entirely.
     //   Makes Poisson nonlinear: ((1+chi(theta)) grad phi, grad X) = ((1-chi(theta)) h_a, grad X)
     // ========================================================================
     bool use_algebraic_magnetization = false;  // true = m=chi(theta)h, false = mag PDE
-    bool use_sav = true;                       // Zhang's SAV energy stabilization (always on)
-
-    struct SAV
-    {
-        double S1 = 0.0;       // CH stabilization S (auto-computed if 0): S >= lambda/(4*eps)
-    } sav;
 
     // ========================================================================
     // Run configuration (standalone subsystem drivers only)

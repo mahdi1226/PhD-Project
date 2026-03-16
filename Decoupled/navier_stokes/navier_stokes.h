@@ -180,9 +180,10 @@ public:
     const dealii::TrilinosWrappers::MPI::Vector& get_uy_relevant() const;
     const dealii::TrilinosWrappers::MPI::Vector& get_p_relevant() const;
 
-    // Old velocity (for convection linearization)
+    // Old timestep (for convection linearization + pressure correction)
     const dealii::TrilinosWrappers::MPI::Vector& get_ux_old_relevant() const;
     const dealii::TrilinosWrappers::MPI::Vector& get_uy_old_relevant() const;
+    const dealii::TrilinosWrappers::MPI::Vector& get_p_old_relevant() const;
 
     // ========================================================================
     // Mutable accessors — for AMR SolutionTransfer
@@ -197,6 +198,7 @@ public:
 
     dealii::TrilinosWrappers::MPI::Vector& get_ux_old_solution_mutable();
     dealii::TrilinosWrappers::MPI::Vector& get_uy_old_solution_mutable();
+    dealii::TrilinosWrappers::MPI::Vector& get_p_old_solution_mutable();
 
     // ========================================================================
     // Ghost management

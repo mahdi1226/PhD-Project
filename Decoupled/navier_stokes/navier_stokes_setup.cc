@@ -73,8 +73,8 @@ void NSSubsystem<dim>::setup()
     // ========================================================================
     // Step 3: Build velocity constraints
     //
-    // Hanging nodes + homogeneous Dirichlet u=0 on all boundaries.
-    // Uses get_boundary_ids() to handle arbitrary geometries (not just 0-3).
+    // Zhang Eq 2.10: u|∂Ω = 0 (no-slip on ALL boundaries)
+    // Boundary IDs (colorize=true): 0=left, 1=right, 2=bottom, 3=top
     // ========================================================================
     ux_constraints_.clear();
     ux_constraints_.reinit(ux_locally_owned_, ux_locally_relevant_);

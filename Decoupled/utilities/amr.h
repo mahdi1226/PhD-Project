@@ -259,10 +259,10 @@ void perform_amr(
         psi_trans(ch.get_psi_dof_handler_mutable());
     psi_trans.prepare_for_coarsening_and_refinement(ch.get_psi_relevant());
 
-    // --- 6c. NS (if enabled): ux, ux_old, uy, uy_old, p ---
+    // --- 6c. NS (if enabled): ux, ux_old, uy, uy_old, p, p_old ---
     std::unique_ptr<parallel::distributed::SolutionTransfer<dim, VectorType>>
         ux_trans, uy_trans, p_trans;
-    VectorType ux_old_ghost, uy_old_ghost;
+    VectorType ux_old_ghost, uy_old_ghost, p_old_ghost;
 
     if (ns_enabled)
     {
@@ -286,6 +286,15 @@ void perform_amr(
         uy_old_ghost.reinit(uy_owned, uy_relevant, mpi_comm);
         uy_old_ghost = ns.get_uy_old_solution_mutable();
 
+        // Create ghosted copy of old pressure (for prepare)
+        // BUG FIX: p_old must be transferred through AMR for correct
+        // pressure correction: u^n = ũ^n - dt∇p^n + dt∇p^{n-1}
+        const IndexSet p_owned = ns.get_p_dof_handler().locally_owned_dofs();
+        IndexSet p_relevant;
+        DoFTools::extract_locally_relevant_dofs(ns.get_p_dof_handler(), p_relevant);
+        p_old_ghost.reinit(p_owned, p_relevant, mpi_comm);
+        p_old_ghost = ns.get_p_old_solution_mutable();
+
         // Pack current + old into single transfer per DoFHandler
         std::vector<const VectorType*> ux_pre = {&ns.get_ux_relevant(), &ux_old_ghost};
         ux_trans->prepare_for_coarsening_and_refinement(ux_pre);
@@ -293,7 +302,8 @@ void perform_amr(
         std::vector<const VectorType*> uy_pre = {&ns.get_uy_relevant(), &uy_old_ghost};
         uy_trans->prepare_for_coarsening_and_refinement(uy_pre);
 
-        p_trans->prepare_for_coarsening_and_refinement(ns.get_p_relevant());
+        std::vector<const VectorType*> p_pre = {&ns.get_p_relevant(), &p_old_ghost};
+        p_trans->prepare_for_coarsening_and_refinement(p_pre);
     }
 
     // --- 6d. Poisson (if magnetic enabled): phi ---
@@ -380,7 +390,11 @@ void perform_amr(
         };
         uy_trans->interpolate(uy_post);
 
-        p_trans->interpolate(ns.get_p_solution_mutable());
+        std::vector<VectorType*> p_post = {
+            &ns.get_p_solution_mutable(),
+            &ns.get_p_old_solution_mutable()
+        };
+        p_trans->interpolate(p_post);
     }
 
     // --- 9d. Poisson ---

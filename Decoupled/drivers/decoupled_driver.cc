@@ -78,8 +78,7 @@ static double compute_discrete_energy(
     const Parameters& params)
 {
     // Zhang Theorem 3.1 discrete energy:
-    //   E^n = ½||U||² + E_CH + μ₀/(2τ_M)||M||² − μ₀(M,H) + (r^n)²
-    // The SAV variable (r^n)² is tracked separately in the driver loop.
+    //   E^n = ½||U||² + E_CH + μ₀/(2τ_M)||M||² − μ₀(M,H)
     const double E_kin = ns_diag.E_kin;         // ½∫|U|² dΩ
     const double E_CH  = ch_diag.E_total;       // λε/2∫|∇θ|² + λ/ε∫F(θ)
 
@@ -207,8 +206,6 @@ public:
             ri << "  NS:             " << (params.enable_ns ? "ON" : "OFF") << "\n\n";
             ri << "[Coupling]\n";
             ri << "  mag_poisson:       Zhang single-pass (no Picard)\n";
-            ri << "  use_sav:           " << (params.use_sav ? "ON" : "OFF") << "\n";
-            ri << "  sav_S1:            " << params.sav.S1 << "\n";
             ri << "  algebraic_M:       " << (params.use_algebraic_magnetization ? "ON" : "OFF") << "\n\n";
             ri << "[Validation]\n";
             ri << "  test: " << (params.validation_test.empty() ? "none" : params.validation_test) << "\n\n";
@@ -596,7 +593,7 @@ public:
 // ============================================================================
 // Circular droplet IC (validation: --validation droplet / elongation)
 //
-// θ = tanh((R - |x - x_c|) / (√2 ε))
+// θ = +1 inside circle, -1 outside (sharp step)
 // Ferrofluid (θ=+1) inside circle, air (θ=-1) outside.
 // In absence of magnetic field, circle should remain circular.
 // ============================================================================
@@ -1227,7 +1224,9 @@ int main(int argc, char* argv[])
         triangulation,
         {params.domain.initial_cells_x, params.domain.initial_cells_y},
         Point<dim>(params.domain.x_min, params.domain.y_min),
-        Point<dim>(params.domain.x_max, params.domain.y_max));
+        Point<dim>(params.domain.x_max, params.domain.y_max),
+        /*colorize=*/true);
+    // colorize=true assigns boundary IDs: 0=left, 1=right, 2=bottom, 3=top
 
     triangulation.refine_global(refinement);
 
@@ -1266,8 +1265,6 @@ int main(int argc, char* argv[])
         pcout << "  NS(ux+uy+p)=" << ns.get_ux_dof_handler().n_dofs()
                                     + ns.get_uy_dof_handler().n_dofs()
                                     + ns.get_p_dof_handler().n_dofs();
-    if (params.use_sav)
-        pcout << "  SAV=ON";
     pcout << "\n\n";
 
     // ----------------------------------------------------------------
@@ -1476,35 +1473,6 @@ int main(int argc, char* argv[])
     pcout << "  Output directory: " << output_dir << "\n\n";
 
     // ----------------------------------------------------------------
-    // 5. SAV initialization (if enabled)
-    // ----------------------------------------------------------------
-    double sav_r = 1.0;           // SAV variable r(t)
-    double sav_E1_old = 0.0;      // E1(theta^n) cached for SAV update
-    double sav_S1 = params.sav.S1;
-    constexpr double sav_C0 = 1.0; // SAV positivity constant (standard choice)
-
-    if (params.use_sav)
-    {
-        // Auto-compute S if not set.
-        // Convexity of F₁(θ) = (λ/ε)f(θ) + (S/2)θ² requires F₁''(θ) ≥ 0.
-        // f''(θ) = (3θ²-1)/4, min at θ=0: f''(0) = -1/4.
-        // (λ/ε)(-1/4) + S ≥ 0  →  S ≥ λ/(4ε).
-        // Zhang uses S = λ/(4ε) (Eq 3.10, p.B182).
-        if (sav_S1 <= 0.0)
-            sav_S1 = params.physics.lambda
-                     / (4.0 * params.physics.epsilon);
-
-        // Compute initial bulk energy and SAV variable
-        sav_E1_old = ch.compute_bulk_energy(ch.get_theta_relevant());
-        sav_r = std::sqrt(sav_E1_old + sav_C0);
-
-        pcout << "  SAV initialization:\n"
-              << "    S = " << sav_S1 << " (CH stabilization, Zhang Eq 3.10)\n"
-              << "    E1(theta^0) = " << sav_E1_old << "\n"
-              << "    r^0 = " << sav_r << "\n\n";
-    }
-
-    // ----------------------------------------------------------------
     // 6. Time-stepping loop
     // ----------------------------------------------------------------
     double current_time = 0.0;
@@ -1548,14 +1516,6 @@ int main(int argc, char* argv[])
                             ch, ns, poisson, mag,
                             params.enable_ns, params.enable_magnetic);
 
-                // SAV variable must be recomputed after mesh change
-                if (params.use_sav)
-                {
-                    sav_E1_old = ch.compute_bulk_energy(ch.get_theta_relevant());
-                    sav_r = std::sqrt(sav_E1_old + sav_C0);
-                    pcout << "[AMR] SAV recomputed: E1=" << sav_E1_old
-                          << ", r=" << sav_r << "\n";
-                }
             }
         }
 
@@ -1564,8 +1524,7 @@ int main(int argc, char* argv[])
         // ============================================================
         // Step 1: Cahn-Hilliard (θ^n, ψ^n) using U^{n-1}
         //
-        // SAV mode: uses S₁ stabilization and SAV nonlinear scaling
-        // Standard mode: original Zhang scheme
+        // Zhang Algorithm 3.1, Eq 42a-42b with stabilization η = ε
         //
         // IMPORTANT: Save θ^{n-1} BEFORE CH solve — needed for NS lagging.
         // Per Zhang Algorithm 3.1: all θ-dependent coefficients in NS (ν, ρ, χ,
@@ -1585,36 +1544,10 @@ int main(int argc, char* argv[])
                 &vel_ux, &vel_uy
             };
 
-            if (params.use_sav)
-            {
-
-                // SAV factor: r^n / sqrt(E1(theta^n) + C0)
-                const double denom = std::sqrt(sav_E1_old + sav_C0);
-                const double sav_factor = (denom > 1e-15) ? sav_r / denom : 1.0;
-
-                ch.assemble_sav(ch.get_theta_relevant(), vel_comps, vel_dof,
-                                dt, current_time, sav_S1, sav_factor);
-                ch.solve();
-                ch.update_ghosts();
-
-                // SAV update: r^{n+1} = r^n + inner_product / (2*sqrt(E1_old + C0))
-                if (denom > 1e-15)
-                {
-                    const double inner_prod = ch.compute_sav_inner_product(
-                        ch.get_theta_relevant(), theta_old);
-                    sav_r += inner_prod / (2.0 * denom);
-                }
-
-                // Update E1 for next timestep
-                sav_E1_old = ch.compute_bulk_energy(ch.get_theta_relevant());
-            }
-            else
-            {
-                ch.assemble(ch.get_theta_relevant(), vel_comps, vel_dof,
-                            dt, current_time);
-                ch.solve();
-                ch.update_ghosts();
-            }
+            ch.assemble(ch.get_theta_relevant(), vel_comps, vel_dof,
+                        dt, current_time);
+            ch.solve();
+            ch.update_ghosts();
         }
 
         // ============================================================
@@ -2030,14 +1963,12 @@ int main(int argc, char* argv[])
                     pcout << "  |M|=" << std::setprecision(2) << mag_diag.M_magnitude_max;
                 pcout << "  |H|=" << std::setprecision(2) << poi_diag.H_max;
             }
-            if (params.use_sav)
-                pcout << "  r=" << std::setprecision(4) << sav_r;
             pcout << "  wall=" << std::fixed << std::setprecision(1) << wall_s << "s"
                   << "\n";
         }
 
-        // VTK output
-        if (step % vtk_interval == 0)
+        // VTK output (also at final step to capture end state)
+        if (step % vtk_interval == 0 || step == max_steps)
         {
             if (has_mag_vectors)
                 write_combined_vtu(output_dir, step, current_time,
@@ -2108,18 +2039,7 @@ int main(int argc, char* argv[])
     double total_s = std::chrono::duration<double>(
         wall_end_total - wall_start_total).count();
 
-    // Write final VTK
-    unsigned int final_step = static_cast<unsigned int>(
-        std::min(current_time / dt, static_cast<double>(max_steps)));
-    if (has_mag_vectors)
-        write_combined_vtu(output_dir, final_step, current_time,
-                           ch, poisson, mag, ns, triangulation, mpi_comm);
-    else if (has_algebraic_M)
-        write_algebraic_M_vtu(output_dir, final_step, current_time,
-                              ch, poisson, ns, params, triangulation, mpi_comm);
-    else
-        write_ch_only_vtu(output_dir, final_step, current_time,
-                          ch, triangulation, mpi_comm);
+    unsigned int final_step = max_steps;
 
     pcout << "\n"
           << "============================================================\n"

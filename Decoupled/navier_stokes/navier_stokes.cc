@@ -187,6 +187,10 @@ template <int dim>
 const dealii::TrilinosWrappers::MPI::Vector&
 NSSubsystem<dim>::get_uy_old_relevant() const { return uy_old_relevant_; }
 
+template <int dim>
+const dealii::TrilinosWrappers::MPI::Vector&
+NSSubsystem<dim>::get_p_old_relevant() const { return p_old_relevant_; }
+
 // ============================================================================
 // Mutable accessors — for AMR SolutionTransfer
 // ============================================================================
@@ -221,6 +225,10 @@ NSSubsystem<dim>::get_ux_old_solution_mutable() { return ux_old_solution_; }
 template <int dim>
 dealii::TrilinosWrappers::MPI::Vector&
 NSSubsystem<dim>::get_uy_old_solution_mutable() { return uy_old_solution_; }
+
+template <int dim>
+dealii::TrilinosWrappers::MPI::Vector&
+NSSubsystem<dim>::get_p_old_solution_mutable() { return p_old_solution_; }
 
 // ============================================================================
 // Ghost management
