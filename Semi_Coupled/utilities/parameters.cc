@@ -60,7 +60,7 @@ void Parameters::setup_rosensweig()
     // NOTE: initial_refinement ≥ 3 required — the magnetic Poisson equation (∇²φ = ∇·(h_a - M))
     // is a GLOBAL problem needing bulk resolution. Level 0 (h=1/10) is too coarse for
     // magnetic field gradients to trigger the Rosensweig instability.
-    mesh.initial_refinement = 3;       // 10x6 base → 80x48 cells, AMR refines at interface
+    mesh.initial_refinement = 5;       // 10x6 base → 320x192 cells, AMR refines at interface
     mesh.use_amr = true;
     mesh.amr_interval = 5;            // Paper p.520: "refined-coarsened once every 5 time steps"
     mesh.amr_min_level = 1;           // Bulk coarsens to level 1 (NOT 0 — magnetics needs resolution)

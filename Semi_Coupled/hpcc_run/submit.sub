@@ -2,7 +2,7 @@
 #SBATCH --job-name=rosen
 #SBATCH --partition=hpcc
 #SBATCH --nodes=1
-#SBATCH --ntasks=16
+#SBATCH --ntasks=8
 #SBATCH --time=4-00:00:00
 #SBATCH --mem=128G
 #SBATCH --output=logs/%x_T%02a_%j.out
