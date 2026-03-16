@@ -112,7 +112,7 @@ void MagneticSolver<dim>::solve(
         dealii::TrilinosWrappers::SolverGMRES solver(iterative_control);
         dealii::TrilinosWrappers::PreconditionILU ilu;
         dealii::TrilinosWrappers::PreconditionILU::AdditionalData ilu_data;
-        ilu_data.ilu_fill = 1;
+        ilu_data.ilu_fill = 2;
         ilu.initialize(system_matrix, ilu_data);
 
         solver.solve(system_matrix, solution, rhs, ilu);

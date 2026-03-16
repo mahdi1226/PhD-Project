@@ -112,7 +112,7 @@ SolverInfo solve_ch_system(
         {
             auto ilu = std::make_unique<dealii::TrilinosWrappers::PreconditionILU>();
             dealii::TrilinosWrappers::PreconditionILU::AdditionalData ilu_data;
-            ilu_data.ilu_fill = 1;
+            ilu_data.ilu_fill = 2;
             ilu_data.ilu_atol = 0.0;
             ilu_data.ilu_rtol = 1.0;
             ilu->initialize(matrix, ilu_data);

@@ -309,7 +309,7 @@ BlockSchurPreconditionerParallel::BlockSchurPreconditionerParallel(
         // ILU preconditioner — works on HPC without ML/MueLu
         auto A_ilu = std::make_unique<dealii::TrilinosWrappers::PreconditionILU>();
         dealii::TrilinosWrappers::PreconditionILU::AdditionalData ilu_data_A;
-        ilu_data_A.ilu_fill = 1;
+        ilu_data_A.ilu_fill = 2;
         ilu_data_A.ilu_atol = 0.0;
         ilu_data_A.ilu_rtol = 1.0;
         A_ilu->initialize(velocity_block_, ilu_data_A);
