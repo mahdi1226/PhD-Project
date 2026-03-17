@@ -113,12 +113,11 @@ private:
 
     // ========================================================================
     // Finite elements
-    // Velocity/θ/ψ: CG Q2.  Pressure: CG Q1 (Taylor-Hood, inf-sup stable).
+    // Velocity/θ/ψ: CG Q2.  Pressure: DG Q1 (paper A1).
     // Magnetization: DG Q1 (paper requirement for upwind transport).
     // ========================================================================
     dealii::FE_Q<dim> fe_Q2_;    // Q2 for velocity, θ, ψ
-    dealii::FE_Q<dim> fe_p_;     // CG Q1 for pressure (Taylor-Hood)
-    dealii::FE_DGQ<dim> fe_DG_;  // DG for magnetization
+    dealii::FE_DGQ<dim> fe_DG_;  // DG Q1 for pressure (A1) and magnetization
     // FESystem for combined M+phi: FE_DGQ(deg_M)^dim + FE_Q(deg_phi)
     std::unique_ptr<dealii::FESystem<dim>> fe_mag_;
 
