@@ -75,61 +75,18 @@ SolverInfo solve_ns_system_schur_parallel(
 
     auto start = std::chrono::high_resolution_clock::now();
 
-    if (use_ilu)
     {
-        // Simple ILU path: apply ILU directly to the full NS saddle-point matrix.
-        // The block Schur preconditioner's velocity extraction segfaults with ILU
-        // due to Epetra map incompatibilities in parallel. This simpler approach
-        // uses ILU on the monolithic system, which works reliably (like CH/Mag).
+        // Block Schur preconditioner: separates velocity (A) and pressure (M_p)
+        // blocks. use_ilu selects ILU vs AMG for the inner solves.
         if (verbose && rank == 0)
-            std::cout << "[NS ILU] Using monolithic ILU preconditioner\n";
-
-        dealii::TrilinosWrappers::PreconditionILU ilu;
-        dealii::TrilinosWrappers::PreconditionILU::AdditionalData ilu_data;
-        ilu_data.ilu_fill = 2;
-        ilu_data.ilu_atol = 1e-2;  // regularize zero pivots in pressure block
-        ilu_data.ilu_rtol = 1.0;
-        ilu.initialize(matrix, ilu_data);
-
-        const double rel_tol = 1e-8;
-        const double tol = rel_tol * rhs_norm;
-
-        dealii::SolverControl solver_control(3000, tol, false, false);
-
-        dealii::SolverGMRES<dealii::TrilinosWrappers::MPI::Vector>::AdditionalData gmres_data;
-        gmres_data.max_n_tmp_vectors = 100;
-        dealii::SolverGMRES<dealii::TrilinosWrappers::MPI::Vector> solver(solver_control, gmres_data);
-
-        solution = 0;
-
-        try
-        {
-            solver.solve(matrix, solution, rhs, ilu);
-            info.converged = true;
-            info.iterations = solver_control.last_step();
-        }
-        catch (const dealii::SolverControl::NoConvergence& e)
-        {
-            info.converged = false;
-            info.iterations = e.last_step;
-            if (rank == 0)
-            {
-                std::cout << "[NS ILU] GMRES did not converge in " << e.last_step
-                          << " iterations, res = " << e.last_residual << "\n";
-            }
-        }
-    }
-    else
-    {
-        // Block Schur preconditioner path (requires AMG/ML in Trilinos)
-        if (verbose && rank == 0)
-            std::cout << "[NS Schur] Building Block Schur preconditioner...\n";
+            std::cout << "[NS Schur] Building Block Schur preconditioner (use_ilu="
+                      << (use_ilu ? "true" : "false") << ")...\n";
 
         BlockSchurPreconditionerParallel preconditioner(
             matrix, pressure_mass,
             ux_to_ns_map, uy_to_ns_map, p_to_ns_map,
             ns_owned, vel_owned, p_owned,
-            mpi_comm, viscosity, dt, false);
+            mpi_comm, viscosity, dt, use_ilu);
 
         const double rel_tol = 1e-8;
         const double tol = rel_tol * rhs_norm;
