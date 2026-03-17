@@ -370,12 +370,17 @@ void BlockSchurPreconditionerParallel::vmult(
     dealii::TrilinosWrappers::MPI::Vector& dst,
     const dealii::TrilinosWrappers::MPI::Vector& src) const
 {
+    if (rank_ == 0) std::cout << "[Block Schur vmult] START" << std::endl;
+
     // Temporary vectors
     dealii::TrilinosWrappers::MPI::Vector r_vel(vel_owned_, mpi_comm_);
     dealii::TrilinosWrappers::MPI::Vector r_p(p_owned_, mpi_comm_);
 
+    if (rank_ == 0) std::cout << "[Block Schur vmult] extracting..." << std::endl;
     extract_velocity(src, r_vel);
     extract_pressure(src, r_p);
+    if (rank_ == 0) std::cout << "[Block Schur vmult] extracted, |r_vel|=" << r_vel.l2_norm()
+                              << " |r_p|=" << r_p.l2_norm() << std::endl;
 
     // Enforce pinned pressure mode consistency (p-space DoF 0)
     if (pinned_p_local_ >= 0)
@@ -392,6 +397,8 @@ void BlockSchurPreconditionerParallel::vmult(
         const double p_rhs_norm = r_p.l2_norm();
         const double tol = inner_tolerance * std::max(p_rhs_norm, 1e-30);
 
+        if (rank_ == 0) std::cout << "[Block Schur vmult] Step1: pressure CG, |rhs|=" << p_rhs_norm << std::endl;
+
         dealii::SolverControl solver_control(max_inner_iterations, tol, false, false);
         dealii::SolverCG<dealii::TrilinosWrappers::MPI::Vector> cg(solver_control);
 
@@ -405,6 +412,7 @@ void BlockSchurPreconditionerParallel::vmult(
         }
 
         n_iterations_S += solver_control.last_step();
+        if (rank_ == 0) std::cout << "[Block Schur vmult] Step1 done, iters=" << solver_control.last_step() << std::endl;
 
         if (pinned_p_local_ >= 0)
         {
@@ -416,8 +424,10 @@ void BlockSchurPreconditionerParallel::vmult(
     }
 
     // Step 2: Update velocity RHS: rhs_vel = r_vel + B^T * z_p
+    if (rank_ == 0) std::cout << "[Block Schur vmult] Step2: apply_BT..." << std::endl;
     dealii::TrilinosWrappers::MPI::Vector Bt_zp(vel_owned_, mpi_comm_);
     apply_BT(z_p, Bt_zp);
+    if (rank_ == 0) std::cout << "[Block Schur vmult] Step2 done, |Bt_zp|=" << Bt_zp.l2_norm() << std::endl;
 
     dealii::TrilinosWrappers::MPI::Vector rhs_vel(vel_owned_, mpi_comm_);
     rhs_vel = r_vel;
@@ -430,6 +440,8 @@ void BlockSchurPreconditionerParallel::vmult(
     {
         const double vel_rhs_norm = rhs_vel.l2_norm();
         const double tol = inner_tolerance * std::max(vel_rhs_norm, 1e-30);
+
+        if (rank_ == 0) std::cout << "[Block Schur vmult] Step3: velocity GMRES, |rhs|=" << vel_rhs_norm << std::endl;
 
         dealii::SolverControl solver_control(max_inner_iterations, tol, false, false);
 
@@ -447,9 +459,11 @@ void BlockSchurPreconditionerParallel::vmult(
         }
 
         n_iterations_A += solver_control.last_step();
+        if (rank_ == 0) std::cout << "[Block Schur vmult] Step3 done, iters=" << solver_control.last_step() << std::endl;
     }
 
     // Step 4: Assemble output
+    if (rank_ == 0) std::cout << "[Block Schur vmult] Step4: assembling output..." << std::endl;
     dst = 0;
     insert_velocity(z_vel, dst);
     insert_pressure(z_p, dst);
