@@ -188,21 +188,33 @@ struct Parameters
     // ========================================================================
     struct Solvers
     {
+        // CH: GMRES + AMG (iterative by default — direct as fallback)
         LinearSolverParams ch = {
             LinearSolverParams::Type::GMRES,
             LinearSolverParams::Preconditioner::AMG,
-            1e-8, 1e-12, 2000, 50, 1.2, 1.2,  // ssor_omega, ilu_strengthen
-            false, true, false
+            1e-8, 1e-12, 2000, 100, 1.2, 1.2,  // gmres_restart=100 for indefinite
+            true, true, false  // use_iterative=TRUE, fallback=true, verbose=false
         };
 
-        // NS solver: Direct (MUMPS) is 10-50x faster than iterative for ref 3-5
-        // Auto-fallback to iterative (Block Schur) if direct fails or for large problems
+        // Magnetics (monolithic M+φ): GMRES + AMG (iterative default)
+        // Block PC (BlockSchur) implemented but needs MPI ghost debugging.
+        // Enable with --mag-block-pc when ready.
+        LinearSolverParams mag = {
+            LinearSolverParams::Type::GMRES,
+            LinearSolverParams::Preconditioner::AMG,
+            1e-8, 1e-12, 500, 50, 1.2, 1.2,
+            true, true, false  // use_iterative=TRUE, fallback=true
+        };
+
+        // NS: Direct (MUMPS) by default. Block Schur + BFBt available but
+        // needs further work for DG Q1 pressure (converges slowly ~400 its).
+        // Use --ns-iterative to enable FGMRES + Block Schur.
         LinearSolverParams ns = {
-            LinearSolverParams::Type::Direct,  // Changed: MUMPS much faster than FGMRES
-            LinearSolverParams::Preconditioner::BlockSchur,  // Used if fallback to iterative
+            LinearSolverParams::Type::FGMRES,
+            LinearSolverParams::Preconditioner::BlockSchur,
             1e-6, 1e-9,
             1500, 100, 1.2, 1.2,
-            false, true, true  // use_iterative=false, fallback=true, verbose=true
+            false, true, false  // use_iterative=FALSE (direct default), fallback=true
         };
     } solvers;
 

@@ -126,11 +126,15 @@ SolverInfo solve_ch_system(
             auto amg = std::make_unique<dealii::TrilinosWrappers::PreconditionAMG>();
             dealii::TrilinosWrappers::PreconditionAMG::AdditionalData amg_data;
             amg_data.smoother_sweeps = 2;
-            amg_data.aggregation_threshold = 1e-4;
-            amg_data.elliptic = false;
-            amg_data.higher_order_elements = true;
+            amg_data.aggregation_threshold = 0.02;    // Was 1e-4 (too aggressive for indefinite θ-ψ)
+            amg_data.elliptic = false;                 // CH is indefinite (not SPD)
+            amg_data.higher_order_elements = true;     // Q2 elements
+            amg_data.smoother_type = "Chebyshev";      // Better than Gauss-Seidel for indefinite
             amg->initialize(matrix, amg_data);
             preconditioner = std::move(amg);
+
+            if (verbose && rank == 0)
+                std::cout << "[CH] Using AMG preconditioner (Chebyshev smoother)\n";
         }
 
         try

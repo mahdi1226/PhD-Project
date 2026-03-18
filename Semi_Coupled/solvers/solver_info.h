@@ -54,8 +54,8 @@ struct LinearSolverParams
     // =========================================================================
     // Block Schur preconditioner settings (for NS iterative solver)
     // =========================================================================
-    double schur_inner_tolerance = 1e-3;      // Loose - we're preconditioning, not solving
-    unsigned int schur_max_inner_iters = 20;  // Few iterations sufficient
+    double schur_inner_tolerance = 1e-2;      // Loose - we're preconditioning, not solving
+    unsigned int schur_max_inner_iters = 100; // Enough room for velocity block to converge
     unsigned int schur_gmres_restart = 30;    // Small Krylov space for inner solve
 
     // =========================================================================
@@ -76,9 +76,13 @@ struct SolverInfo
     double solve_time = 0.0;        // seconds
     bool converged = true;
     bool used_direct = false;       // true if fell back to direct solver
-    std::string solver_name;        // "CH", "Poisson", "NS", etc.
+    std::string solver_name;        // "CH", "Mag", "NS", etc.
     unsigned int matrix_size = 0;
     unsigned int nnz = 0;           // number of nonzeros
+
+    // Block preconditioner inner diagnostics (NS Block Schur, Mag Block)
+    unsigned int inner_iterations_A = 0;  // velocity/M block inner iterations
+    unsigned int inner_iterations_S = 0;  // pressure/φ block inner iterations
 
     /// Check if solver succeeded
     bool success() const { return converged; }
@@ -93,6 +97,8 @@ struct SolverInfo
         used_direct = false;
         matrix_size = 0;
         nnz = 0;
+        inner_iterations_A = 0;
+        inner_iterations_S = 0;
     }
 };
 

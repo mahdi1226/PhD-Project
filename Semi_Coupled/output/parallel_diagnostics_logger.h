@@ -130,9 +130,8 @@ public:
         // Accumulate for summary
         cumul_ch_assemble_ += d.ch_assemble_time;
         cumul_ch_solve_ += d.ch_solve_time;
-        cumul_poisson_assemble_ += d.poisson_assemble_time;
-        cumul_poisson_solve_ += d.poisson_solve_time;
-        cumul_mag_ += d.mag_time;
+        cumul_mag_assemble_ += d.mag_assemble_time;
+        cumul_mag_solve_ += d.mag_solve_time;
         cumul_ns_assemble_ += d.ns_assemble_time;
         cumul_ns_solve_ += d.ns_solve_time;
         cumul_diagnostics_ += d.diagnostics_time;
@@ -181,9 +180,8 @@ private:
     // Cumulative totals for summary
     double cumul_ch_assemble_ = 0.0;
     double cumul_ch_solve_ = 0.0;
-    double cumul_poisson_assemble_ = 0.0;
-    double cumul_poisson_solve_ = 0.0;
-    double cumul_mag_ = 0.0;
+    double cumul_mag_assemble_ = 0.0;
+    double cumul_mag_solve_ = 0.0;
     double cumul_ns_assemble_ = 0.0;
     double cumul_ns_solve_ = 0.0;
     double cumul_diagnostics_ = 0.0;
@@ -199,17 +197,16 @@ private:
         f << "step,time,mpi_size,"
           // Timing breakdown (rank 0 local)
           << "ch_assemble,ch_solve,"
-          << "poisson_assemble,poisson_solve,"
-          << "mag_time,"
+          << "mag_assemble,mag_solve,"
           << "ns_assemble,ns_solve,"
           << "diagnostics_time,amr_time,output_time,"
           << "step_total,"
-          // Picard/BGS
+          // BGS
           << "picard_iters,bgs_iters,"
           // Solver iterations
-          << "ch_solver_iters,poisson_solver_iters,mag_solver_iters,ns_solver_iters,"
+          << "ch_solver_iters,mag_solver_iters,ns_solver_iters,"
           // Sparsity (global nnz)
-          << "ch_nnz,poisson_nnz,mag_nnz,ns_nnz,"
+          << "ch_nnz,mag_nnz,ns_nnz,"
           // Load balance (rank 0 local)
           << "local_cells,ghost_cells,"
           << "local_dofs_theta,local_dofs_phi,local_dofs_M,local_dofs_ns,"
@@ -217,7 +214,7 @@ private:
           // MPI-reduced: step time
           << "step_time_min,step_time_max,step_time_avg,imbalance_ratio,"
           // MPI-reduced: per-subsystem imbalance
-          << "ch_imbalance,poisson_imbalance,mag_imbalance,ns_imbalance,"
+          << "ch_imbalance,mag_imbalance,ns_imbalance,"
           // MPI-reduced: cells/DoFs balance
           << "cells_min,cells_max,dofs_min,dofs_max,"
           // Memory
@@ -225,7 +222,7 @@ private:
           // AMR
           << "amr_min_level,amr_max_level,"
           // Bandwidth (global max |i-j|)
-          << "ch_bandwidth,poisson_bandwidth,mag_bandwidth,ns_bandwidth"
+          << "ch_bandwidth,mag_bandwidth,ns_bandwidth"
           << "\n";
     }
 
@@ -237,18 +234,17 @@ private:
           // Timing
           << std::fixed << std::setprecision(6)
           << d.ch_assemble_time << "," << d.ch_solve_time << ","
-          << d.poisson_assemble_time << "," << d.poisson_solve_time << ","
-          << d.mag_time << ","
+          << d.mag_assemble_time << "," << d.mag_solve_time << ","
           << d.ns_assemble_time << "," << d.ns_solve_time << ","
           << d.diagnostics_time << "," << d.amr_time << "," << d.output_time << ","
           << d.step_total << ","
-          // Picard/BGS
+          // BGS
           << d.picard_iterations << "," << d.bgs_iterations << ","
           // Solver iterations
-          << d.ch_solver_iters << "," << d.poisson_solver_iters << ","
+          << d.ch_solver_iters << ","
           << d.mag_solver_iters << "," << d.ns_solver_iters << ","
           // Sparsity (global)
-          << d.ch_nnz_global << "," << d.poisson_nnz_global << ","
+          << d.ch_nnz_global << ","
           << d.mag_nnz_global << "," << d.ns_nnz_global << ","
           // Load balance (local)
           << d.local_cells << "," << d.ghost_cells << ","
@@ -261,7 +257,7 @@ private:
           << d.step_time_avg << ","
           << std::setprecision(4) << d.imbalance_ratio << ","
           // MPI-reduced: subsystem imbalance
-          << d.ch_imbalance << "," << d.poisson_imbalance << ","
+          << d.ch_imbalance << ","
           << d.mag_imbalance << "," << d.ns_imbalance << ","
           // Cell/DoF balance
           << d.cells_min << "," << d.cells_max << ","
@@ -272,7 +268,7 @@ private:
           // AMR
           << d.amr_min_level << "," << d.amr_max_level << ","
           // Bandwidth
-          << d.ch_bandwidth_global << "," << d.poisson_bandwidth_global << ","
+          << d.ch_bandwidth_global << ","
           << d.mag_bandwidth_global << "," << d.ns_bandwidth_global
           << "\n";
     }
@@ -284,12 +280,11 @@ private:
     {
         f << "step,time,rank,"
           << "ch_assemble,ch_solve,"
-          << "poisson_assemble,poisson_solve,"
-          << "mag_time,"
+          << "mag_assemble,mag_solve,"
           << "ns_assemble,ns_solve,"
           << "diagnostics_time,step_total,"
           << "local_cells,ghost_cells,total_local_dofs,"
-          << "ch_nnz_local,poisson_nnz_local,mag_nnz_local,ns_nnz_local,"
+          << "ch_nnz_local,mag_nnz_local,ns_nnz_local,"
           << "memory_mb"
           << "\n";
     }
@@ -301,12 +296,11 @@ private:
           << rank_ << ","
           << std::fixed << std::setprecision(6)
           << d.ch_assemble_time << "," << d.ch_solve_time << ","
-          << d.poisson_assemble_time << "," << d.poisson_solve_time << ","
-          << d.mag_time << ","
+          << d.mag_assemble_time << "," << d.mag_solve_time << ","
           << d.ns_assemble_time << "," << d.ns_solve_time << ","
           << d.diagnostics_time << "," << d.step_total << ","
           << d.local_cells << "," << d.ghost_cells << "," << d.total_local_dofs << ","
-          << d.ch_nnz << "," << d.poisson_nnz << ","
+          << d.ch_nnz << ","
           << d.mag_nnz << "," << d.ns_nnz << ","
           << std::setprecision(1) << d.memory_mb
           << "\n";
@@ -330,12 +324,10 @@ private:
               << " (" << std::setprecision(1) << 100.0 * cumul_ch_assemble_ / std::max(cumul_total_, 1e-12) << "%)\n";
         file_ << "#   CH  solve:    " << std::setprecision(2) << cumul_ch_solve_
               << " (" << std::setprecision(1) << 100.0 * cumul_ch_solve_ / std::max(cumul_total_, 1e-12) << "%)\n";
-        file_ << "#   Poi assembly: " << std::setprecision(2) << cumul_poisson_assemble_
-              << " (" << std::setprecision(1) << 100.0 * cumul_poisson_assemble_ / std::max(cumul_total_, 1e-12) << "%)\n";
-        file_ << "#   Poi solve:    " << std::setprecision(2) << cumul_poisson_solve_
-              << " (" << std::setprecision(1) << 100.0 * cumul_poisson_solve_ / std::max(cumul_total_, 1e-12) << "%)\n";
-        file_ << "#   Mag total:    " << std::setprecision(2) << cumul_mag_
-              << " (" << std::setprecision(1) << 100.0 * cumul_mag_ / std::max(cumul_total_, 1e-12) << "%)\n";
+        file_ << "#   Mag assembly: " << std::setprecision(2) << cumul_mag_assemble_
+              << " (" << std::setprecision(1) << 100.0 * cumul_mag_assemble_ / std::max(cumul_total_, 1e-12) << "%)\n";
+        file_ << "#   Mag solve:    " << std::setprecision(2) << cumul_mag_solve_
+              << " (" << std::setprecision(1) << 100.0 * cumul_mag_solve_ / std::max(cumul_total_, 1e-12) << "%)\n";
         file_ << "#   NS  assembly: " << std::setprecision(2) << cumul_ns_assemble_
               << " (" << std::setprecision(1) << 100.0 * cumul_ns_assemble_ / std::max(cumul_total_, 1e-12) << "%)\n";
         file_ << "#   NS  solve:    " << std::setprecision(2) << cumul_ns_solve_

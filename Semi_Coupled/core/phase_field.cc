@@ -293,6 +293,8 @@ void PhaseFieldProblem<dim>::run()
             refine_mesh();
             t_amr.stop();
             amr_time_this_step = t_amr.last();
+            // Cache invalidation now done inside refine_mesh() itself,
+            // before extract_magnetic_components() is called.
         }
 
         time_ += dt;
@@ -314,16 +316,16 @@ void PhaseFieldProblem<dim>::run()
             unsigned int bgs_iter = 0;
             double bgs_residual = 1.0;
 
-            // Storage for previous Block-GS iteration (for convergence check)
-            // We check convergence on theta and velocity (the fields that couple blocks)
-            dealii::TrilinosWrappers::MPI::Vector theta_bgs_prev;
-            dealii::TrilinosWrappers::MPI::Vector ux_bgs_prev;
-            dealii::TrilinosWrappers::MPI::Vector uy_bgs_prev;
-            theta_bgs_prev.reinit(theta_locally_owned_, mpi_communicator_);
-            if (params_.enable_ns)
+            // Persistent BGS convergence vectors (class members, allocated once)
+            if (!bgs_vectors_initialized_)
             {
-                ux_bgs_prev.reinit(ux_locally_owned_, mpi_communicator_);
-                uy_bgs_prev.reinit(uy_locally_owned_, mpi_communicator_);
+                theta_bgs_prev_.reinit(theta_locally_owned_, mpi_communicator_);
+                if (params_.enable_ns)
+                {
+                    ux_bgs_prev_.reinit(ux_locally_owned_, mpi_communicator_);
+                    uy_bgs_prev_.reinit(uy_locally_owned_, mpi_communicator_);
+                }
+                bgs_vectors_initialized_ = true;
             }
 
             // Save previous time step's magnetization ONCE before BGS loop
@@ -339,11 +341,11 @@ void PhaseFieldProblem<dim>::run()
                 // Store current fields for convergence check
                 if (bgs_iter > 0)
                 {
-                    theta_bgs_prev = theta_solution_;
+                    theta_bgs_prev_ = theta_solution_;
                     if (params_.enable_ns)
                     {
-                        ux_bgs_prev = ux_solution_;
-                        uy_bgs_prev = uy_solution_;
+                        ux_bgs_prev_ = ux_solution_;
+                        uy_bgs_prev_ = uy_solution_;
                     }
                 }
 
@@ -385,11 +387,11 @@ void PhaseFieldProblem<dim>::run()
                 if (bgs_iter == 0)
                 {
                     // First iteration: store fields, can't check convergence yet
-                    theta_bgs_prev = theta_solution_;
+                    theta_bgs_prev_ = theta_solution_;
                     if (params_.enable_ns)
                     {
-                        ux_bgs_prev = ux_solution_;
-                        uy_bgs_prev = uy_solution_;
+                        ux_bgs_prev_ = ux_solution_;
+                        uy_bgs_prev_ = uy_solution_;
                     }
                     continue;
                 }
@@ -402,7 +404,7 @@ void PhaseFieldProblem<dim>::run()
                 {
                     dealii::TrilinosWrappers::MPI::Vector diff(theta_locally_owned_, mpi_communicator_);
                     diff = theta_solution_;
-                    diff -= theta_bgs_prev;
+                    diff -= theta_bgs_prev_;
                     double diff_norm = diff.l2_norm();
                     double sol_norm = theta_solution_.l2_norm();
                     double rel = (sol_norm > 1e-12) ? diff_norm / sol_norm : 0.0;
@@ -415,9 +417,9 @@ void PhaseFieldProblem<dim>::run()
                     dealii::TrilinosWrappers::MPI::Vector diff_ux(ux_locally_owned_, mpi_communicator_);
                     dealii::TrilinosWrappers::MPI::Vector diff_uy(uy_locally_owned_, mpi_communicator_);
                     diff_ux = ux_solution_;
-                    diff_ux -= ux_bgs_prev;
+                    diff_ux -= ux_bgs_prev_;
                     diff_uy = uy_solution_;
-                    diff_uy -= uy_bgs_prev;
+                    diff_uy -= uy_bgs_prev_;
 
                     double diff_norm_sq = diff_ux.l2_norm() * diff_ux.l2_norm() +
                                           diff_uy.l2_norm() * diff_uy.l2_norm();
@@ -479,20 +481,25 @@ void PhaseFieldProblem<dim>::run()
             params_, timestep_number_, time_, dt, get_min_h(),
             prev_data, mpi_communicator_);
 
-        // Add force diagnostics
-        update_force_diagnostics<dim>(data,
-                                      theta_dof_handler_, theta_relevant_, psi_relevant_,
-                                      params_.enable_magnetic ? &phi_relevant_ : nullptr,
-                                      params_, mpi_communicator_);
-
-        // Add validation diagnostics (CSV logging only - NO console output in loop)
-        if (params_.enable_magnetic)
+        // Heavy diagnostics: throttle to every 100 steps (interface profiling is expensive)
+        if (timestep_number_ % 100 == 0 || timestep_number_ == 1)
         {
-            update_validation_diagnostics<dim>(data,
-                                               theta_dof_handler_, theta_relevant_,
-                                               params_, mpi_communicator_);
-            validation_logger.log(data);
+            update_force_diagnostics<dim>(data,
+                                          theta_dof_handler_, theta_relevant_, psi_relevant_,
+                                          params_.enable_magnetic ? &phi_relevant_ : nullptr,
+                                          params_, mpi_communicator_);
+
+            if (params_.enable_magnetic)
+            {
+                update_validation_diagnostics<dim>(data,
+                                                   theta_dof_handler_, theta_relevant_,
+                                                   params_, mpi_communicator_);
+            }
         }
+
+        // Validation CSV logging every step (lightweight — just writes cached data)
+        if (params_.enable_magnetic)
+            validation_logger.log(data);
         // Add solver info
         update_ch_solver_info(data, last_ch_info_.iterations,
                               last_ch_info_.residual, step_timing.ch_time,
@@ -544,9 +551,8 @@ void PhaseFieldProblem<dim>::run()
             // --- Timing breakdown (from instrumented solve methods) ---
             pdata.ch_assemble_time = last_ch_assemble_time_;
             pdata.ch_solve_time = last_ch_solve_time_;
-            pdata.poisson_assemble_time = 0.0;  // Monolithic: no separate Poisson
-            pdata.poisson_solve_time = 0.0;
-            pdata.mag_time = last_mag_assemble_time_ + last_mag_solve_time_;
+            pdata.mag_assemble_time = last_mag_assemble_time_;
+            pdata.mag_solve_time = last_mag_solve_time_;
             pdata.ns_assemble_time = last_ns_assemble_time_;
             pdata.ns_solve_time = last_ns_solve_time_;
             pdata.diagnostics_time = t_diagnostics.last();
@@ -558,7 +564,7 @@ void PhaseFieldProblem<dim>::run()
 
             // --- Solver iterations ---
             pdata.ch_solver_iters = last_ch_info_.iterations;
-            pdata.poisson_solver_iters = 0;  // Monolithic: no separate Poisson
+            // mag_solver_iters already set above
             pdata.mag_solver_iters = last_mag_info_.iterations;
             pdata.ns_solver_iters = last_ns_info_.iterations;
 
@@ -566,7 +572,6 @@ void PhaseFieldProblem<dim>::run()
             pdata.ch_nnz = ch_matrix_.n_nonzero_elements();
             if (params_.enable_magnetic)
             {
-                pdata.poisson_nnz = 0;  // Monolithic: no separate Poisson matrix
                 pdata.mag_nnz = mag_matrix_.n_nonzero_elements();
             }
             if (params_.enable_ns)
@@ -575,7 +580,7 @@ void PhaseFieldProblem<dim>::run()
             // --- Bandwidth (only computed at step 1; cached for subsequent steps) ---
             // Computing bandwidth requires iterating all entries — expensive every step
             {
-                static unsigned int cached_ch_bw = 0, cached_poi_bw = 0;
+                static unsigned int cached_ch_bw = 0;
                 static unsigned int cached_mag_bw = 0, cached_ns_bw = 0;
                 static bool bandwidth_computed = false;
 
@@ -609,7 +614,6 @@ void PhaseFieldProblem<dim>::run()
                 }
 
                 pdata.ch_bandwidth = cached_ch_bw;
-                pdata.poisson_bandwidth = cached_poi_bw;
                 pdata.mag_bandwidth = cached_mag_bw;
                 pdata.ns_bandwidth = cached_ns_bw;
             }
@@ -797,20 +801,19 @@ void PhaseFieldProblem<dim>::solve_magnetics(double dt)
         time_);
     t_assemble.stop();
 
-    // Solve monolithic system
+    // Solve monolithic system (direct or iterative based on params)
     t_solve.start();
-    magnetic_solver_->solve(mag_matrix_, mag_solution_, mag_rhs_);
+    magnetic_solver_->solve(mag_matrix_, mag_solution_, mag_rhs_,
+                            params_.solvers.mag, params_.output.verbose);
     t_solve.stop();
 
     // Apply constraints
     mag_constraints_.distribute(mag_solution_);
 
-    // Record timing
+    // Record timing and solver info
     last_mag_assemble_time_ = t_assemble.last();
     last_mag_solve_time_ = t_solve.last();
-    last_mag_info_.iterations = magnetic_solver_->last_n_iterations();
-    last_mag_info_.residual = 0.0;
-    last_mag_info_.converged = true;
+    last_mag_info_ = magnetic_solver_->last_info();
 
     // Update ghosted mag solution
     mag_relevant_ = mag_solution_;
@@ -821,8 +824,11 @@ void PhaseFieldProblem<dim>::solve_magnetics(double dt)
 
     if (params_.output.verbose)
     {
-        pcout_ << "  [Mag] monolithic solve, iterations="
-               << last_mag_info_.iterations << "\n";
+        pcout_ << "  [Mag] "
+               << (last_mag_info_.used_direct ? "direct" : "iterative")
+               << ", iterations=" << last_mag_info_.iterations
+               << ", time=" << std::fixed << std::setprecision(2)
+               << last_mag_info_.solve_time << "s\n";
     }
 }
 
@@ -1224,7 +1230,9 @@ void PhaseFieldProblem<dim>::output_results(const std::string& output_dir)
 template <int dim>
 double PhaseFieldProblem<dim>::get_min_h() const
 {
-    return dealii::GridTools::minimal_cell_diameter(triangulation_);
+    if (cached_h_min_ < 0.0)
+        cached_h_min_ = dealii::GridTools::minimal_cell_diameter(triangulation_);
+    return cached_h_min_;
 }
 
 // ============================================================================

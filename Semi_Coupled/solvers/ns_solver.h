@@ -46,8 +46,8 @@ SolverInfo solve_ns_system_schur_parallel(
 // Direct solver with pressure pinning (recommended)
 // ============================================================================
 SolverInfo solve_ns_system_direct_parallel(
-    const dealii::TrilinosWrappers::SparseMatrix& matrix,
-    const dealii::TrilinosWrappers::MPI::Vector& rhs,
+    dealii::TrilinosWrappers::SparseMatrix& matrix,
+    dealii::TrilinosWrappers::MPI::Vector& rhs,
     dealii::TrilinosWrappers::MPI::Vector& solution,
     const dealii::AffineConstraints<double>& constraints,
     const std::vector<dealii::types::global_dof_index>& p_to_ns_map,
@@ -108,8 +108,8 @@ void assemble_pressure_mass_matrix_parallel(
 //   direct_threshold: Use direct if n_dofs < threshold (default 50000)
 // ============================================================================
 SolverInfo solve_ns_system(
-    const dealii::TrilinosWrappers::SparseMatrix& matrix,
-    const dealii::TrilinosWrappers::MPI::Vector& rhs,
+    dealii::TrilinosWrappers::SparseMatrix& matrix,
+    dealii::TrilinosWrappers::MPI::Vector& rhs,
     dealii::TrilinosWrappers::MPI::Vector& solution,
     const dealii::AffineConstraints<double>& constraints,
     const dealii::TrilinosWrappers::SparseMatrix& pressure_mass,

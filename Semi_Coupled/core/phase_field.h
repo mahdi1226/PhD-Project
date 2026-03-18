@@ -264,6 +264,15 @@ private:
     unsigned int last_bgs_iterations_;
     double last_bgs_residual_;
 
+    // Cached h_min (recomputed only after AMR or first call)
+    mutable double cached_h_min_ = -1.0;
+
+    // Persistent BGS convergence vectors (avoid per-step reallocation)
+    dealii::TrilinosWrappers::MPI::Vector theta_bgs_prev_;
+    dealii::TrilinosWrappers::MPI::Vector ux_bgs_prev_;
+    dealii::TrilinosWrappers::MPI::Vector uy_bgs_prev_;
+    bool bgs_vectors_initialized_ = false;
+
     // ========================================================================
     // Parallel diagnostics: assembly vs solve timing (set inside solve methods)
     // ========================================================================
@@ -278,6 +287,14 @@ private:
     // Helper: extract individual M, phi from combined mag_solution_
     // ========================================================================
     void extract_magnetic_components();
+    void build_mag_extraction_maps();
+
+    // Precomputed index maps: mag_solution_[mag_idx] → Mx/My/phi_solution_[scalar_idx]
+    // Built once in setup, used every step for O(n) vector copy instead of cell loop
+    std::vector<std::pair<dealii::types::global_dof_index, dealii::types::global_dof_index>> mag_to_Mx_map_;
+    std::vector<std::pair<dealii::types::global_dof_index, dealii::types::global_dof_index>> mag_to_My_map_;
+    std::vector<std::pair<dealii::types::global_dof_index, dealii::types::global_dof_index>> mag_to_phi_map_;
+    bool mag_extraction_maps_built_ = false;
 };
 
 #endif // PHASE_FIELD_H

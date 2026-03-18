@@ -76,8 +76,12 @@ SolverInfo solve_ns_system_schur_parallel(
     auto start = std::chrono::high_resolution_clock::now();
 
     {
-        // Block Schur preconditioner: separates velocity (A) and pressure (M_p)
-        // blocks. use_ilu selects ILU vs AMG for the inner solves.
+        // Block Schur + BFBt preconditioner for FGMRES
+        // Note: BFBt Schur complement handles DG pressure correctly but
+        // convergence is slow (~400+ outer iterations). Block Schur with M_p
+        // fails for DG pressure (wrong sparsity pattern). Both approaches need
+        // further work (Vanka patches, multigrid for saddle-point) for production.
+        // For now, the unified solver auto-selects direct for n_dofs < threshold.
         if (verbose && rank == 0)
             std::cout << "[NS Schur] Building Block Schur preconditioner (use_ilu="
                       << (use_ilu ? "true" : "false") << ")...\n";
@@ -87,9 +91,11 @@ SolverInfo solve_ns_system_schur_parallel(
             ux_to_ns_map, uy_to_ns_map, p_to_ns_map,
             ns_owned, vel_owned, p_owned,
             mpi_comm, viscosity, dt, use_ilu);
+        preconditioner.verbose_ = verbose;
+        preconditioner.inner_tolerance = 1e-2;
+        preconditioner.max_inner_iterations = 100;
 
-        const double rel_tol = 1e-8;
-        const double tol = rel_tol * rhs_norm;
+        const double tol = 1e-8 * rhs_norm;
 
         dealii::SolverControl solver_control(1500, tol, false, false);
 
@@ -116,6 +122,10 @@ SolverInfo solve_ns_system_schur_parallel(
                           << " iterations, res = " << e.last_residual << "\n";
             }
         }
+
+        // Capture inner iteration diagnostics
+        info.inner_iterations_A = preconditioner.n_iterations_A;
+        info.inner_iterations_S = preconditioner.n_iterations_S;
     }
 
     auto end = std::chrono::high_resolution_clock::now();
@@ -124,11 +134,14 @@ SolverInfo solve_ns_system_schur_parallel(
     // Distribute constraints
     constraints.distribute(solution);
 
-    // Compute true residual
-    dealii::TrilinosWrappers::MPI::Vector residual(rhs);
-    matrix.vmult(residual, solution);
-    residual -= rhs;
-    info.residual = residual.l2_norm() / rhs_norm;
+    // Compute true residual (expensive — gate behind verbose)
+    if (verbose)
+    {
+        dealii::TrilinosWrappers::MPI::Vector residual(rhs);
+        matrix.vmult(residual, solution);
+        residual -= rhs;
+        info.residual = residual.l2_norm() / rhs_norm;
+    }
 
     return info;
 }
@@ -197,8 +210,8 @@ static bool pin_pressure_dof(
 // Direct solver WITH pressure pinning (RECOMMENDED)
 // ============================================================================
 SolverInfo solve_ns_system_direct_parallel(
-    const dealii::TrilinosWrappers::SparseMatrix& matrix,
-    const dealii::TrilinosWrappers::MPI::Vector& rhs,
+    dealii::TrilinosWrappers::SparseMatrix& matrix,
+    dealii::TrilinosWrappers::MPI::Vector& rhs,
     dealii::TrilinosWrappers::MPI::Vector& solution,
     const dealii::AffineConstraints<double>& constraints,
     const std::vector<dealii::types::global_dof_index>& p_to_ns_map,
@@ -215,8 +228,8 @@ SolverInfo solve_ns_system_direct_parallel(
     int rank;
     MPI_Comm_rank(mpi_comm, &rank);
 
-    auto& mutable_matrix = const_cast<dealii::TrilinosWrappers::SparseMatrix&>(matrix);
-    auto& mutable_rhs = const_cast<dealii::TrilinosWrappers::MPI::Vector&>(rhs);
+    auto& mutable_matrix = matrix;
+    auto& mutable_rhs = rhs;
 
     const double rhs_norm_before_pinning = rhs.l2_norm();
     if (rhs_norm_before_pinning < 1e-14)
@@ -283,10 +296,14 @@ SolverInfo solve_ns_system_direct_parallel(
 
     constraints.distribute(solution);
 
-    dealii::TrilinosWrappers::MPI::Vector residual(mutable_rhs);
-    mutable_matrix.vmult(residual, solution);
-    residual -= mutable_rhs;
-    info.residual = (rhs_norm > 1e-14) ? residual.l2_norm() / rhs_norm : 0.0;
+    // Compute true residual (expensive — gate behind verbose)
+    if (verbose)
+    {
+        dealii::TrilinosWrappers::MPI::Vector residual(mutable_rhs);
+        mutable_matrix.vmult(residual, solution);
+        residual -= mutable_rhs;
+        info.residual = (rhs_norm > 1e-14) ? residual.l2_norm() / rhs_norm : 0.0;
+    }
 
     if (verbose && rank == 0 && solved)
     {
@@ -359,10 +376,14 @@ SolverInfo solve_ns_system_direct_parallel(
 
     constraints.distribute(solution);
 
-    dealii::TrilinosWrappers::MPI::Vector residual(rhs);
-    matrix.vmult(residual, solution);
-    residual -= rhs;
-    info.residual = residual.l2_norm() / rhs_norm;
+    // Compute true residual (expensive — gate behind verbose)
+    if (verbose)
+    {
+        dealii::TrilinosWrappers::MPI::Vector residual(rhs);
+        matrix.vmult(residual, solution);
+        residual -= rhs;
+        info.residual = residual.l2_norm() / rhs_norm;
+    }
 
     return info;
 }
@@ -481,8 +502,8 @@ void assemble_pressure_mass_matrix_parallel(
 //          dt <= 0: steady problem, schur_alpha = nu
 // ============================================================================
 SolverInfo solve_ns_system(
-    const dealii::TrilinosWrappers::SparseMatrix& matrix,
-    const dealii::TrilinosWrappers::MPI::Vector& rhs,
+    dealii::TrilinosWrappers::SparseMatrix& matrix,
+    dealii::TrilinosWrappers::MPI::Vector& rhs,
     dealii::TrilinosWrappers::MPI::Vector& solution,
     const dealii::AffineConstraints<double>& constraints,
     const dealii::TrilinosWrappers::SparseMatrix& pressure_mass,

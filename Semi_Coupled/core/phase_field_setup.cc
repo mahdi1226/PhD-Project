@@ -294,6 +294,18 @@ void PhaseFieldProblem<dim>::setup_magnetic_system()
         mag_locally_owned_,
         mpi_communicator_);
 
+    // Set block structure for block preconditioner (Phase 2)
+    // With component_wise renumbering: [Mx | My | phi]
+    {
+        const auto dofs_per_comp =
+            dealii::DoFTools::count_dofs_per_fe_component(mag_dof_handler_);
+        dealii::types::global_dof_index n_M = 0;
+        for (unsigned int d = 0; d < dim; ++d)
+            n_M += dofs_per_comp[d];
+        const dealii::types::global_dof_index n_phi = dofs_per_comp[dim];
+        magnetic_solver_->set_block_structure(n_M, n_phi);
+    }
+
     pcout_ << "[Magnetic Setup] Monolithic M+φ system initialized\n";
 }
 
@@ -308,13 +320,21 @@ void PhaseFieldProblem<dim>::setup_magnetic_system()
 // Cell-by-cell extraction maps from FESystem global indices to scalar global
 // indices on the auxiliary DoFHandlers.
 // ============================================================================
+// ============================================================================
+// build_mag_extraction_maps() - Build once, reuse every step
+//
+// Precomputes the mapping: mag_solution_[mag_idx] → Mx/My/phi_solution_[scalar_idx]
+// so extract_magnetic_components() becomes a simple vector copy.
+// ============================================================================
 template <int dim>
-void PhaseFieldProblem<dim>::extract_magnetic_components()
+void PhaseFieldProblem<dim>::build_mag_extraction_maps()
 {
+    mag_to_Mx_map_.clear();
+    mag_to_My_map_.clear();
+    mag_to_phi_map_.clear();
+
     const auto& fe = mag_dof_handler_.get_fe();
     const unsigned int dofs_per_cell = fe.n_dofs_per_cell();
-
-    // Get scalar DoFs per cell for M and phi
     const unsigned int M_dofs_per_cell = M_dof_handler_.get_fe().n_dofs_per_cell();
     const unsigned int phi_dofs_per_cell = phi_dof_handler_.get_fe().n_dofs_per_cell();
 
@@ -322,8 +342,6 @@ void PhaseFieldProblem<dim>::extract_magnetic_components()
     std::vector<dealii::types::global_dof_index> M_indices(M_dofs_per_cell);
     std::vector<dealii::types::global_dof_index> phi_indices(phi_dofs_per_cell);
 
-    // Precompute: for each FESystem local DoF, which component and local-within-component?
-    // system_to_component_index(i) = (component, index_within_component)
     std::vector<unsigned int> comp_idx(dofs_per_cell);
     std::vector<unsigned int> within_comp_idx(dofs_per_cell);
     for (unsigned int i = 0; i < dofs_per_cell; ++i)
@@ -333,7 +351,6 @@ void PhaseFieldProblem<dim>::extract_magnetic_components()
         within_comp_idx[i] = ci.second;
     }
 
-    // Iterate cells in sync across all three DoFHandlers
     auto cell_mag = mag_dof_handler_.begin_active();
     auto cell_M = M_dof_handler_.begin_active();
     auto cell_phi = phi_dof_handler_.begin_active();
@@ -356,25 +373,35 @@ void PhaseFieldProblem<dim>::extract_magnetic_components()
             if (!mag_locally_owned_.is_element(global_mag_idx))
                 continue;
 
-            const double val = mag_solution_[global_mag_idx];
-
-            if (comp == 0)  // Mx
-            {
-                if (M_locally_owned_.is_element(M_indices[local_idx]))
-                    Mx_solution_[M_indices[local_idx]] = val;
-            }
-            else if (comp == 1)  // My
-            {
-                if (M_locally_owned_.is_element(M_indices[local_idx]))
-                    My_solution_[M_indices[local_idx]] = val;
-            }
-            else  // phi (comp == dim)
-            {
-                if (phi_locally_owned_.is_element(phi_indices[local_idx]))
-                    phi_solution_[phi_indices[local_idx]] = val;
-            }
+            if (comp == 0 && M_locally_owned_.is_element(M_indices[local_idx]))
+                mag_to_Mx_map_.emplace_back(global_mag_idx, M_indices[local_idx]);
+            else if (comp == 1 && M_locally_owned_.is_element(M_indices[local_idx]))
+                mag_to_My_map_.emplace_back(global_mag_idx, M_indices[local_idx]);
+            else if (comp >= dim && phi_locally_owned_.is_element(phi_indices[local_idx]))
+                mag_to_phi_map_.emplace_back(global_mag_idx, phi_indices[local_idx]);
         }
     }
+
+    mag_extraction_maps_built_ = true;
+}
+
+// ============================================================================
+// extract_magnetic_components() - Fast extraction using precomputed maps
+// ============================================================================
+template <int dim>
+void PhaseFieldProblem<dim>::extract_magnetic_components()
+{
+    if (!mag_extraction_maps_built_)
+        build_mag_extraction_maps();
+
+    for (const auto& [mag_idx, scalar_idx] : mag_to_Mx_map_)
+        Mx_solution_[scalar_idx] = mag_solution_[mag_idx];
+
+    for (const auto& [mag_idx, scalar_idx] : mag_to_My_map_)
+        My_solution_[scalar_idx] = mag_solution_[mag_idx];
+
+    for (const auto& [mag_idx, scalar_idx] : mag_to_phi_map_)
+        phi_solution_[scalar_idx] = mag_solution_[mag_idx];
 
     Mx_solution_.compress(dealii::VectorOperation::insert);
     My_solution_.compress(dealii::VectorOperation::insert);

@@ -310,7 +310,7 @@ void Parameters::setup_square()
     ic.type = 2;  // Diamond droplet
     ic.droplet_center_x = 0.5;
     ic.droplet_center_y = 0.5;
-    ic.droplet_radius = 0.15; // Half-width of square
+    ic.droplet_radius = 0.25; // Half-width of diamond (was 0.15)
 
     // Physical parameters (mild)
     physics.epsilon = 0.02;       // interface thickness
@@ -329,13 +329,13 @@ void Parameters::setup_square()
 
     // Time-stepping
     time.dt = 0.002;
-    time.t_final = 1.0;
-    time.max_steps = 500;
+    time.t_final = 0.8;
+    time.max_steps = 400;
     time.use_adaptive_dt = false;
 
-    // Mesh — 10x10 base, level 2 = 40x40 effective (h=1/40)
-    // Bulk coarsens 2 levels to level 0 (h=1/10)
-    mesh.initial_refinement = 2;
+    // Mesh — 10x10 base, level 3 = 80x80 effective (h=1/80)
+    // Resolves ε=0.02 interface cleanly from t=0
+    mesh.initial_refinement = 3;
     mesh.use_amr = true;
     mesh.amr_interval = 10;
     mesh.amr_min_level = 0;
@@ -346,8 +346,8 @@ void Parameters::setup_square()
     enable_ns = true;
     enable_gravity = false;
 
-    // Output
-    output.frequency = 10;
+    // Output — 400 steps / 20 = 20 frames + initial
+    output.frequency = 20;
 }
 
 // ============================================================================
@@ -510,25 +510,42 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
         else if (std::strcmp(argv[i], "--no_adaptive_dt") == 0)
             params.time.use_adaptive_dt = false;
 
-        // Solver
+        // Solver — global overrides (all subsystems)
         else if (std::strcmp(argv[i], "--direct") == 0)
         {
-            params.solvers.ns.use_iterative = false;
             params.solvers.ch.use_iterative = false;
+            params.solvers.mag.use_iterative = false;
+            params.solvers.ns.use_iterative = false;
         }
         else if (std::strcmp(argv[i], "--iterative") == 0)
         {
-            params.solvers.ns.use_iterative = true;
             params.solvers.ch.use_iterative = true;
+            params.solvers.mag.use_iterative = true;
+            params.solvers.ns.use_iterative = true;
         }
         else if (std::strcmp(argv[i], "--ilu") == 0)
         {
             // Use ILU preconditioner instead of AMG (for HPC without ML/MueLu)
-            params.solvers.ns.use_iterative = true;
             params.solvers.ch.use_iterative = true;
-            params.solvers.ns.preconditioner = LinearSolverParams::Preconditioner::ILU;
+            params.solvers.mag.use_iterative = true;
+            params.solvers.ns.use_iterative = true;
             params.solvers.ch.preconditioner = LinearSolverParams::Preconditioner::ILU;
+            params.solvers.mag.preconditioner = LinearSolverParams::Preconditioner::ILU;
+            params.solvers.ns.preconditioner = LinearSolverParams::Preconditioner::ILU;
         }
+        // Per-subsystem solver overrides
+        else if (std::strcmp(argv[i], "--ch-direct") == 0)
+            params.solvers.ch.use_iterative = false;
+        else if (std::strcmp(argv[i], "--ch-iterative") == 0)
+            params.solvers.ch.use_iterative = true;
+        else if (std::strcmp(argv[i], "--mag-direct") == 0)
+            params.solvers.mag.use_iterative = false;
+        else if (std::strcmp(argv[i], "--mag-iterative") == 0)
+            params.solvers.mag.use_iterative = true;
+        else if (std::strcmp(argv[i], "--ns-direct") == 0)
+            params.solvers.ns.use_iterative = false;
+        else if (std::strcmp(argv[i], "--ns-iterative") == 0)
+            params.solvers.ns.use_iterative = true;
 
         // Block-Gauss-Seidel global iteration
         else if (std::strcmp(argv[i], "--bgs_iters") == 0)

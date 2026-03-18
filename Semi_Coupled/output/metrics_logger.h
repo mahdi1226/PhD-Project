@@ -93,7 +93,7 @@ public:
             << data.ch_iterations << ","
             << data.ch_residual << ","
             << data.ch_time << ","
-            // Poisson
+            // Magnetics (monolithic M+φ)
             << data.phi_min << ","
             << data.phi_max << ","
             << data.H_max << ","
@@ -101,9 +101,9 @@ public:
             << data.E_mag << ","
             << data.mu_min << ","
             << data.mu_max << ","
-            << data.poisson_iterations << ","
-            << data.poisson_residual << ","
-            << data.poisson_time << ","
+            << data.mag_iterations << ","
+            << data.mag_residual << ","
+            << data.mag_time << ","
             // NS
             << data.ux_min << ","
             << data.ux_max << ","
@@ -301,7 +301,7 @@ private:
             << "theta_min,theta_max,mass,E_CH,dE_CH_dt,"
             << "ch_iterations,ch_residual,ch_time,"
             << "phi_min,phi_max,H_max,M_max,E_mag,mu_min,mu_max,"
-            << "poisson_iterations,poisson_residual,poisson_time,"
+            << "mag_iterations,mag_residual,mag_time,"
             << "ux_min,ux_max,uy_min,uy_max,U_max,E_kin,"
             << "divU_L2,divU_Linf,CFL,p_min,p_max,"
             << "F_cap_max,F_mag_max,F_grav_max,ns_time,"

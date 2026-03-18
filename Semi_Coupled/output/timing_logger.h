@@ -95,7 +95,6 @@ public:
 
         // Update cumulative totals
         cumul_ch_ += timing.ch_time;
-        cumul_poisson_ += timing.poisson_time;
         cumul_mag_ += timing.mag_time;
         cumul_ns_ += timing.ns_time;
         cumul_output_ += timing.output_time;
@@ -110,13 +109,11 @@ public:
               << std::scientific << std::setprecision(6) << time << ","
               << std::fixed << std::setprecision(4)
               << timing.ch_time << ","
-              << timing.poisson_time << ","
               << timing.mag_time << ","
               << timing.ns_time << ","
               << timing.output_time << ","
               << timing.step_total << ","
               << cumul_ch_ << ","
-              << cumul_poisson_ << ","
               << cumul_mag_ << ","
               << cumul_ns_ << ","
               << cumul_total_ << ","
@@ -149,7 +146,6 @@ public:
      * @brief Get cumulative totals
      */
     double total_ch_time() const { return cumul_ch_; }
-    double total_poisson_time() const { return cumul_poisson_; }
     double total_mag_time() const { return cumul_mag_; }
     double total_ns_time() const { return cumul_ns_; }
     double total_time() const { return cumul_total_; }
@@ -158,7 +154,6 @@ public:
      * @brief Get average times per step
      */
     double avg_ch_time() const { return step_count_ > 0 ? cumul_ch_ / step_count_ : 0.0; }
-    double avg_poisson_time() const { return step_count_ > 0 ? cumul_poisson_ / step_count_ : 0.0; }
     double avg_mag_time() const { return step_count_ > 0 ? cumul_mag_ / step_count_ : 0.0; }
     double avg_ns_time() const { return step_count_ > 0 ? cumul_ns_ / step_count_ : 0.0; }
     double avg_step_time() const { return step_count_ > 0 ? cumul_total_ / step_count_ : 0.0; }
@@ -170,7 +165,6 @@ private:
 
     // Cumulative totals
     double cumul_ch_ = 0.0;
-    double cumul_poisson_ = 0.0;
     double cumul_mag_ = 0.0;
     double cumul_ns_ = 0.0;
     double cumul_output_ = 0.0;
@@ -187,8 +181,8 @@ private:
     void write_header()
     {
         file_ << "step,time,"
-              << "ch_time,poisson_time,mag_time,ns_time,output_time,step_total,"
-              << "cumul_ch,cumul_poisson,cumul_mag,cumul_ns,cumul_total,"
+              << "ch_time,mag_time,ns_time,output_time,step_total,"
+              << "cumul_ch,cumul_mag,cumul_ns,cumul_total,"
               << "memory_mb\n";
     }
 
@@ -207,9 +201,6 @@ private:
         file_ << "#   CH:       total=" << std::fixed << std::setprecision(2) << cumul_ch_
               << ", avg/step=" << std::setprecision(4) << avg_ch_time()
               << ", fraction=" << std::setprecision(1) << (100.0 * cumul_ch_ / cumul_total_) << "%\n";
-        file_ << "#   Poisson:  total=" << std::fixed << std::setprecision(2) << cumul_poisson_
-              << ", avg/step=" << std::setprecision(4) << avg_poisson_time()
-              << ", fraction=" << std::setprecision(1) << (100.0 * cumul_poisson_ / cumul_total_) << "%\n";
         file_ << "#   Mag:      total=" << std::fixed << std::setprecision(2) << cumul_mag_
               << ", avg/step=" << std::setprecision(4) << avg_mag_time()
               << ", fraction=" << std::setprecision(1) << (100.0 * cumul_mag_ / cumul_total_) << "%\n";

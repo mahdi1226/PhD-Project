@@ -83,6 +83,7 @@ public:
     // ------------------------------------------------------------------------
     double inner_tolerance;
     unsigned int max_inner_iterations;
+    bool verbose_ = false;  // Gate debug output
 
 private:
     // ------------------------------------------------------------------------
@@ -143,8 +144,12 @@ private:
     // Velocity block and preconditioners
     // ------------------------------------------------------------------------
     dealii::TrilinosWrappers::SparseMatrix velocity_block_;
+    dealii::TrilinosWrappers::SparseMatrix schur_approx_;   // BFBt Schur complement
     std::unique_ptr<dealii::TrilinosWrappers::PreconditionBase> A_preconditioner_;
     std::unique_ptr<dealii::TrilinosWrappers::PreconditionBase> S_preconditioner_;
+
+    // Whether to use BFBt Schur complement (true) or pressure mass matrix (false)
+    bool use_bfbt_;
 
     // ------------------------------------------------------------------------
     // Physical / scaling parameters
@@ -155,6 +160,17 @@ private:
 
     // Pressure pin consistency (p-space index, -1 if inactive)
     int pinned_p_local_;
+
+    // Cached vmult temporaries (lazy-initialized on first call)
+    mutable bool tmp_initialized_ = false;
+    mutable dealii::TrilinosWrappers::MPI::Vector r_vel_;
+    mutable dealii::TrilinosWrappers::MPI::Vector r_p_;
+    mutable dealii::TrilinosWrappers::MPI::Vector z_p_;
+    mutable dealii::TrilinosWrappers::MPI::Vector z_p_ghosted_;
+    mutable dealii::TrilinosWrappers::MPI::Vector Bt_zp_;
+    mutable dealii::TrilinosWrappers::MPI::Vector rhs_vel_;
+    mutable dealii::TrilinosWrappers::MPI::Vector z_vel_;
+    mutable dealii::IndexSet p_relevant_cached_;
 };
 
 #endif // NS_BLOCK_PRECONDITIONER_H

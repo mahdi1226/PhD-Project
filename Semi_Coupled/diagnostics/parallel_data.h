@@ -43,12 +43,9 @@ struct ParallelStepData
     double ch_assemble_time = 0.0;
     double ch_solve_time = 0.0;
 
-    // Poisson (per Picard iteration, accumulated)
-    double poisson_assemble_time = 0.0;
-    double poisson_solve_time = 0.0;
-
-    // Magnetization (DG transport or L2 projection)
-    double mag_time = 0.0;           // Total mag time (projection has no assembly/solve split)
+    // Magnetics (monolithic M+φ solve)
+    double mag_assemble_time = 0.0;
+    double mag_solve_time = 0.0;
 
     // Navier-Stokes
     double ns_assemble_time = 0.0;
@@ -73,7 +70,6 @@ struct ParallelStepData
     // Solver iteration counts (on this rank — same across ranks for global solvers)
     // ========================================================================
     unsigned int ch_solver_iters = 0;
-    unsigned int poisson_solver_iters = 0;
     unsigned int mag_solver_iters = 0;
     unsigned int ns_solver_iters = 0;
 
@@ -83,25 +79,21 @@ struct ParallelStepData
     //   For Trilinos distributed matrices: local_nnz = matrix.local_nnz()
     // ========================================================================
     unsigned long long ch_nnz = 0;
-    unsigned long long poisson_nnz = 0;
     unsigned long long mag_nnz = 0;
     unsigned long long ns_nnz = 0;
 
     // Global nnz (sum across ranks — but note Trilinos counts local entries)
     unsigned long long ch_nnz_global = 0;
-    unsigned long long poisson_nnz_global = 0;
     unsigned long long mag_nnz_global = 0;
     unsigned long long ns_nnz_global = 0;
 
     // Bandwidth (max |i-j| for nonzero entries, per matrix, LOCAL to this rank)
     unsigned int ch_bandwidth = 0;
-    unsigned int poisson_bandwidth = 0;
     unsigned int mag_bandwidth = 0;
     unsigned int ns_bandwidth = 0;
 
     // Global bandwidth (max across all ranks)
     unsigned int ch_bandwidth_global = 0;
-    unsigned int poisson_bandwidth_global = 0;
     unsigned int mag_bandwidth_global = 0;
     unsigned int ns_bandwidth_global = 0;
 
@@ -132,7 +124,6 @@ struct ParallelStepData
 
     // Per-subsystem imbalance
     double ch_imbalance = 1.0;
-    double poisson_imbalance = 1.0;
     double mag_imbalance = 1.0;
     double ns_imbalance = 1.0;
 
@@ -184,12 +175,11 @@ struct ParallelStepData
         };
 
         double ch_total = ch_assemble_time + ch_solve_time;
-        double poisson_total = poisson_assemble_time + poisson_solve_time;
+        double mag_total = mag_assemble_time + mag_solve_time;
         double ns_total = ns_assemble_time + ns_solve_time;
 
         ch_imbalance = compute_imbalance(ch_total);
-        poisson_imbalance = compute_imbalance(poisson_total);
-        mag_imbalance = compute_imbalance(mag_time);
+        mag_imbalance = compute_imbalance(mag_total);
         ns_imbalance = compute_imbalance(ns_total);
 
         // --- Cell/DoF balance ---
@@ -204,13 +194,11 @@ struct ParallelStepData
 
         // --- Global sparsity (sum of local nnz) ---
         MPI_Allreduce(&ch_nnz, &ch_nnz_global, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, comm);
-        MPI_Allreduce(&poisson_nnz, &poisson_nnz_global, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, comm);
         MPI_Allreduce(&mag_nnz, &mag_nnz_global, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, comm);
         MPI_Allreduce(&ns_nnz, &ns_nnz_global, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, comm);
 
         // --- Global bandwidth (max across ranks) ---
         MPI_Allreduce(&ch_bandwidth, &ch_bandwidth_global, 1, MPI_UNSIGNED, MPI_MAX, comm);
-        MPI_Allreduce(&poisson_bandwidth, &poisson_bandwidth_global, 1, MPI_UNSIGNED, MPI_MAX, comm);
         MPI_Allreduce(&mag_bandwidth, &mag_bandwidth_global, 1, MPI_UNSIGNED, MPI_MAX, comm);
         MPI_Allreduce(&ns_bandwidth, &ns_bandwidth_global, 1, MPI_UNSIGNED, MPI_MAX, comm);
     }

@@ -302,6 +302,11 @@ void PhaseFieldProblem<dim>::refine_mesh()
     if (params_.enable_ns)
         setup_ns_system();
 
+    // Invalidate caches — DoFs renumbered, vectors resized
+    cached_h_min_ = -1.0;
+    bgs_vectors_initialized_ = false;
+    mag_extraction_maps_built_ = false;
+
     // =========================================================================
     // Step 9: Interpolate solutions to new mesh
     //

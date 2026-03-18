@@ -25,19 +25,10 @@
 
 #include <deal.II/lac/trilinos_solver.h>
 #include <deal.II/lac/dynamic_sparsity_pattern.h>
-#include <deal.II/lac/read_write_vector.h>
+#include <deal.II/lac/trilinos_sparsity_pattern.h>
 
 #include <Epetra_CrsMatrix.h>
-#include <Epetra_Map.h>
-#include <Epetra_FECrsGraph.h>
-#include <Epetra_FECrsMatrix.h>
-#include <Epetra_Export.h>
-
-#ifdef DEAL_II_WITH_MPI
-#include <Epetra_MpiComm.h>
-#else
-#include <Epetra_SerialComm.h>
-#endif
+#include <EpetraExt_MatrixMatrix.h>
 
 #include <iostream>
 #include <iomanip>
@@ -73,6 +64,7 @@ BlockSchurPreconditionerParallel::BlockSchurPreconditionerParallel(
     , p_owned_(p_owned)
     , mpi_comm_(mpi_comm)
     , rank_(0)
+    , use_bfbt_(true)
     , viscosity_(viscosity > 0 ? viscosity : 1.0)
     , dt_(dt)
     , schur_alpha_(viscosity_ + ((dt_ > 0.0) ? (1.0 / dt_) : 0.0))
@@ -118,8 +110,6 @@ BlockSchurPreconditionerParallel::BlockSchurPreconditionerParallel(
     const int num_my_rows = epetra_mat.NumMyRows();
 
     vel_owned_.set_size(n_vel_);
-    std::vector<long long> my_vel_gids;  // For Epetra_Map construction
-    my_vel_gids.reserve(num_my_rows);
 
     for (int local_row = 0; local_row < num_my_rows; ++local_row)
     {
@@ -128,17 +118,10 @@ BlockSchurPreconditionerParallel::BlockSchurPreconditionerParallel(
         {
             const int vel_idx = global_to_vel_[static_cast<dealii::types::global_dof_index>(ns_idx)];
             if (vel_idx >= 0)
-            {
                 vel_owned_.add_index(static_cast<dealii::types::global_dof_index>(vel_idx));
-                my_vel_gids.push_back(static_cast<long long>(vel_idx));
-            }
         }
     }
     vel_owned_.compress();
-
-    // Remove duplicates and sort (Epetra requires sorted unique GIDs)
-    std::sort(my_vel_gids.begin(), my_vel_gids.end());
-    my_vel_gids.erase(std::unique(my_vel_gids.begin(), my_vel_gids.end()), my_vel_gids.end());
 
     // ========================================================================
     // Precompute pressure indices needed for apply_BT
@@ -178,37 +161,19 @@ BlockSchurPreconditionerParallel::BlockSchurPreconditionerParallel(
     pressure_indices_for_BT_.compress();
 
     // ========================================================================
-    // Build velocity block using Trilinos directly
+    // Build velocity block using deal.II's own SparsityPattern + SparseMatrix
     //
-    // deal.II's SparsityPattern::reinit() requires LinearMap (contiguous GIDs).
-    // With separate ux/uy DoFHandlers, vel_owned_ is typically non-contiguous.
-    // Solution: Use Epetra_Map directly which supports non-contiguous GIDs.
+    // Previous approach used raw Epetra_Map + Epetra_CrsMatrix with 32-bit
+    // GIDs, but deal.II vectors use IndexSet-derived maps (potentially 64-bit).
+    // This mismatch caused MPI_ERR_TRUNCATE on 2+ ranks during Apply().
     //
-    // CRITICAL: Must use 32-bit int GIDs to match system matrix index type.
-    //           Using long long GIDs creates a 64-bit indexed matrix that is
-    //           incompatible with deal.II's SparseMatrix::reinit().
+    // Fix: use deal.II's TrilinosWrappers API throughout so all Epetra maps
+    // are created consistently from the same IndexSet (vel_owned_).
     // ========================================================================
 
-    const Epetra_Comm& epetra_comm = epetra_mat.Comm();
-
-    // Create Epetra_Map with 32-bit int GIDs (matching system matrix)
-    const int n_my_vel = static_cast<int>(my_vel_gids.size());
-    std::vector<int> my_vel_gids_int(n_my_vel);
-    for (int i = 0; i < n_my_vel; ++i)
-        my_vel_gids_int[i] = static_cast<int>(my_vel_gids[i]);
-
-    Epetra_Map vel_row_map(static_cast<int>(n_vel_), n_my_vel,
-                           my_vel_gids_int.data(), 0, epetra_comm);
-
-    // ========================================================================
-    // Build sparsity pattern for velocity block
-    // ========================================================================
-
-    // First pass: count entries per row
-    std::vector<int> entries_per_row(n_my_vel, 0);
-    std::map<long long, int> gid_to_local;
-    for (int i = 0; i < n_my_vel; ++i)
-        gid_to_local[my_vel_gids[i]] = i;
+    // First pass: build sparsity pattern
+    dealii::TrilinosWrappers::SparsityPattern vel_sp;
+    vel_sp.reinit(vel_owned_, vel_owned_, mpi_comm_);
 
     for (int local_row = 0; local_row < num_my_rows; ++local_row)
     {
@@ -219,11 +184,8 @@ BlockSchurPreconditionerParallel::BlockSchurPreconditionerParallel(
         const int vel_row = global_to_vel_[static_cast<dealii::types::global_dof_index>(ns_row)];
         if (vel_row < 0)
             continue;
-
-        auto it = gid_to_local.find(vel_row);
-        if (it == gid_to_local.end())
+        if (!vel_owned_.is_element(static_cast<dealii::types::global_dof_index>(vel_row)))
             continue;
-        const int local_vel_row = it->second;
 
         int num_entries = 0;
         double* values = nullptr;
@@ -238,14 +200,15 @@ BlockSchurPreconditionerParallel::BlockSchurPreconditionerParallel(
 
             const int vel_col = global_to_vel_[static_cast<dealii::types::global_dof_index>(ns_col)];
             if (vel_col >= 0)
-                entries_per_row[local_vel_row]++;
+                vel_sp.add(static_cast<dealii::types::global_dof_index>(vel_row),
+                           static_cast<dealii::types::global_dof_index>(vel_col));
         }
     }
+    vel_sp.compress();
 
-    // Create CrsMatrix with estimated row sizes (32-bit int GIDs)
-    auto vel_crs = std::make_unique<Epetra_CrsMatrix>(Copy, vel_row_map, entries_per_row.data(), true);
+    // Create matrix from sparsity pattern and fill values
+    velocity_block_.reinit(vel_sp);
 
-    // Second pass: fill matrix values
     for (int local_row = 0; local_row < num_my_rows; ++local_row)
     {
         const long long ns_row = epetra_mat.GRID64(local_row);
@@ -255,21 +218,13 @@ BlockSchurPreconditionerParallel::BlockSchurPreconditionerParallel(
         const int vel_row = global_to_vel_[static_cast<dealii::types::global_dof_index>(ns_row)];
         if (vel_row < 0)
             continue;
-
-        auto it = gid_to_local.find(vel_row);
-        if (it == gid_to_local.end())
+        if (!vel_owned_.is_element(static_cast<dealii::types::global_dof_index>(vel_row)))
             continue;
 
         int num_entries = 0;
         double* values = nullptr;
         int* col_indices = nullptr;
         epetra_mat.ExtractMyRowView(local_row, num_entries, values, col_indices);
-
-        // Collect velocity entries (32-bit int column GIDs)
-        std::vector<int> col_gids;
-        std::vector<double> col_vals;
-        col_gids.reserve(num_entries);
-        col_vals.reserve(num_entries);
 
         for (int k = 0; k < num_entries; ++k)
         {
@@ -279,26 +234,318 @@ BlockSchurPreconditionerParallel::BlockSchurPreconditionerParallel(
 
             const int vel_col = global_to_vel_[static_cast<dealii::types::global_dof_index>(ns_col)];
             if (vel_col >= 0)
+                velocity_block_.set(static_cast<dealii::types::global_dof_index>(vel_row),
+                                    static_cast<dealii::types::global_dof_index>(vel_col),
+                                    values[k]);
+        }
+    }
+    velocity_block_.compress(dealii::VectorOperation::insert);
+
+    // ========================================================================
+    // Build BFBt Schur complement approximation
+    //
+    // For DG Q1 pressure, the pressure mass matrix M_p is block-diagonal
+    // (each cell's pressure DoFs are independent). But the actual Schur
+    // complement S = B A^{-1} B^T has inter-cell coupling through the
+    // CG velocity basis functions. Using M_p as S_approx fails because
+    // it misses this coupling entirely.
+    //
+    // BFBt: S_approx = B * diag(A)^{-1} * B^T
+    // This naturally has the correct sparsity pattern and captures both
+    // the temporal (1/dt) and spatial (ν/h²) scaling of the Schur complement.
+    // Reference: Elman, Silvester, Wathen - "Finite Elements and Fast
+    //            Iterative Solvers", Oxford University Press.
+    // ========================================================================
+    if (use_bfbt_)
+    {
+        // Step 1: Get diagonal of velocity block (inverse)
+        dealii::TrilinosWrappers::MPI::Vector A_diag_inv(vel_owned_, mpi_comm_);
+        for (auto idx = vel_owned_.begin(); idx != vel_owned_.end(); ++idx)
+        {
+            const double diag_val = velocity_block_(*idx, *idx);
+            A_diag_inv[*idx] = (std::abs(diag_val) > 1e-30) ? (1.0 / diag_val) : 0.0;
+        }
+        A_diag_inv.compress(dealii::VectorOperation::insert);
+
+        // Step 2: Build B matrix (n_p x n_vel) from system matrix
+        // B_{p_idx, vel_idx} = system_matrix(p_ns_idx, vel_ns_idx)
+        dealii::TrilinosWrappers::SparsityPattern B_sp;
+        B_sp.reinit(p_owned_, vel_owned_, mpi_comm_);
+
+        for (int local_row = 0; local_row < num_my_rows; ++local_row)
+        {
+            const long long ns_row = epetra_mat.GRID64(local_row);
+            if (ns_row < 0 || static_cast<dealii::types::global_dof_index>(ns_row) >= n_total_)
+                continue;
+
+            const int p_row = global_to_p_[static_cast<dealii::types::global_dof_index>(ns_row)];
+            if (p_row < 0)
+                continue;
+            if (!p_owned_.is_element(static_cast<dealii::types::global_dof_index>(p_row)))
+                continue;
+
+            int n_entries = 0;
+            double* vals = nullptr;
+            int* cols = nullptr;
+            epetra_mat.ExtractMyRowView(local_row, n_entries, vals, cols);
+
+            for (int k = 0; k < n_entries; ++k)
             {
-                col_gids.push_back(vel_col);
-                col_vals.push_back(values[k]);
+                const long long ns_col = epetra_mat.GCID64(cols[k]);
+                if (ns_col < 0 || static_cast<dealii::types::global_dof_index>(ns_col) >= n_total_)
+                    continue;
+
+                const int v_col = global_to_vel_[static_cast<dealii::types::global_dof_index>(ns_col)];
+                if (v_col >= 0)
+                    B_sp.add(static_cast<dealii::types::global_dof_index>(p_row),
+                             static_cast<dealii::types::global_dof_index>(v_col));
+            }
+        }
+        B_sp.compress();
+
+        dealii::TrilinosWrappers::SparseMatrix B_mat;
+        B_mat.reinit(B_sp);
+
+        for (int local_row = 0; local_row < num_my_rows; ++local_row)
+        {
+            const long long ns_row = epetra_mat.GRID64(local_row);
+            if (ns_row < 0 || static_cast<dealii::types::global_dof_index>(ns_row) >= n_total_)
+                continue;
+
+            const int p_row = global_to_p_[static_cast<dealii::types::global_dof_index>(ns_row)];
+            if (p_row < 0)
+                continue;
+            if (!p_owned_.is_element(static_cast<dealii::types::global_dof_index>(p_row)))
+                continue;
+
+            int n_entries = 0;
+            double* vals = nullptr;
+            int* cols = nullptr;
+            epetra_mat.ExtractMyRowView(local_row, n_entries, vals, cols);
+
+            for (int k = 0; k < n_entries; ++k)
+            {
+                const long long ns_col = epetra_mat.GCID64(cols[k]);
+                if (ns_col < 0 || static_cast<dealii::types::global_dof_index>(ns_col) >= n_total_)
+                    continue;
+
+                const int v_col = global_to_vel_[static_cast<dealii::types::global_dof_index>(ns_col)];
+                if (v_col >= 0)
+                    B_mat.set(static_cast<dealii::types::global_dof_index>(p_row),
+                              static_cast<dealii::types::global_dof_index>(v_col),
+                              vals[k]);
+            }
+        }
+        B_mat.compress(dealii::VectorOperation::insert);
+
+        // Step 3: Build B_scaled = B * diag(A)^{-1}  (scale each column of B)
+        // We do this by scaling B's entries: B_scaled(i,j) = B(i,j) * A_diag_inv(j)
+        dealii::TrilinosWrappers::SparseMatrix B_scaled;
+        B_scaled.reinit(B_sp);  // Same sparsity as B
+
+        {
+            const Epetra_CrsMatrix& B_epetra = B_mat.trilinos_matrix();
+            const int B_num_my_rows = B_epetra.NumMyRows();
+
+            // Need ghosted version of A_diag_inv to access off-rank velocity entries
+            dealii::IndexSet vel_relevant(n_vel_);
+            vel_relevant = vel_owned_;
+            // Collect all velocity column indices we need
+            for (int lr = 0; lr < B_num_my_rows; ++lr)
+            {
+                int ne = 0; double* v = nullptr; int* c = nullptr;
+                B_epetra.ExtractMyRowView(lr, ne, v, c);
+                for (int kk = 0; kk < ne; ++kk)
+                {
+                    const long long gcol = B_epetra.GCID64(c[kk]);
+                    if (gcol >= 0 && static_cast<dealii::types::global_dof_index>(gcol) < n_vel_)
+                        vel_relevant.add_index(static_cast<dealii::types::global_dof_index>(gcol));
+                }
+            }
+            vel_relevant.compress();
+
+            dealii::TrilinosWrappers::MPI::Vector A_diag_inv_ghosted(
+                vel_owned_, vel_relevant, mpi_comm_);
+            A_diag_inv_ghosted = A_diag_inv;
+
+            for (int lr = 0; lr < B_num_my_rows; ++lr)
+            {
+                int ne = 0; double* v = nullptr; int* c = nullptr;
+                B_epetra.ExtractMyRowView(lr, ne, v, c);
+                const long long grow = B_epetra.GRID64(lr);
+                if (grow < 0) continue;
+
+                for (int kk = 0; kk < ne; ++kk)
+                {
+                    const long long gcol = B_epetra.GCID64(c[kk]);
+                    if (gcol < 0) continue;
+                    const auto vel_idx = static_cast<dealii::types::global_dof_index>(gcol);
+                    const double scale = A_diag_inv_ghosted[vel_idx];
+                    B_scaled.set(static_cast<dealii::types::global_dof_index>(grow),
+                                 vel_idx, v[kk] * scale);
+                }
+            }
+        }
+        B_scaled.compress(dealii::VectorOperation::insert);
+
+        // Step 4: Compute S_BFBt = B_scaled * B^T using EpetraExt
+        // S = B_scaled * B^T = (B * D^{-1}) * B^T
+        {
+            Epetra_CrsMatrix& B_scaled_epetra =
+                const_cast<Epetra_CrsMatrix&>(B_scaled.trilinos_matrix());
+
+            // First pass: build sparsity pattern for BFBt by doing a symbolic multiply
+            // Use deal.II's SparsityPattern approach: iterate B_scaled rows, accumulate column pattern
+            dealii::TrilinosWrappers::SparsityPattern bfbt_sp;
+            bfbt_sp.reinit(p_owned_, p_owned_, mpi_comm_);
+
+            // B_scaled is n_p x n_vel, B^T is n_vel x n_p
+            // (B_scaled * B^T)(i,j) = sum_k B_scaled(i,k) * B(j,k)
+            // For each row i of B_scaled, collect the set of velocity indices k with B_scaled(i,k)!=0
+            // For each such k, find all pressure indices j with B(j,k)!=0
+            // Those (i,j) pairs are the sparsity of BFBt
+
+            // We need B^T sparsity, i.e., for each velocity index k, which pressure rows j have B(j,k)!=0
+            // Build transpose map: vel_idx -> set of p_idx
+            std::vector<std::vector<dealii::types::global_dof_index>> vel_to_p(n_vel_);
+            {
+                const Epetra_CrsMatrix& B_ep = B_mat.trilinos_matrix();
+                const int bnr = B_ep.NumMyRows();
+                for (int lr = 0; lr < bnr; ++lr)
+                {
+                    const long long grow = B_ep.GRID64(lr);
+                    if (grow < 0) continue;
+                    int ne = 0; double* v = nullptr; int* c = nullptr;
+                    B_ep.ExtractMyRowView(lr, ne, v, c);
+                    for (int kk = 0; kk < ne; ++kk)
+                    {
+                        const long long gcol = B_ep.GCID64(c[kk]);
+                        if (gcol >= 0 && static_cast<dealii::types::global_dof_index>(gcol) < n_vel_)
+                            vel_to_p[static_cast<dealii::types::global_dof_index>(gcol)].push_back(
+                                static_cast<dealii::types::global_dof_index>(grow));
+                    }
+                }
+            }
+
+            // Now build sparsity: for each row i of B_scaled
+            {
+                const int bnr = B_scaled_epetra.NumMyRows();
+                for (int lr = 0; lr < bnr; ++lr)
+                {
+                    const long long grow_i = B_scaled_epetra.GRID64(lr);
+                    if (grow_i < 0) continue;
+                    int ne = 0; double* v = nullptr; int* c = nullptr;
+                    B_scaled_epetra.ExtractMyRowView(lr, ne, v, c);
+                    for (int kk = 0; kk < ne; ++kk)
+                    {
+                        const long long gcol_k = B_scaled_epetra.GCID64(c[kk]);
+                        if (gcol_k < 0 || static_cast<dealii::types::global_dof_index>(gcol_k) >= n_vel_)
+                            continue;
+                        for (auto p_j : vel_to_p[static_cast<dealii::types::global_dof_index>(gcol_k)])
+                            bfbt_sp.add(static_cast<dealii::types::global_dof_index>(grow_i), p_j);
+                    }
+                }
+            }
+            bfbt_sp.compress();
+
+            schur_approx_.reinit(bfbt_sp);
+
+            // Fill values: (BFBt)(i,j) = sum_k B_scaled(i,k) * B(j,k)
+            // For each row i of B_scaled, iterate cols k, then add contributions to all j with B(j,k)!=0
+            {
+                // Build transpose value map: vel_idx -> [(p_idx, B_value)]
+                std::vector<std::vector<std::pair<dealii::types::global_dof_index, double>>> vel_to_p_vals(n_vel_);
+                {
+                    const Epetra_CrsMatrix& B_ep = B_mat.trilinos_matrix();
+                    const int bnr = B_ep.NumMyRows();
+                    for (int lr = 0; lr < bnr; ++lr)
+                    {
+                        const long long grow = B_ep.GRID64(lr);
+                        if (grow < 0) continue;
+                        int ne = 0; double* v = nullptr; int* c = nullptr;
+                        B_ep.ExtractMyRowView(lr, ne, v, c);
+                        for (int kk = 0; kk < ne; ++kk)
+                        {
+                            const long long gcol = B_ep.GCID64(c[kk]);
+                            if (gcol >= 0 && static_cast<dealii::types::global_dof_index>(gcol) < n_vel_)
+                                vel_to_p_vals[static_cast<dealii::types::global_dof_index>(gcol)].emplace_back(
+                                    static_cast<dealii::types::global_dof_index>(grow), v[kk]);
+                        }
+                    }
+                }
+
+                const int bnr = B_scaled_epetra.NumMyRows();
+                for (int lr = 0; lr < bnr; ++lr)
+                {
+                    const long long grow_i = B_scaled_epetra.GRID64(lr);
+                    if (grow_i < 0) continue;
+                    int ne = 0; double* v = nullptr; int* c = nullptr;
+                    B_scaled_epetra.ExtractMyRowView(lr, ne, v, c);
+
+                    for (int kk = 0; kk < ne; ++kk)
+                    {
+                        const long long gcol_k = B_scaled_epetra.GCID64(c[kk]);
+                        if (gcol_k < 0 || static_cast<dealii::types::global_dof_index>(gcol_k) >= n_vel_)
+                            continue;
+                        const double bs_val = v[kk]; // B_scaled(i,k)
+                        for (auto& [p_j, b_val] : vel_to_p_vals[static_cast<dealii::types::global_dof_index>(gcol_k)])
+                        {
+                            schur_approx_.add(static_cast<dealii::types::global_dof_index>(grow_i),
+                                              p_j, bs_val * b_val);
+                        }
+                    }
+                }
+            }
+            schur_approx_.compress(dealii::VectorOperation::add);
+        }
+
+        // Pin pressure DoF 0 to remove constant null space:
+        // Set row 0 and col 0 of BFBt to identity
+        if (p_owned_.is_element(0))
+        {
+            // Zero out row 0 and set diagonal to 1
+            // We must iterate the full row of the original BFBt to clear entries
+            const Epetra_CrsMatrix& bfbt_ep = schur_approx_.trilinos_matrix();
+            const int local_row0 = bfbt_ep.LRID(0);
+            if (local_row0 >= 0)
+            {
+                int ne = 0; double* v = nullptr; int* c = nullptr;
+                const_cast<Epetra_CrsMatrix&>(bfbt_ep).ExtractMyRowView(local_row0, ne, v, c);
+                for (int kk = 0; kk < ne; ++kk)
+                {
+                    const long long gcol = bfbt_ep.GCID64(c[kk]);
+                    if (gcol == 0)
+                        v[kk] = 1.0;  // diagonal
+                    else
+                        v[kk] = 0.0;  // off-diagonal
+                }
+            }
+        }
+        // Zero out column 0 (set all off-diagonal entries in column 0 to zero)
+        // Iterate all local rows and zero entries that map to global column 0
+        {
+            Epetra_CrsMatrix& bfbt_ep =
+                const_cast<Epetra_CrsMatrix&>(schur_approx_.trilinos_matrix());
+            const int bnr = bfbt_ep.NumMyRows();
+            for (int lr = 0; lr < bnr; ++lr)
+            {
+                const long long grow = bfbt_ep.GRID64(lr);
+                if (grow == 0) continue;  // row 0 already handled
+                int ne = 0; double* v = nullptr; int* c = nullptr;
+                bfbt_ep.ExtractMyRowView(lr, ne, v, c);
+                for (int kk = 0; kk < ne; ++kk)
+                {
+                    if (bfbt_ep.GCID64(c[kk]) == 0)
+                        v[kk] = 0.0;
+                }
             }
         }
 
-        if (!col_gids.empty())
-        {
-            vel_crs->InsertGlobalValues(vel_row,
-                                        static_cast<int>(col_gids.size()),
-                                        col_vals.data(),
-                                        col_gids.data());
-        }
+        if (rank_ == 0)
+            std::cout << "[Block Schur] BFBt Schur complement built: "
+                      << schur_approx_.m() << "x" << schur_approx_.n()
+                      << ", nnz=" << schur_approx_.n_nonzero_elements() << "\n";
     }
-
-    // Finalize the matrix
-    vel_crs->FillComplete(vel_row_map, vel_row_map);
-
-    // Wrap in deal.II matrix
-    velocity_block_.reinit(*vel_crs);
 
     // ========================================================================
     // Initialize preconditioners (AMG or ILU depending on use_ilu flag)
@@ -320,12 +567,15 @@ BlockSchurPreconditionerParallel::BlockSchurPreconditionerParallel(
         ilu_data_S.ilu_fill = 0;
         ilu_data_S.ilu_atol = 0.0;
         ilu_data_S.ilu_rtol = 1.0;
-        S_ilu->initialize(*pressure_mass_ptr_, ilu_data_S);
+        const auto& S_matrix = use_bfbt_ ? schur_approx_ : *pressure_mass_ptr_;
+        S_ilu->initialize(S_matrix, ilu_data_S);
         S_preconditioner_ = std::move(S_ilu);
     }
     else
     {
         // AMG preconditioner — default (requires ML or MueLu in Trilinos)
+        // Velocity block has [ux | uy] DoFs. AMG needs near-null space
+        // (constant modes) to respect the 2-component block structure.
         auto A_amg = std::make_unique<dealii::TrilinosWrappers::PreconditionAMG>();
         dealii::TrilinosWrappers::PreconditionAMG::AdditionalData amg_data_A;
         amg_data_A.elliptic = false;
@@ -333,20 +583,49 @@ BlockSchurPreconditionerParallel::BlockSchurPreconditionerParallel(
         amg_data_A.smoother_sweeps = 2;
         amg_data_A.aggregation_threshold = 0.02;
         amg_data_A.output_details = false;
+
+        // Build constant modes: mode[0] = 1 for ux, 0 for uy
+        //                       mode[1] = 0 for ux, 1 for uy
+        {
+            std::vector<std::vector<bool>> constant_modes(2, std::vector<bool>(n_vel_, false));
+            for (dealii::types::global_dof_index i = 0; i < n_ux_; ++i)
+                constant_modes[0][i] = true;
+            for (dealii::types::global_dof_index i = 0; i < n_uy_; ++i)
+                constant_modes[1][n_ux_ + i] = true;
+            amg_data_A.constant_modes = constant_modes;
+        }
+
         A_amg->initialize(velocity_block_, amg_data_A);
         A_preconditioner_ = std::move(A_amg);
 
-        auto S_amg = std::make_unique<dealii::TrilinosWrappers::PreconditionAMG>();
-        dealii::TrilinosWrappers::PreconditionAMG::AdditionalData amg_data_S;
-        amg_data_S.elliptic = true;
-        amg_data_S.higher_order_elements = false;
-        amg_data_S.smoother_sweeps = 1;
-        amg_data_S.aggregation_threshold = 0.02;
-        amg_data_S.output_details = false;
-        S_amg->initialize(*pressure_mass_ptr_, amg_data_S);
-        S_preconditioner_ = std::move(S_amg);
+        const auto& S_matrix = use_bfbt_ ? schur_approx_ : *pressure_mass_ptr_;
+        if (use_bfbt_)
+        {
+            // BFBt has DG-like structure → ILU works better than AMG
+            auto S_ilu_pc = std::make_unique<dealii::TrilinosWrappers::PreconditionILU>();
+            dealii::TrilinosWrappers::PreconditionILU::AdditionalData ilu_data;
+            ilu_data.ilu_fill = 1;
+            ilu_data.ilu_atol = 0.0;
+            ilu_data.ilu_rtol = 1.0;
+            S_ilu_pc->initialize(S_matrix, ilu_data);
+            S_preconditioner_ = std::move(S_ilu_pc);
+        }
+        else
+        {
+            auto S_amg = std::make_unique<dealii::TrilinosWrappers::PreconditionAMG>();
+            dealii::TrilinosWrappers::PreconditionAMG::AdditionalData amg_data_S;
+            amg_data_S.elliptic = true;
+            amg_data_S.higher_order_elements = false;
+            amg_data_S.smoother_sweeps = 1;
+            amg_data_S.aggregation_threshold = 0.02;
+            amg_data_S.output_details = false;
+            S_amg->initialize(S_matrix, amg_data_S);
+            S_preconditioner_ = std::move(S_amg);
+        }
     }
 
+    // Note: inner_tolerance and max_inner_iterations may be overridden
+    // after construction (they are public members). This log shows constructor defaults.
     if (rank_ == 0)
     {
         std::cout << "[Block Schur] Initialized: "
@@ -355,8 +634,6 @@ BlockSchurPreconditionerParallel::BlockSchurPreconditionerParallel(
                   << ", S = " << n_p_ << "x" << n_p_
                   << ", precond = " << (use_ilu ? "ILU" : "AMG")
                   << ", alpha = " << std::scientific << std::setprecision(2) << schur_alpha_
-                  << ", inner_tol = " << inner_tolerance
-                  << ", max_inner = " << max_inner_iterations
                   << ", nu = " << viscosity_
                   << ", dt = " << dt_
                   << std::defaultfloat << "\n";
@@ -370,78 +647,79 @@ void BlockSchurPreconditionerParallel::vmult(
     dealii::TrilinosWrappers::MPI::Vector& dst,
     const dealii::TrilinosWrappers::MPI::Vector& src) const
 {
-    if (rank_ == 0) std::cout << "[Block Schur vmult] START" << std::endl;
+    // Lazy-init cached temporaries (allocated once, reused across vmult calls)
+    if (!tmp_initialized_)
+    {
+        r_vel_.reinit(vel_owned_, mpi_comm_);
+        r_p_.reinit(p_owned_, mpi_comm_);
+        z_p_.reinit(p_owned_, mpi_comm_);
+        Bt_zp_.reinit(vel_owned_, mpi_comm_);
+        rhs_vel_.reinit(vel_owned_, mpi_comm_);
+        z_vel_.reinit(vel_owned_, mpi_comm_);
 
-    // Temporary vectors
-    dealii::TrilinosWrappers::MPI::Vector r_vel(vel_owned_, mpi_comm_);
-    dealii::TrilinosWrappers::MPI::Vector r_p(p_owned_, mpi_comm_);
+        p_relevant_cached_.set_size(n_p_);
+        p_relevant_cached_ = p_owned_;
+        p_relevant_cached_.add_indices(pressure_indices_for_BT_);
+        p_relevant_cached_.compress();
 
-    if (rank_ == 0) std::cout << "[Block Schur vmult] extracting..." << std::endl;
-    extract_velocity(src, r_vel);
-    extract_pressure(src, r_p);
-    if (rank_ == 0) std::cout << "[Block Schur vmult] extracted, |r_vel|=" << r_vel.l2_norm()
-                              << " |r_p|=" << r_p.l2_norm() << std::endl;
+        z_p_ghosted_.reinit(p_owned_, p_relevant_cached_, mpi_comm_);
+        tmp_initialized_ = true;
+    }
+
+    extract_velocity(src, r_vel_);
+    extract_pressure(src, r_p_);
 
     // Enforce pinned pressure mode consistency (p-space DoF 0)
     if (pinned_p_local_ >= 0)
-    {
-        r_p[0] = 0.0;
-        r_p.compress(dealii::VectorOperation::insert);
-    }
+        r_p_[0] = 0.0;
 
-    // Step 1: Solve for pressure: M_p * z_p = r_p, then scale z_p *= -alpha
-    dealii::TrilinosWrappers::MPI::Vector z_p(p_owned_, mpi_comm_);
-    z_p = 0;
+    // Step 1: Solve for pressure using Schur complement approximation
+    z_p_ = 0;
 
     {
-        const double p_rhs_norm = r_p.l2_norm();
+        const double p_rhs_norm = r_p_.l2_norm();
         const double tol = inner_tolerance * std::max(p_rhs_norm, 1e-30);
 
-        if (rank_ == 0) std::cout << "[Block Schur vmult] Step1: pressure CG, |rhs|=" << p_rhs_norm << std::endl;
+        const auto& S_matrix = use_bfbt_ ? schur_approx_ : *pressure_mass_ptr_;
 
         dealii::SolverControl solver_control(max_inner_iterations, tol, false, false);
-        dealii::SolverCG<dealii::TrilinosWrappers::MPI::Vector> cg(solver_control);
 
-        try
         {
-            cg.solve(*pressure_mass_ptr_, z_p, r_p, *S_preconditioner_);
+            dealii::SolverCG<dealii::TrilinosWrappers::MPI::Vector> cg(solver_control);
+            try
+            {
+                cg.solve(S_matrix, z_p_, r_p_, *S_preconditioner_);
+            }
+            catch (dealii::SolverControl::NoConvergence&) {}
         }
-        catch (dealii::SolverControl::NoConvergence&)
-        {
-            // Fine for preconditioning
-        }
+
+        if (verbose_ && rank_ == 0)
+            std::cout << "  [Schur vmult] S solve: " << solver_control.last_step()
+                      << " its, res=" << std::scientific << std::setprecision(2)
+                      << solver_control.last_value()
+                      << ", rhs=" << p_rhs_norm << std::defaultfloat << "\n";
 
         n_iterations_S += solver_control.last_step();
-        if (rank_ == 0) std::cout << "[Block Schur vmult] Step1 done, iters=" << solver_control.last_step() << std::endl;
 
         if (pinned_p_local_ >= 0)
-        {
-            z_p[0] = 0.0;
-            z_p.compress(dealii::VectorOperation::insert);
-        }
+            z_p_[0] = 0.0;
 
-        z_p *= (-schur_alpha_);
+        z_p_ *= use_bfbt_ ? -1.0 : (-schur_alpha_);
     }
 
     // Step 2: Update velocity RHS: rhs_vel = r_vel + B^T * z_p
-    if (rank_ == 0) std::cout << "[Block Schur vmult] Step2: apply_BT..." << std::endl;
-    dealii::TrilinosWrappers::MPI::Vector Bt_zp(vel_owned_, mpi_comm_);
-    apply_BT(z_p, Bt_zp);
-    if (rank_ == 0) std::cout << "[Block Schur vmult] Step2 done, |Bt_zp|=" << Bt_zp.l2_norm() << std::endl;
+    z_p_ghosted_ = z_p_;
+    apply_BT(z_p_ghosted_, Bt_zp_);
 
-    dealii::TrilinosWrappers::MPI::Vector rhs_vel(vel_owned_, mpi_comm_);
-    rhs_vel = r_vel;
-    rhs_vel += Bt_zp;
+    rhs_vel_ = r_vel_;
+    rhs_vel_ += Bt_zp_;
 
     // Step 3: Solve for velocity: A * z_vel = rhs_vel
-    dealii::TrilinosWrappers::MPI::Vector z_vel(vel_owned_, mpi_comm_);
-    z_vel = 0;
+    z_vel_ = 0;
 
     {
-        const double vel_rhs_norm = rhs_vel.l2_norm();
+        const double vel_rhs_norm = rhs_vel_.l2_norm();
         const double tol = inner_tolerance * std::max(vel_rhs_norm, 1e-30);
-
-        if (rank_ == 0) std::cout << "[Block Schur vmult] Step3: velocity GMRES, |rhs|=" << vel_rhs_norm << std::endl;
 
         dealii::SolverControl solver_control(max_inner_iterations, tol, false, false);
 
@@ -451,22 +729,26 @@ void BlockSchurPreconditionerParallel::vmult(
 
         try
         {
-            gmres.solve(velocity_block_, z_vel, rhs_vel, *A_preconditioner_);
+            gmres.solve(velocity_block_, z_vel_, rhs_vel_, *A_preconditioner_);
         }
         catch (dealii::SolverControl::NoConvergence&)
         {
             // Fine for preconditioning
         }
 
+        if (verbose_ && rank_ == 0)
+            std::cout << "  [Schur vmult] A solve: " << solver_control.last_step()
+                      << " its, res=" << std::scientific << std::setprecision(2)
+                      << solver_control.last_value()
+                      << ", rhs=" << vel_rhs_norm << std::defaultfloat << "\n";
+
         n_iterations_A += solver_control.last_step();
-        if (rank_ == 0) std::cout << "[Block Schur vmult] Step3 done, iters=" << solver_control.last_step() << std::endl;
     }
 
     // Step 4: Assemble output
-    if (rank_ == 0) std::cout << "[Block Schur vmult] Step4: assembling output..." << std::endl;
     dst = 0;
-    insert_velocity(z_vel, dst);
-    insert_pressure(z_p, dst);
+    insert_velocity(z_vel_, dst);
+    insert_pressure(z_p_, dst);
     dst.compress(dealii::VectorOperation::insert);
 }
 
@@ -577,9 +859,7 @@ void BlockSchurPreconditionerParallel::apply_BT(
 {
     vel = 0;
 
-    dealii::LinearAlgebra::ReadWriteVector<double> p_values(pressure_indices_for_BT_);
-    p_values.import_elements(p, dealii::VectorOperation::insert);
-
+    // p is now a ghosted vector (created in vmult) — safe to read off-rank entries
     const Epetra_CrsMatrix& epetra_mat = system_matrix_ptr_->trilinos_matrix();
     const int num_my_rows = epetra_mat.NumMyRows();
 
@@ -617,7 +897,7 @@ void BlockSchurPreconditionerParallel::apply_BT(
 
             const int p_idx = global_to_p_[ns_col];
             if (p_idx >= 0)
-                sum += values[k] * p_values[static_cast<dealii::types::global_dof_index>(p_idx)];
+                sum += values[k] * p[static_cast<dealii::types::global_dof_index>(p_idx)];
         }
 
         vel[static_cast<dealii::types::global_dof_index>(vel_idx)] = sum;

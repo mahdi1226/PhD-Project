@@ -21,7 +21,7 @@
 struct StepTiming
 {
     double ch_time = 0.0;           // Cahn-Hilliard solve time (s)
-    double poisson_time = 0.0;      // Poisson solve time (s)
+    // No standalone Poisson — φ is solved monolithically with M (see mag_time)
     double mag_time = 0.0;          // Magnetization transport time (s)
     double ns_time = 0.0;           // Navier-Stokes solve time (s)
     double output_time = 0.0;       // VTK/diagnostics output time (s)
@@ -29,7 +29,6 @@ struct StepTiming
 
     // Cumulative totals (updated externally)
     double cumul_ch = 0.0;
-    double cumul_poisson = 0.0;
     double cumul_mag = 0.0;
     double cumul_ns = 0.0;
     double cumul_total = 0.0;
@@ -42,7 +41,7 @@ struct StepTiming
      */
     void compute_step_total()
     {
-        step_total = ch_time + poisson_time + mag_time + ns_time + output_time;
+        step_total = ch_time + mag_time + ns_time + output_time;
     }
 };
 
@@ -86,12 +85,8 @@ struct StepData
     double mu_min = 1.0;
     double mu_max = 1.0;
 
-    unsigned int poisson_iterations = 0;
-    double poisson_residual = 0.0;
-    double poisson_time = 0.0;
-
     // ========================================================================
-    // Magnetization transport diagnostics
+    // Magnetics diagnostics (monolithic M+φ solve)
     // ========================================================================
     unsigned int mag_iterations = 0;
     double mag_residual = 0.0;
@@ -138,7 +133,7 @@ struct StepData
     double dE_internal_dt = 0.0;    // Should be ≤ 0 for stability
     double dE_total_dt = 0.0;       // Can be > 0 due to magnetic ramping
 
-    double system_residual = 0.0;   // max(ch, poisson, ns residuals)
+    double system_residual = 0.0;   // max(ch, mag, ns residuals)
 
     // ========================================================================
     // Interface tracking (for Rosensweig)
@@ -193,7 +188,7 @@ struct StepData
         E_total = E_CH + E_kin + E_mag;
 
         // System residual = max of all subsystem residuals
-        system_residual = std::max({ch_residual, poisson_residual, ns_residual});
+        system_residual = std::max({ch_residual, mag_residual, ns_residual});
 
         // Warning flags
         theta_bounds_violated = (theta_min < -1.01 || theta_max > 1.01);
