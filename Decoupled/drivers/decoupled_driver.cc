@@ -481,9 +481,7 @@ private:
 // Initial condition: flat interface at y = y_interface
 //
 // Zhang Eq 4.3: Φ₀ = 1 if y ≤ y_interface, Φ₀ = 0 otherwise (SHARP STEP)
-// In {-1,+1} convention: θ = +1 if y ≤ y_interface, θ = -1 otherwise
-//
-// Maps to θ = +1 (ferrofluid, below) and θ = -1 (air, above)
+// Φ = 1 (ferrofluid, below) and Φ = 0 (air, above)
 // ============================================================================
 class FlatInterfaceIC : public dealii::Function<dim>
 {
@@ -509,8 +507,8 @@ public:
                            + std::cos(11.0 * 2.0 * M_PI * p[0])) / 3.0;
         }
 
-        // Sharp step: Zhang Eq 4.3
-        return (p[1] <= y_int) ? 1.0 : -1.0;
+        // Sharp step: Zhang Eq 4.3 — Φ-space: 1=ferrofluid, 0=air
+        return (p[1] <= y_int) ? 1.0 : 0.0;
     }
 
 private:
@@ -531,8 +529,8 @@ public:
 // ============================================================================
 // Circular droplet IC (validation: --validation droplet)
 //
-// θ = tanh((R - |x - x_c|) / (√2 ε))
-// Ferrofluid (θ=+1) inside circle, air (θ=-1) outside.
+// Φ = 1 inside circle, Φ = 0 outside.
+// Zhang Eq 4.8: sharp interface for hedgehog test.
 // In absence of magnetic field, circle should remain circular.
 // ============================================================================
 class CircularDropletIC : public dealii::Function<dim>
@@ -547,9 +545,9 @@ public:
     double value(const dealii::Point<dim>& p,
                  const unsigned int /*component*/) const override
     {
-        // Sharp step: Zhang Eq 4.8
+        // Sharp step: Zhang Eq 4.8 — Φ-space: 1=ferrofluid, 0=air
         const double dist = center_.distance(p);
-        return (dist <= R_) ? 1.0 : -1.0;
+        return (dist <= R_) ? 1.0 : 0.0;
     }
 
 private:
@@ -564,7 +562,7 @@ private:
 // Zhang Section 4.2, Eq before Fig 4.3:
 //   Φ₀ = 0.5 - 0.5 tanh((d - R) / (1.2ε))
 // where d = |dx| + |dy| is the L1 (diamond) distance.
-// In {-1,+1} convention: θ = 2Φ - 1 = tanh((R - d) / (1.2ε))
+// Φ-space: Φ₀ = 0.5 + 0.5·tanh((R - d) / (1.2ε))
 // ============================================================================
 class DiamondDropletIC : public dealii::Function<dim>
 {
@@ -583,7 +581,7 @@ public:
         const double dy = p[1] - center_[1];
         // L1 / diamond distance: d = |dx| + |dy|
         const double d = std::abs(dx) + std::abs(dy);
-        return std::tanh((R_ - d) / (1.2 * eps_));
+        return 0.5 + 0.5 * std::tanh((R_ - d) / (1.2 * eps_));
     }
 
 private:

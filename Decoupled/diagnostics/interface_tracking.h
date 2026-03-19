@@ -1,12 +1,12 @@
 // ============================================================================
 // diagnostics/interface_tracking.h — Interface Position Tracking (Parallel)
 //
-// Computes the y-coordinates where θ ≈ 0 (the diffuse interface).
+// Computes the y-coordinates where Φ ≈ 0.5 (the diffuse interface).
 // Used for Rosensweig instability monitoring: spike heights, amplitude,
 // and comparison with Zhang, He & Yang (SIAM J. Sci. Comput. 43, 2021).
 //
 // Method: Zero-crossing detection on cell edges.
-//   For each cell edge, checks if θ changes sign between vertices.
+//   For each cell edge, checks if (Φ - 0.5) changes sign between vertices.
 //   If so, linearly interpolates to find the crossing y-coordinate.
 //
 // All quantities are MPI-reduced for parallel correctness.
@@ -72,13 +72,14 @@ InterfacePosition compute_interface_position(
             const unsigned int v1 = dealii::GeometryInfo<dim>::line_to_cell_vertices(edge, 0);
             const unsigned int v2 = dealii::GeometryInfo<dim>::line_to_cell_vertices(edge, 1);
 
-            const double t1 = vertex_theta[v1];
-            const double t2 = vertex_theta[v2];
+            // Shift by 0.5 so interface is at zero crossing (Φ-space: interface at Φ=0.5)
+            const double t1 = vertex_theta[v1] - 0.5;
+            const double t2 = vertex_theta[v2] - 0.5;
 
-            // Sign change → interface crosses this edge
+            // Sign change → interface (Φ=0.5) crosses this edge
             if (t1 * t2 < 0)
             {
-                // Linear interpolation: find where θ = 0
+                // Linear interpolation: find where Φ = 0.5
                 const double s = -t1 / (t2 - t1);
                 const dealii::Point<dim> crossing =
                     vertex_points[v1] + s * (vertex_points[v2] - vertex_points[v1]);

@@ -1,8 +1,8 @@
 // ============================================================================
 // cahn_hilliard/cahn_hilliard.cc - Orchestration, Accessors, Diagnostics
 //
-// Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
-//            Equations 42a-42b
+// Reference: Zhang, He & Yang, SIAM J. Sci. Comput. 43(1), 2021, B167-B193
+//            Algorithm 3.1, Step 1: Cahn-Hilliard update
 // ============================================================================
 
 #include "cahn_hilliard/cahn_hilliard.h"
@@ -352,7 +352,7 @@ CahnHilliardSubsystem<dim>::compute_diagnostics() const
             local_volume += JxW;
             local_theta_sum += th * JxW;
 
-            // CH energy: E = λ [ε/2 |∇θ|² + (1/ε) F(θ)]
+            // CH energy: E = λ [ε/2 |∇Φ|² + (1/ε) G(Φ)]  (Zhang Eq 2.2)
             local_E_grad += lambda * 0.5 * eps * grad_sq * JxW;
             local_E_bulk += lambda * (1.0 / eps) * double_well_potential(th) * JxW;
 

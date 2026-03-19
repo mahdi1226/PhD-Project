@@ -1,23 +1,23 @@
 // ============================================================================
-// cahn_hilliard/cahn_hilliard_assemble.cc - Coupled θ-ψ Assembly
+// cahn_hilliard/cahn_hilliard_assemble.cc - Coupled Φ-ψ Assembly
 //
-// Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
-// Equations 42a-42b (discrete scheme), p.505
+// Reference: Zhang, He & Yang, SIAM J. Sci. Comput. 43(1), 2021, B167-B193
+// Algorithm 3.1, Step 1: Cahn-Hilliard update (Eqs 3.9-3.10)
 //
-// Paper's discrete scheme:
-//   Eq 42a: (δθ^k/τ, Λ) - (U^{n-1} θ^{n-1}, ∇Λ) - γ(∇ψ^k, ∇Λ) = 0
-//   Eq 42b: (ψ^k, Υ) + ε(∇θ^k, ∇Υ) + (1/ε)(f(θ^{n-1}), Υ) + (1/η)(δθ^k, Υ) = 0
-//
-// where η = ε (stabilization parameter)
+// Convention: Φ ∈ {0, 1} (Zhang's convention)
+//   Φ = 1: ferrofluid phase
+//   Φ = 0: non-magnetic phase (air/water)
+//   F(Φ) = Φ²(1-Φ)²,  f(Φ) = F'(Φ) = 4Φ³ - 6Φ² + 2Φ
+//   S = λ/(4ε) stabilization (Zhang p.B182)
 //
 // Assembly layout in local matrix (2*dofs_per_cell × 2*dofs_per_cell):
-//   Row indices [0, dpc)     = θ test functions Λ_i
+//   Row indices [0, dpc)     = Φ test functions Λ_i
 //   Row indices [dpc, 2*dpc) = ψ test functions Υ_i
-//   Col indices [0, dpc)     = θ trial functions θ_j
+//   Col indices [0, dpc)     = Φ trial functions Φ_j
 //   Col indices [dpc, 2*dpc) = ψ trial functions ψ_j
 //
 // MPI-SAFE: Uses triangulation-based cell iteration to synchronize
-// all DoFHandlers (θ, ψ, U) on the same physical cell.
+// all DoFHandlers (Φ, ψ, U) on the same physical cell.
 // ============================================================================
 
 #include "cahn_hilliard/cahn_hilliard.h"
@@ -83,7 +83,9 @@ void CahnHilliardSubsystem<dim>::assemble_system(
     // Physics parameters
     const double eps = params_.physics.epsilon;
     const double gamma = params_.physics.mobility;
-    const double eta = eps;  // stabilization η = ε (paper convention)
+    const double lambda = params_.physics.lambda;
+    // Zhang Eq 3.10 stabilization: S = λ/(4ε)
+    const double S_stab = lambda / (4.0 * eps);
 
     // Check if velocity is available (avoid expensive linfty_norm MPI reduction)
     bool use_convection = false;
@@ -151,7 +153,7 @@ void CahnHilliardSubsystem<dim>::assemble_system(
             for (unsigned int d = 0; d < dim; ++d)
                 U[d] = u_vals[d][q];
 
-            // Nonlinearity: f(θ^{n-1}) = ((θ^{n-1})³ - θ^{n-1})/4
+            // Nonlinearity: g(Φ^{n-1}) = G'(Φ) = Φ³ - (3/2)Φ² + (1/2)Φ
             const double f_old = double_well_derivative(theta_old_q);
 
             for (unsigned int i = 0; i < dofs_per_cell; ++i)
@@ -177,54 +179,53 @@ void CahnHilliardSubsystem<dim>::assemble_system(
                     const unsigned int j_psi = dofs_per_cell + j;
 
                     // --------------------------------------------------------
-                    // Eq 42a LHS
+                    // Φ equation LHS (Zhang Eq 3.9)
                     // --------------------------------------------------------
-                    // (1/τ)(θ^n, Λ)  — mass term
+                    // (1/τ)(Φ^n, Λ)  — mass term
                     local_matrix(i_theta, j_theta) +=
                         (1.0 / dt) * theta_j * Lambda_i * JxW;
 
-                    // -γ(∇ψ^n, ∇Λ)  — diffusion of chemical potential
+                    // -M(∇ψ^n, ∇Λ)  — diffusion of chemical potential
                     local_matrix(i_theta, j_psi) -=
                         gamma * (grad_psi_j * grad_Lambda_i) * JxW;
 
                     // --------------------------------------------------------
-                    // Eq 42b LHS
+                    // ψ equation LHS (Zhang Eq 3.10)
                     // --------------------------------------------------------
                     // (ψ^n, Υ)  — mass term
                     local_matrix(i_psi, j_psi) +=
                         psi_j * Upsilon_i * JxW;
 
-                    // ε(∇θ^n, ∇Υ)  — Laplacian of θ
+                    // λε(∇Φ^n, ∇Υ)  — Zhang Eq 3.10 Laplacian
                     local_matrix(i_psi, j_theta) +=
-                        eps * (grad_theta_j * grad_Upsilon_i) * JxW;
+                        lambda * eps * (grad_theta_j * grad_Upsilon_i) * JxW;
 
-                    // (1/η)(θ^n, Υ)  — stabilization
+                    // S(Φ^n, Υ)  — Zhang stabilization S = λ/(4ε)
                     local_matrix(i_psi, j_theta) +=
-                        (1.0 / eta) * theta_j * Upsilon_i * JxW;
+                        S_stab * theta_j * Upsilon_i * JxW;
                 }
 
                 // ============================================================
-                // Eq 42a RHS
+                // Φ equation RHS
                 // ============================================================
-                // (1/τ)(θ^{n-1}, Λ)
+                // (1/τ)(Φ^{n-1}, Λ)
                 local_rhs(i_theta) +=
                     (1.0 / dt) * theta_old_q * Lambda_i * JxW;
 
-                // Convection: (U^{n-1} · ∇Λ) θ^{n-1}  (LAGGED transport)
-                // Note: this is -(U·∇θ, Λ) after IBP → +(θ, U·∇Λ)
+                // Convection: (U^{n-1} · ∇Λ) Φ^{n-1}  (LAGGED transport)
                 local_rhs(i_theta) +=
                     theta_old_q * (U * grad_Lambda_i) * JxW;
 
                 // ============================================================
-                // Eq 42b RHS
+                // ψ equation RHS
                 // ============================================================
-                // -(1/ε)(f(θ^{n-1}), Υ)
+                // -(λ/ε)(g(Φ^{n-1}), Υ)  — Zhang Eq 3.10
                 local_rhs(i_psi) -=
-                    (1.0 / eps) * f_old * Upsilon_i * JxW;
+                    (lambda / eps) * f_old * Upsilon_i * JxW;
 
-                // (1/η)(θ^{n-1}, Υ)  — stabilization
+                // S(Φ^{n-1}, Υ)  — Zhang stabilization S = λ/(4ε)
                 local_rhs(i_psi) +=
-                    (1.0 / eta) * theta_old_q * Upsilon_i * JxW;
+                    S_stab * theta_old_q * Upsilon_i * JxW;
 
                 // MMS source terms (merged into main loop to avoid
                 // duplicate quadrature iteration)
@@ -270,24 +271,27 @@ void CahnHilliardSubsystem<dim>::assemble_system(
 // Reference: Zhang, He & Yang, SIAM J. Sci. Comput. 43(1), 2021
 //            Algorithm 3.1, Step 1: Cahn-Hilliard update
 //
-// Sign convention: ψ = -W (Nochetto convention, negative chemical potential)
-//   This is compatible with the NS capillary force: F_cap = θ∇ψ = -θ∇W.
+// Sign convention: ψ = -W (negative chemical potential)
+//   This is compatible with the NS capillary force: F_cap = Φ∇ψ = -Φ∇W.
 //   Zhang uses W (positive), so all W terms get sign-flipped here.
 //
-// Zhang Eq 3.9 → in ψ=-W convention (θ equation):
-//   (d_t θ, Λ) - (u θ_old, ∇Λ) - (δt/2) θ_old² (∇ψ, ∇Λ)
+// Convention: Φ ∈ {0, 1} (Zhang's convention)
+// G(Φ) = (1/4)Φ²(1-Φ)², g(Φ) = G'(Φ) = Φ³-(3/2)Φ²+(1/2)Φ
+//
+// Zhang Eq 3.9 → in ψ=-W convention (Φ equation):
+//   (d_t Φ, Λ) - (u Φ_old, ∇Λ) - (δt/2) Φ_old² (∇ψ, ∇Λ)
 //     - M(∇ψ, ∇Λ) = 0
 //
 // Zhang Eq 3.10 → in ψ=-W convention (ψ equation):
-//   (ψ, X) + λε(∇θ, ∇X) + S(θ - θ_old, X) + (λ/ε)(f(θ_old), X) = 0
+//   (ψ, X) + λε(∇Φ, ∇X) + S(Φ - Φ_old, X) + (λ/ε)(g(Φ_old), X) = 0
 //
 // Rearranged as Ax = b:
-//   θ eq LHS: (1/dt)(θ,Λ) - [M + (δt/2)θ_old²](∇ψ,∇Λ)
-//   θ eq RHS: (1/dt)(θ_old,Λ) + (u θ_old, ∇Λ)
-//   ψ eq LHS: (ψ,X) + λε(∇θ,∇X) + S(θ,X)
-//   ψ eq RHS: +S(θ_old,X) - (λ/ε)(f(θ_old),X)
+//   Φ eq LHS: (1/dt)(Φ,Λ) - [M + (δt/2)Φ_old²](∇ψ,∇Λ)
+//   Φ eq RHS: (1/dt)(Φ_old,Λ) + (u Φ_old, ∇Λ)
+//   ψ eq LHS: (ψ,X) + λε(∇Φ,∇X) + S(Φ,X)
+//   ψ eq RHS: +S(Φ_old,X) - (λ/ε)(g(Φ_old),X)
 //
-// S = λ/(4ε) per Zhang p.B182: "we choose L = 1/(2ε), thus S = λ/(4ε)"
+// S = λ/(4ε) per Zhang p.B182
 // ============================================================================
 template <int dim>
 void CahnHilliardSubsystem<dim>::assemble_sav(
@@ -394,12 +398,12 @@ void CahnHilliardSubsystem<dim>::assemble_sav(
             for (unsigned int d = 0; d < dim; ++d)
                 U[d] = u_vals[d][q];
 
-            // Nonlinearity: f(θ^{n-1}) = ((θ^{n-1})³ - θ^{n-1})/4
+            // Nonlinearity: g(Φ^{n-1}) = G'(Φ) = Φ³ - (3/2)Φ² + (1/2)Φ
             const double f_old = double_well_derivative(theta_old_q);
 
-            // SUPG coefficient: (δt/2) · θ_old² at this quadrature point
+            // SUPG coefficient: (δt/2) · Φ_old² at this quadrature point
             // Zhang Eq 3.9: +(δt/2)(Φ_old ∇W, Φ_old ∇Λ)
-            // In ψ=-W convention: -(δt/2) θ_old² (∇ψ, ∇Λ)
+            // In ψ=-W convention: -(δt/2) Φ_old² (∇ψ, ∇Λ)
             const double supg_coeff = 0.5 * dt * theta_old_q * theta_old_q;
 
             for (unsigned int i = 0; i < dofs_per_cell; ++i)
@@ -527,10 +531,10 @@ void CahnHilliardSubsystem<dim>::assemble_sav(
 }
 
 // ============================================================================
-// compute_bulk_energy — E1(theta) = (lambda/eps) * integral F(theta) dOmega
+// compute_bulk_energy — E1(Φ) = (λ/ε) ∫ G(Φ) dΩ
 //
-// F(theta) = (1/16)(theta^2 - 1)^2  (double-well potential, θ∈{-1,+1} convention)
-// This is used for the SAV variable: r(t) = sqrt(E1(theta) + C0)
+// G(Φ) = (1/4)Φ²(1-Φ)²  (double-well potential, Φ∈{0,1} convention)
+// This is used for the SAV variable: r(t) = sqrt(E1(Φ) + C0)
 // ============================================================================
 template <int dim>
 double CahnHilliardSubsystem<dim>::compute_bulk_energy(
