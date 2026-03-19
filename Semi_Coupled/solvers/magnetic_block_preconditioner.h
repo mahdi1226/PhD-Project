@@ -151,6 +151,7 @@ private:
     mutable dealii::TrilinosWrappers::MPI::Vector tmp_z_phi_;
     mutable dealii::TrilinosWrappers::MPI::Vector tmp_C_zphi_;
     mutable dealii::TrilinosWrappers::MPI::Vector tmp_rhs_M_;
+    mutable dealii::TrilinosWrappers::MPI::Vector tmp_phi_ghosted_;  // FIX #8: cached ghosted phi
     mutable bool tmp_initialized_;
 };
 

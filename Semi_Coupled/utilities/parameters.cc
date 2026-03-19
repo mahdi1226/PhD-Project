@@ -36,6 +36,10 @@ void Parameters::setup_rosensweig()
     // (Eq. 103 gives ~31583 as "an educated guess"; paper uses round 30000)
     physics.gravity = 30000.0;
 
+    // Paper Eq 65a: CH convection uses explicit θ^{k-1} (not implicit θ^k).
+    // Implicit over-stabilizes the interface and prevents Rosensweig instability.
+    use_explicit_ch_convection = true;
+
     dipoles.positions = {
         dealii::Point<2>(-0.5, -15.0),
         dealii::Point<2>( 0.0, -15.0),
@@ -129,6 +133,9 @@ void Parameters::setup_hedgehog()
     //  to its maximum value αs = 4.3 at time t = 4.2"
     dipoles.intensity_max = 4.3;
     dipoles.ramp_time = 4.2;
+
+    // Paper Eq 65a: explicit CH convection (same as Rosensweig)
+    use_explicit_ch_convection = true;
 
     // Time-stepping
     // Paper Section 6.3: dt=1e-4 needed for CFL stability with ε=0.005
@@ -525,13 +532,14 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
         }
         else if (std::strcmp(argv[i], "--ilu") == 0)
         {
-            // Use ILU preconditioner instead of AMG (for HPC without ML/MueLu)
+            // Use ILU inner solves in block PCs (for HPC without ML/MueLu).
+            // Keeps BlockSchur preconditioner but swaps AMG→ILU in sub-blocks.
             params.solvers.ch.use_iterative = true;
             params.solvers.mag.use_iterative = true;
             params.solvers.ns.use_iterative = true;
-            params.solvers.ch.preconditioner = LinearSolverParams::Preconditioner::ILU;
-            params.solvers.mag.preconditioner = LinearSolverParams::Preconditioner::ILU;
-            params.solvers.ns.preconditioner = LinearSolverParams::Preconditioner::ILU;
+            params.solvers.ch.use_ilu = true;
+            params.solvers.mag.use_ilu = true;
+            params.solvers.ns.use_ilu = true;
         }
         // Per-subsystem solver overrides
         else if (std::strcmp(argv[i], "--ch-direct") == 0)

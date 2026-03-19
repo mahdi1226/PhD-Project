@@ -47,6 +47,7 @@ set(FERROFLUID_SOURCES
         setup/ns_setup.cc
 
         solvers/ch_solver.cc
+        solvers/ch_block_preconditioner.cc
         solvers/magnetic_solver.cc
         solvers/magnetic_block_preconditioner.cc
         solvers/ns_solver.cc
@@ -98,6 +99,7 @@ set(MMS_TEST_SOURCES
 
         # Production solvers (used by MMS tests)
         solvers/ch_solver.cc
+        solvers/ch_block_preconditioner.cc
         solvers/magnetic_solver.cc
         solvers/magnetic_block_preconditioner.cc
         solvers/ns_solver.cc

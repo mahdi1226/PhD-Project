@@ -87,9 +87,14 @@ void MagneticSolver<dim>::solve(
         // Direct solver path
         solve_direct(system_matrix, solution, rhs, verbose);
 
-        // Fallback to iterative if direct failed
-        if (!last_info_.converged && params.fallback_to_direct)
+        // If direct failed, try iterative as last resort
+        if (!last_info_.converged)
         {
+            const unsigned int rank =
+                dealii::Utilities::MPI::this_mpi_process(mpi_communicator_);
+            if (verbose && rank == 0)
+                std::cerr << "[Mag] Direct failed, trying iterative as fallback\n";
+
             if (block_structure_set_ &&
                 params.preconditioner == LinearSolverParams::Preconditioner::BlockSchur)
                 solve_block_preconditioned(system_matrix, solution, rhs, params, verbose);
@@ -203,7 +208,7 @@ void MagneticSolver<dim>::solve_iterative(
     // Build preconditioner
     std::unique_ptr<dealii::TrilinosWrappers::PreconditionBase> preconditioner;
 
-    if (params.preconditioner == LinearSolverParams::Preconditioner::ILU)
+    if (params.use_ilu)
     {
         auto ilu = std::make_unique<dealii::TrilinosWrappers::PreconditionILU>();
         dealii::TrilinosWrappers::PreconditionILU::AdditionalData ilu_data;
@@ -279,8 +284,7 @@ void MagneticSolver<dim>::solve_block_preconditioned(
                   << ", phi=" << n_phi_dofs_ << ")\n";
 
     // Build block preconditioner
-    const bool use_ilu =
-        (params.preconditioner == LinearSolverParams::Preconditioner::ILU);
+    const bool use_ilu = params.use_ilu;
 
     MagneticBlockPreconditioner block_pc(
         system_matrix,

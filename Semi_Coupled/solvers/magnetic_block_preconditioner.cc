@@ -34,8 +34,8 @@ MagneticBlockPreconditioner::MagneticBlockPreconditioner(
     bool use_ilu)
     : n_iterations_M(0)
     , n_iterations_phi(0)
-    , inner_tolerance(1e-1)
-    , max_inner_iterations(20)
+    , inner_tolerance(1e-2)
+    , max_inner_iterations(50)
     , system_matrix_ptr_(&system_matrix)
     , n_M_(n_M_dofs)
     , n_phi_(n_phi_dofs)
@@ -215,7 +215,7 @@ MagneticBlockPreconditioner::MagneticBlockPreconditioner(
         // ILU — HPC fallback (no ML/MueLu needed)
         auto M_ilu = std::make_unique<dealii::TrilinosWrappers::PreconditionILU>();
         dealii::TrilinosWrappers::PreconditionILU::AdditionalData ilu_data_M;
-        ilu_data_M.ilu_fill = 0;  // ILU(0): DG mass-dominated, cheap
+        ilu_data_M.ilu_fill = 2;  // ILU(2): DG transport needs more fill
         M_ilu->initialize(M_block_, ilu_data_M);
         M_preconditioner_ = std::move(M_ilu);
 
@@ -286,6 +286,7 @@ void MagneticBlockPreconditioner::vmult(
         tmp_z_phi_.reinit(phi_owned_, mpi_comm_);
         tmp_C_zphi_.reinit(M_owned_, mpi_comm_);
         tmp_rhs_M_.reinit(M_owned_, mpi_comm_);
+        tmp_phi_ghosted_.reinit(phi_owned_, phi_relevant_for_coupling_, mpi_comm_);
         tmp_initialized_ = true;
     }
 
@@ -437,10 +438,8 @@ void MagneticBlockPreconditioner::apply_C_M_phi(
 {
     M_vec = 0;
 
-    // Create ghosted phi vector for off-rank access
-    dealii::TrilinosWrappers::MPI::Vector phi_ghosted(
-        phi_owned_, phi_relevant_for_coupling_, mpi_comm_);
-    phi_ghosted = phi_vec;
+    // FIX #8: Use cached ghosted phi vector (allocated once in vmult lazy-init)
+    tmp_phi_ghosted_ = phi_vec;
 
     const Epetra_CrsMatrix& epetra_mat = system_matrix_ptr_->trilinos_matrix();
     const int num_my_rows = epetra_mat.NumMyRows();
@@ -473,7 +472,7 @@ void MagneticBlockPreconditioner::apply_C_M_phi(
 
             const auto phi_idx = static_cast<dealii::types::global_dof_index>(col - n_M_);
             if (phi_idx < n_phi_)
-                sum += values[k] * phi_ghosted[phi_idx];
+                sum += values[k] * tmp_phi_ghosted_[phi_idx];
         }
 
         M_vec[static_cast<dealii::types::global_dof_index>(gid)] = sum;

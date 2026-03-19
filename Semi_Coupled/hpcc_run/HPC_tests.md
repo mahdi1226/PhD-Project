@@ -1,110 +1,79 @@
-# Semi_Coupled HPC Experiment Matrix
+# Semi_Coupled HPC Experiment Matrix (v3)
 
 **Goal:** Identify why Rosensweig instability (spikes) does not form.
 **Paper:** Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
 **Binary:** `ferrofluid` (build with `make -j` in `cmake-build-release/`)
+**Date:** 2026-03-18
 
 ## Code Changes (vs previous flat-interface runs)
 
-1. Rosensweig `amr_interval` fixed: 50 → 5 (paper p.520: "refined-coarsened once every 5 time steps")
-2. Added `--iterative` CLI flag (GMRES+AMG instead of MUMPS)
-3. Auto-computed gravity via Eq.103: g = 31,583 (paper used hardcoded 30,000)
-4. **CH convection fixed: implicit θ^k → explicit θ^{k-1}** (paper Eq 65a). Implicit was over-stabilizing the interface.
-5. **BGS mag_old overwrite fixed:** mag_old_solution_ now saved once before BGS loop (was overwritten each BGS iteration).
-6. **Heaviside cutoff consistency:** susceptibility() now calls heaviside() (cutoff 30, was reimplemented with cutoff 20).
-7. **MPI type portability:** MPI_UNSIGNED → sizeof-based type selection in ns_setup.cc.
+### Audit fixes (baked into current binary)
+
+1. **CH convection: implicit θ^k → explicit θ^{k-1}** (paper Eq 65a). Implicit was over-stabilizing the interface. Now default in `setup_rosensweig()` and `setup_hedgehog()`.
+2. **BGS mag_old overwrite fixed:** `mag_old_solution_` saved once before BGS loop (was overwritten each BGS iteration).
+3. **Heaviside cutoff consistency:** `susceptibility()` now calls `heaviside()` (cutoff 30, was reimplemented with cutoff 20).
+4. **MPI type portability:** `MPI_UNSIGNED` → sizeof-based type selection in `ns_setup.cc`.
+5. **`use_ilu` dead code fixed:** Block PC sub-block ILU selection now uses `params.use_ilu` (was checking `preconditioner == ILU` inside `BlockSchur` path → always false).
+6. **NS residual reporting:** `info.residual` now always computed (was gated behind `if (verbose)` → returned 0.0).
+
+### Iterative solver status
+
+- **CH:** Block Schur PC works (~273 iters). Enable with `--ch-iterative`.
+- **Mag:** Block Schur PC works (~9-11 iters, ~8x faster than direct). Enable with `--mag-iterative`.
+- **NS:** BFBt Schur stagnates for DG Q1 pressure. **Keep direct (MUMPS).**
+- **HPC shortcut:** `--ilu --ns-direct` enables CH+Mag iterative with ILU inner solves (no AMG/ML needed) while keeping NS direct.
+
+### Preset defaults (no flags needed)
+
+- `amr_interval = 5` (paper p.520)
+- `use_explicit_ch_convection = true` (paper Eq 65a)
+- Gravity auto-computed: g = 31,583 (Eq 103)
 
 ## Hypotheses Being Tested
 
-| Hypothesis | Tests |
-|-----------|-------|
-| AMR too infrequent (50 vs paper's 5) → no numerical noise to seed instability | T1 vs T8 |
-| Direct solver too clean → no perturbation source | T2, T3 vs T1 |
-| Gravity 5% too high | T4, T5 vs T1 |
-| BGS coupling too weak (1 pass vs iterated) | T6, T7 |
-| Mesh resolution | T9, T10 |
-| Time step sensitivity | T11 |
-| CH convection fix alone (explicit vs old implicit) | T12 vs T1 (old binary) |
-| All audit fixes + all parameter fixes combined | T13 |
+| # | Hypothesis | Tests |
+|---|-----------|-------|
+| H1 | Explicit CH convection fix alone produces spikes | T1 (post-audit baseline) |
+| H2 | Paper gravity (30k vs auto 31.6k) matters | T2 vs T1 |
+| H3 | BGS coupling too weak (1 pass vs iterated) | T3, T4 vs T1 |
+| H4 | Iterative solver noise helps seed instability | T5 vs T1 |
+| H5 | Mesh resolution insufficient | T6, T7 vs T1 |
+| H6 | Time step too coarse | T8 vs T1 |
+| H7 | AMR interval matters (5 vs 50) | T9 vs T1 |
+| H8 | All favorable parameters combined | T10 |
 
-## Launch Commands
+## Test Matrix
 
-All tests use 4 MPI ranks. Adjust `-np` for your allocation.
-Launch from the project root (so `./Results/` is written correctly).
-
-**IMPORTANT:** Rebuild binary before running. The audit fixes (items 4-7 above)
-change the CH assembler, driver, material properties, and NS setup. All tests
-below use the updated binary.
-
+Submit with SLURM array jobs:
 ```bash
-# ============================================================
-# CRITICAL — Run these first
-# ============================================================
-
-# T1: Baseline with AMR fix (amr_interval=5 is now default in preset)
-mpirun -np 4 ./ferrofluid --rosensweig --run_name T1-rosen-amr5-direct
-
-# T2: Iterative solver (adds numerical noise)
-mpirun -np 4 ./ferrofluid --rosensweig --iterative --run_name T2-rosen-amr5-iterative
-
-# T3: Both iterative + paper gravity
-mpirun -np 4 ./ferrofluid --rosensweig --iterative --gravity 30000 --run_name T3-rosen-amr5-iter-g30k
-
-# T4: AMR fix + paper's exact gravity (direct solver)
-mpirun -np 4 ./ferrofluid --rosensweig --gravity 30000 --run_name T4-rosen-amr5-g30k
-
-# T5: AMR fix + iterative + gravity + 2 BGS (all fixes combined)
-mpirun -np 4 ./ferrofluid --rosensweig --iterative --gravity 30000 --bgs_iters 2 --run_name T5-rosen-all-fixes
-
-# ============================================================
-# SERIOUS — Run if T1-T5 all stay flat
-# ============================================================
-
-# T6: 2 BGS iterations (stronger coupling per step)
-mpirun -np 4 ./ferrofluid --rosensweig --bgs_iters 2 --run_name T6-rosen-amr5-bgs2
-
-# T7: 3 BGS iterations
-mpirun -np 4 ./ferrofluid --rosensweig --bgs_iters 3 --run_name T7-rosen-amr5-bgs3
-
-# ============================================================
-# MODERATE — Resolution and time step study
-# ============================================================
-
-# T8: Control — old AMR interval (should stay flat, confirms AMR is the variable)
-mpirun -np 4 ./ferrofluid --rosensweig --amr_interval 50 --run_name T8-rosen-amr50-control
-
-# T9: Coarser mesh (quick ~1h diagnostic)
-mpirun -np 4 ./ferrofluid --rosensweig -r 5 --run_name T9-rosen-amr5-r5
-
-# T10: Finer mesh
-mpirun -np 4 ./ferrofluid --rosensweig -r 7 --run_name T10-rosen-amr5-r7
-
-# T11: Finer time step
-mpirun -np 4 ./ferrofluid --rosensweig --dt 2e-4 --max_steps 10000 --run_name T11-rosen-amr5-dt2e4
-
-# ============================================================
-# AUDIT FIX TESTS — Isolate effect of code corrections
-# ============================================================
-
-# T12: Baseline same as T1 but explicit note that this uses post-audit binary
-#      Compare with any pre-audit T1 results to measure CH convection fix impact
-mpirun -np 4 ./ferrofluid --rosensweig --run_name T12-rosen-post-audit-baseline
-
-# T13: All fixes + all parameter tweaks (paper gravity + iterative + BGS 2)
-#      Maximum-effort run: every fix and every favorable parameter combined
-mpirun -np 4 ./ferrofluid --rosensweig --iterative --gravity 30000 --bgs_iters 2 --run_name T13-rosen-all-audit-all-params
+cd ~/Semi_Coupled-HPC/Semi_Coupled
+mkdir -p logs Results
+sbatch --array=1-10 hpcc_run/submit.sub hpcc_run/rosensweig_v3.dat
 ```
 
-## Expected Runtime (4 ranks)
+| Test | Description | Key Flags |
+|------|-------------|-----------|
+| T1 | **Baseline** — post-audit binary, direct solver, paper defaults | `--rosensweig` |
+| T2 | Paper gravity (g=30000 vs auto 31583) | `--rosensweig --gravity 30000` |
+| T3 | BGS=2 (tighter coupling) | `--rosensweig --bgs_iters 2` |
+| T4 | BGS=3 (even tighter) | `--rosensweig --bgs_iters 3` |
+| T5 | CH+Mag iterative, NS direct (solver noise) | `--rosensweig --ch-iterative --mag-iterative` |
+| T6 | Coarser mesh L5 (quick diagnostic) | `--rosensweig -r 5` |
+| T7 | Finer mesh L7 | `--rosensweig -r 7` |
+| T8 | Finer time step dt=2.5e-4 | `--rosensweig --dt 2.5e-4 --max_steps 8000` |
+| T9 | Old AMR interval=50 (control) | `--rosensweig --amr_interval 50` |
+| T10 | **Kitchen sink** — paper gravity + iterative + BGS=2 | `--rosensweig --ch-iterative --mag-iterative --gravity 30000 --bgs_iters 2` |
+
+## Expected Runtime (8 ranks on The Mill)
 
 | Test | Steps | Est. Time |
 |------|-------|-----------|
-| T1-T4, T8 | 4000 | 2-4h |
-| T5-T7, T13 | 4000 | 3-6h (BGS adds overhead) |
-| T9 | 4000 | ~1h (coarser mesh) |
-| T10 | 4000 | 8-10h (finer mesh) |
-| T11 | 10000 | 6-8h |
-| T12 | 4000 | 2-4h |
+| T1, T2, T9 | 4000 | 1-2h |
+| T3, T4, T10 | 4000 | 2-4h (BGS overhead) |
+| T5 | 4000 | 1-2h (iterative CH+Mag faster) |
+| T6 | 4000 | ~30min (coarser mesh) |
+| T7 | 4000 | 4-6h (finer mesh) |
+| T8 | 8000 | 3-5h |
 
 ## How to Interpret Results
 
@@ -112,16 +81,41 @@ Check `Results/<run_name>/energy.csv` — look for **E_kin growing** (fluid moti
 Check `Results/<run_name>/rosensweig_validation.csv` — look for **n_spikes > 0**.
 
 **Key comparisons:**
-- **T1 has spikes, T8 flat** → AMR frequency was the fix
-- **T1 flat, T2 has spikes** → iterative solver noise needed
-- **T1+T2 flat, T5 has spikes** → needed all fixes combined
-- **T12 has spikes** → CH convection fix (explicit θ^{k-1}) was the key
-- **T13 has spikes, T12 flat** → needed both code fixes AND parameter tuning
+- **T1 has spikes** → explicit CH convection fix was the key (most likely outcome)
+- **T1 flat, T5 has spikes** → iterative solver noise needed to seed instability
+- **T1 flat, T3/T4 has spikes** → BGS coupling strength matters
+- **T1 flat, T2 has spikes** → gravity 5% too high was suppressing instability
+- **T1 flat, T7 has spikes** → needed finer mesh to resolve instability wavelength
+- **T10 has spikes, T1 flat** → needed combination of fixes
 - **All flat** → deeper issue (model limitation, missing physics, or boundary conditions)
 
 ## Preset Parameters (for reference)
 
+```
 Rosensweig: eps=0.01, lambda=0.05, chi=0.5, dt=5e-4, t_final=2.0, pool=0.2
-Hedgehog: eps=0.005, lambda=0.025, chi=0.9, dt=1e-4, t_final=6.0, pool=0.11
-Gravity (auto): g = 4*pi^2*lambda / (ell_c^2 * r * eps) = 31,583 (both presets)
-Paper gravity: g = 30,000 (hardcoded)
+Hedgehog:   eps=0.005, lambda=0.025, chi=0.9, dt=1e-4, t_final=6.0, pool=0.11
+Gravity (auto): g = 4*pi^2*lambda / (ell_c^2 * r * eps) = 31,583
+Paper gravity:  g = 30,000 (hardcoded)
+```
+
+## HPC Notes (The Mill — Missouri S&T)
+
+```bash
+# SSH
+ssh mg6f4@mill-login-p2.itrss.mst.edu
+
+# Module
+module load dealii/9.7.1_gcc_12.3.0_mvapich
+
+# Build (on compute node, NOT login node)
+salloc --partition=hpcc --ntasks=8 --time=01:00:00
+cd ~/Semi_Coupled-HPC/Semi_Coupled
+mkdir -p cmake-build-release && cd cmake-build-release
+cmake -DCMAKE_BUILD_TYPE=Release ..
+make -j8
+cd ..
+
+# Submit
+mkdir -p logs Results
+sbatch --array=1-10 hpcc_run/submit.sub hpcc_run/rosensweig_v3.dat
+```

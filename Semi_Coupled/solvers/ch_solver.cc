@@ -12,6 +12,7 @@
 #include "solvers/ch_solver.h"
 #include "solvers/solver_info.h"
 #include "solvers/direct_solver_utils.h"
+#include "solvers/ch_block_preconditioner.h"
 
 #include <deal.II/lac/trilinos_precondition.h>
 #include <deal.II/lac/trilinos_solver.h>
@@ -92,77 +93,136 @@ SolverInfo solve_ch_system(
             if (verbose && rank == 0)
                 std::cout << "[CH] Direct solver completed\n";
         }
+        else if (rank == 0)
+        {
+            std::cerr << "[CH] Direct failed, trying iterative as fallback\n";
+        }
     }
 
     // ========================================================================
-    // Iterative solver (GMRES + AMG or ILU)
+    // Iterative solver
     // ========================================================================
-    if (!converged && params.use_iterative)
+    if (!converged)
     {
-        dealii::SolverGMRES<dealii::TrilinosWrappers::MPI::Vector>::AdditionalData gmres_data;
-        gmres_data.max_n_tmp_vectors = params.gmres_restart;
-        gmres_data.right_preconditioning = true;
+        // Determine block sizes from index maps
+        const dealii::types::global_dof_index n_theta = theta_to_ch_map.size();
+        const dealii::types::global_dof_index n_psi = psi_to_ch_map.size();
 
-        dealii::SolverGMRES<dealii::TrilinosWrappers::MPI::Vector> solver(solver_control, gmres_data);
-
-        // Select preconditioner based on params (AMG default, ILU for HPC)
-        std::unique_ptr<dealii::TrilinosWrappers::PreconditionBase> preconditioner;
-
-        if (params.preconditioner == LinearSolverParams::Preconditioner::ILU)
+        if (params.preconditioner == LinearSolverParams::Preconditioner::BlockSchur)
         {
-            auto ilu = std::make_unique<dealii::TrilinosWrappers::PreconditionILU>();
-            dealii::TrilinosWrappers::PreconditionILU::AdditionalData ilu_data;
-            ilu_data.ilu_fill = 2;
-            ilu_data.ilu_atol = 0.0;
-            ilu_data.ilu_rtol = 1.0;
-            ilu->initialize(matrix, ilu_data);
-            preconditioner = std::move(ilu);
-
+            // ================================================================
+            // Block preconditioned: FGMRES + block-triangular PC
+            // Exploits structure: A_ψψ ≈ mass matrix (trivial to invert)
+            // ================================================================
             if (verbose && rank == 0)
-                std::cout << "[CH] Using ILU preconditioner\n";
+                std::cout << "[CH] Using FGMRES + Block PC (theta=" << n_theta
+                          << ", psi=" << n_psi << ")\n";
+
+            const bool use_ilu = params.use_ilu;
+
+            CHBlockPreconditioner block_pc(
+                matrix, ch_locally_owned,
+                n_theta, n_psi,
+                mpi_comm, use_ilu);
+
+            block_pc.inner_tolerance = params.schur_inner_tolerance;
+            block_pc.max_inner_iterations = params.schur_max_inner_iters;
+            block_pc.verbose_ = verbose;
+
+            dealii::SolverFGMRES<dealii::TrilinosWrappers::MPI::Vector>::AdditionalData fgmres_data;
+            fgmres_data.max_basis_size = params.gmres_restart;
+
+            dealii::SolverFGMRES<dealii::TrilinosWrappers::MPI::Vector> solver(
+                solver_control, fgmres_data);
+
+            try
+            {
+                solver.solve(matrix, coupled_solution, rhs, block_pc);
+                info.iterations = solver_control.last_step();
+                info.residual = solver_control.last_value();
+                info.converged = true;
+                converged = true;
+            }
+            catch (dealii::SolverControl::NoConvergence&)
+            {
+                info.iterations = solver_control.last_step();
+                info.residual = solver_control.last_value();
+                info.converged = false;
+
+                if (verbose && rank == 0)
+                    std::cerr << "[CH] FGMRES+Block failed after " << info.iterations
+                              << " iterations, residual = " << info.residual << "\n";
+            }
+
+            info.inner_iterations_A = block_pc.n_iterations_theta;
+            info.inner_iterations_S = block_pc.n_iterations_psi;
         }
         else
         {
-            auto amg = std::make_unique<dealii::TrilinosWrappers::PreconditionAMG>();
-            dealii::TrilinosWrappers::PreconditionAMG::AdditionalData amg_data;
-            amg_data.smoother_sweeps = 2;
-            amg_data.aggregation_threshold = 0.02;    // Was 1e-4 (too aggressive for indefinite θ-ψ)
-            amg_data.elliptic = false;                 // CH is indefinite (not SPD)
-            amg_data.higher_order_elements = true;     // Q2 elements
-            amg_data.smoother_type = "Chebyshev";      // Better than Gauss-Seidel for indefinite
-            amg->initialize(matrix, amg_data);
-            preconditioner = std::move(amg);
+            // ================================================================
+            // Monolithic: GMRES + AMG or ILU (fallback for non-block mode)
+            // ================================================================
+            dealii::SolverGMRES<dealii::TrilinosWrappers::MPI::Vector>::AdditionalData gmres_data;
+            gmres_data.max_n_tmp_vectors = params.gmres_restart;
+            gmres_data.right_preconditioning = true;
 
-            if (verbose && rank == 0)
-                std::cout << "[CH] Using AMG preconditioner (Chebyshev smoother)\n";
-        }
+            dealii::SolverGMRES<dealii::TrilinosWrappers::MPI::Vector> solver(solver_control, gmres_data);
 
-        try
-        {
-            solver.solve(matrix, coupled_solution, rhs, *preconditioner);
+            std::unique_ptr<dealii::TrilinosWrappers::PreconditionBase> preconditioner;
 
-            info.iterations = solver_control.last_step();
-            info.residual = solver_control.last_value();
-            info.converged = true;
-            converged = true;
-        }
-        catch (dealii::SolverControl::NoConvergence&)
-        {
-            info.iterations = solver_control.last_step();
-            info.residual = solver_control.last_value();
-            info.converged = false;
-
-            if (verbose && rank == 0)
+            if (params.use_ilu)
             {
-                std::cerr << "[CH] GMRES failed after " << info.iterations
-                          << " iterations, residual = " << info.residual << "\n";
+                auto ilu = std::make_unique<dealii::TrilinosWrappers::PreconditionILU>();
+                dealii::TrilinosWrappers::PreconditionILU::AdditionalData ilu_data;
+                ilu_data.ilu_fill = 2;
+                ilu_data.ilu_atol = 0.0;
+                ilu_data.ilu_rtol = 1.0;
+                ilu->initialize(matrix, ilu_data);
+                preconditioner = std::move(ilu);
+
+                if (verbose && rank == 0)
+                    std::cout << "[CH] Using ILU preconditioner\n";
             }
-        }
-        catch (std::exception& e)
-        {
-            if (verbose && rank == 0)
-                std::cerr << "[CH] Exception: " << e.what() << "\n";
-            info.converged = false;
+            else
+            {
+                auto amg = std::make_unique<dealii::TrilinosWrappers::PreconditionAMG>();
+                dealii::TrilinosWrappers::PreconditionAMG::AdditionalData amg_data;
+                amg_data.smoother_sweeps = 2;
+                amg_data.aggregation_threshold = 0.02;
+                amg_data.elliptic = false;
+                amg_data.higher_order_elements = true;
+                amg_data.smoother_type = "Chebyshev";
+                amg->initialize(matrix, amg_data);
+                preconditioner = std::move(amg);
+
+                if (verbose && rank == 0)
+                    std::cout << "[CH] Using AMG preconditioner (Chebyshev smoother)\n";
+            }
+
+            try
+            {
+                solver.solve(matrix, coupled_solution, rhs, *preconditioner);
+                info.iterations = solver_control.last_step();
+                info.residual = solver_control.last_value();
+                info.converged = true;
+                converged = true;
+            }
+            catch (dealii::SolverControl::NoConvergence&)
+            {
+                info.iterations = solver_control.last_step();
+                info.residual = solver_control.last_value();
+                info.converged = false;
+
+                if (verbose && rank == 0)
+                    std::cerr << "[CH] GMRES failed after " << info.iterations
+                              << " iterations, residual = " << info.residual << "\n";
+            }
+            catch (std::exception& e)
+            {
+                if (verbose && rank == 0)
+                    std::cerr << "[CH] Exception: " << e.what() << "\n";
+                info.converged = false;
+            }
         }
     }
 

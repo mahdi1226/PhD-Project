@@ -1011,8 +1011,7 @@ void PhaseFieldProblem<dim>::solve_ns(double dt)
     else
     {
         // Iterative Block Schur solver
-        const bool use_ilu =
-            (params_.solvers.ns.preconditioner == LinearSolverParams::Preconditioner::ILU);
+        const bool use_ilu = params_.solvers.ns.use_ilu;
         last_ns_info_ = solve_ns_system_schur_parallel(
             ns_matrix_,
             ns_rhs_,

@@ -125,7 +125,7 @@ SolverInfo solve_ns_system(
     bool verbose = true,
     bool force_direct = false,
     bool force_iterative = false,
-    unsigned int direct_threshold = 50000,
+    unsigned int direct_threshold = 500000,
     bool use_ilu = false);               // ILU preconditioner (for HPC without AMG/ML)
 
 #endif // NS_SOLVER_H

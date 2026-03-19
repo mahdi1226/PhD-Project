@@ -188,33 +188,29 @@ struct Parameters
     // ========================================================================
     struct Solvers
     {
-        // CH: GMRES + AMG (iterative by default — direct as fallback)
+        // CH: Direct (MUMPS) by default. Block PC when iterative.
         LinearSolverParams ch = {
-            LinearSolverParams::Type::GMRES,
-            LinearSolverParams::Preconditioner::AMG,
-            1e-8, 1e-12, 2000, 100, 1.2, 1.2,  // gmres_restart=100 for indefinite
-            true, true, false  // use_iterative=TRUE, fallback=true, verbose=false
+            LinearSolverParams::Type::FGMRES,
+            LinearSolverParams::Preconditioner::BlockSchur,
+            1e-8, 1e-12, 2000, 100, 1.2, 1.2,
+            false, true, false  // use_iterative=FALSE (direct), fallback=true
         };
 
-        // Magnetics (monolithic M+φ): GMRES + AMG (iterative default)
-        // Block PC (BlockSchur) implemented but needs MPI ghost debugging.
-        // Enable with --mag-block-pc when ready.
+        // Magnetics: Direct (MUMPS) by default. Block PC when iterative.
         LinearSolverParams mag = {
-            LinearSolverParams::Type::GMRES,
-            LinearSolverParams::Preconditioner::AMG,
+            LinearSolverParams::Type::FGMRES,
+            LinearSolverParams::Preconditioner::BlockSchur,
             1e-8, 1e-12, 500, 50, 1.2, 1.2,
-            true, true, false  // use_iterative=TRUE, fallback=true
+            false, true, false  // use_iterative=FALSE (direct), fallback=true
         };
 
-        // NS: Direct (MUMPS) by default. Block Schur + BFBt available but
-        // needs further work for DG Q1 pressure (converges slowly ~400 its).
-        // Use --ns-iterative to enable FGMRES + Block Schur.
+        // NS: Direct (MUMPS) by default. Block Schur + BFBt needs work.
         LinearSolverParams ns = {
             LinearSolverParams::Type::FGMRES,
             LinearSolverParams::Preconditioner::BlockSchur,
             1e-6, 1e-9,
             1500, 100, 1.2, 1.2,
-            false, true, false  // use_iterative=FALSE (direct default), fallback=true
+            false, true, false  // use_iterative=FALSE (direct), fallback=true
         };
     } solvers;
 

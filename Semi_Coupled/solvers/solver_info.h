@@ -50,6 +50,7 @@ struct LinearSolverParams
     bool use_iterative = false;     // Changed: Direct (MUMPS) is default
     bool fallback_to_direct = true; // Fall back to direct if iterative fails
     bool verbose = false;
+    bool use_ilu = false;           // Use ILU inner solves in block PCs (HPC without ML/MueLu)
 
     // =========================================================================
     // Block Schur preconditioner settings (for NS iterative solver)
@@ -63,7 +64,7 @@ struct LinearSolverParams
     // =========================================================================
     // If n_dofs < direct_dof_threshold, use direct solver automatically
     // Set to 0 to disable auto-selection
-    unsigned int direct_dof_threshold = 2000000;  // 2M DoFs
+    unsigned int direct_dof_threshold = 500000;  // 500K DoFs (matches ns_solver.h)
 };
 
 /**
@@ -74,7 +75,7 @@ struct SolverInfo
     unsigned int iterations = 0;
     double residual = 0.0;
     double solve_time = 0.0;        // seconds
-    bool converged = true;
+    bool converged = false;        // FIX #7: default false — solver must explicitly set true
     bool used_direct = false;       // true if fell back to direct solver
     std::string solver_name;        // "CH", "Mag", "NS", etc.
     unsigned int matrix_size = 0;
@@ -93,7 +94,7 @@ struct SolverInfo
         iterations = 0;
         residual = 0.0;
         solve_time = 0.0;
-        converged = true;
+        converged = false;       // Must be set true explicitly by solver
         used_direct = false;
         matrix_size = 0;
         nnz = 0;

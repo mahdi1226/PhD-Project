@@ -92,10 +92,8 @@ SolverInfo solve_ns_system_schur_parallel(
             ns_owned, vel_owned, p_owned,
             mpi_comm, viscosity, dt, use_ilu);
         preconditioner.verbose_ = verbose;
-        preconditioner.inner_tolerance = 1e-2;
-        preconditioner.max_inner_iterations = 100;
 
-        const double tol = 1e-8 * rhs_norm;
+        const double tol = 1e-6 * rhs_norm;
 
         dealii::SolverControl solver_control(1500, tol, false, false);
 
@@ -126,6 +124,9 @@ SolverInfo solve_ns_system_schur_parallel(
         // Capture inner iteration diagnostics
         info.inner_iterations_A = preconditioner.n_iterations_A;
         info.inner_iterations_S = preconditioner.n_iterations_S;
+
+        // Store solver's reported residual (cheap, always available)
+        info.residual = solver_control.last_value() / rhs_norm;
     }
 
     auto end = std::chrono::high_resolution_clock::now();
@@ -134,7 +135,7 @@ SolverInfo solve_ns_system_schur_parallel(
     // Distribute constraints
     constraints.distribute(solution);
 
-    // Compute true residual (expensive — gate behind verbose)
+    // Optionally compute true residual (expensive — verbose only, overwrites above)
     if (verbose)
     {
         dealii::TrilinosWrappers::MPI::Vector residual(rhs);
@@ -268,8 +269,6 @@ SolverInfo solve_ns_system_direct_parallel(
         std::cerr << "[NS Direct] WARNING: Pressure diagonal not found - matrix may still be singular!\n";
     }
 
-    const double rhs_norm = mutable_rhs.l2_norm();
-
     if (verbose && rank == 0)
         std::cout << "[NS Direct] Trying solvers in order of preference...\n";
 
@@ -296,13 +295,14 @@ SolverInfo solve_ns_system_direct_parallel(
 
     constraints.distribute(solution);
 
-    // Compute true residual (expensive — gate behind verbose)
-    if (verbose)
+    // FIX #12: Compute residual against pre-pinning norm to avoid misleading values.
+    // Always compute — downstream convergence logic needs a real residual, not 0.0.
     {
         dealii::TrilinosWrappers::MPI::Vector residual(mutable_rhs);
         mutable_matrix.vmult(residual, solution);
         residual -= mutable_rhs;
-        info.residual = (rhs_norm > 1e-14) ? residual.l2_norm() / rhs_norm : 0.0;
+        info.residual = (rhs_norm_before_pinning > 1e-14)
+            ? residual.l2_norm() / rhs_norm_before_pinning : 0.0;
     }
 
     if (verbose && rank == 0 && solved)
@@ -376,8 +376,7 @@ SolverInfo solve_ns_system_direct_parallel(
 
     constraints.distribute(solution);
 
-    // Compute true residual (expensive — gate behind verbose)
-    if (verbose)
+    // Always compute residual — downstream convergence logic needs a real value.
     {
         dealii::TrilinosWrappers::MPI::Vector residual(rhs);
         matrix.vmult(residual, solution);
@@ -568,15 +567,13 @@ SolverInfo solve_ns_system(
 
         if (!info.converged && !force_direct)
         {
+            // FIX #1: pin_pressure_dof modifies matrix/rhs in-place.
+            // Falling back to iterative with the mutilated matrix produces
+            // wrong answers (velocity block has a zeroed pressure row).
+            // Do NOT fall back — report failure instead.
             if (rank == 0)
-                std::cout << "[NS] Direct solver failed, falling back to iterative\n";
-
-            info = solve_ns_system_schur_parallel(
-                matrix, rhs, solution, constraints,
-                pressure_mass,
-                ux_to_ns_map, uy_to_ns_map, p_to_ns_map,
-                ns_owned, vel_owned, p_owned,
-                mpi_comm, viscosity, dt, verbose, use_ilu);
+                std::cerr << "[NS] Direct solver failed. Cannot fall back to iterative "
+                          << "(matrix modified by pressure pinning).\n";
         }
     }
     else

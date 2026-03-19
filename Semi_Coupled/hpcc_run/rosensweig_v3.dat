@@ -1,0 +1,57 @@
+# Semi_Coupled Rosensweig v3 Test Matrix — Post-Audit Diagnostic
+# Date: 2026-03-18
+# Binary: post-audit (explicit CH convection, BGS mag_old fix, Heaviside fix, use_ilu fix)
+# Usage: sbatch --array=1-10 hpcc_run/submit.sub hpcc_run/rosensweig_v3.dat
+#
+# NOTE: Explicit CH convection (paper Eq 65a) is now DEFAULT in --rosensweig preset.
+#       No flag needed. NS stays direct (MUMPS) — BFBt doesn't converge for DG Q1.
+#
+# ============================================================================
+# Group A: Core diagnostics (L6, dt=5e-4, direct, BGS=1)
+# ============================================================================
+#
+# T1: Post-audit baseline (explicit CH convection now default)
+--rosensweig --run_name T01-baseline-post-audit
+# T2: Paper gravity (g=30000 vs auto g=31583)
+--rosensweig --gravity 30000 --run_name T02-gravity-30k
+#
+# ============================================================================
+# Group B: BGS coupling strength (L6, dt=5e-4, direct)
+# ============================================================================
+#
+# T3: 2 BGS iterations
+--rosensweig --bgs_iters 2 --run_name T03-bgs2
+# T4: 3 BGS iterations
+--rosensweig --bgs_iters 3 --run_name T04-bgs3
+#
+# ============================================================================
+# Group C: Solver type (L6, dt=5e-4, BGS=1)
+# ============================================================================
+#
+# T5: CH+Mag iterative (GMRES+BlockSchur), NS direct
+--rosensweig --ch-iterative --mag-iterative --run_name T05-ch-mag-iterative
+#
+# ============================================================================
+# Group D: Resolution study (direct, BGS=1)
+# ============================================================================
+#
+# T6: Coarser mesh L5 (quick diagnostic, ~30min)
+--rosensweig -r 5 --run_name T06-L5
+# T7: Finer mesh L7
+--rosensweig -r 7 --run_name T07-L7
+#
+# ============================================================================
+# Group E: Temporal refinement (L6, direct, BGS=1)
+# ============================================================================
+#
+# T8: dt=2.5e-4 (2x finer, 8000 steps)
+--rosensweig --dt 2.5e-4 --max_steps 8000 --run_name T08-fine-dt
+#
+# ============================================================================
+# Group F: Controls
+# ============================================================================
+#
+# T9: Old AMR interval=50 (pre-fix control — should stay flat)
+--rosensweig --amr_interval 50 --run_name T09-amr50-control
+# T10: Kitchen sink — paper gravity + iterative CH/Mag + BGS=2
+--rosensweig --ch-iterative --mag-iterative --gravity 30000 --bgs_iters 2 --run_name T10-kitchen-sink
