@@ -1734,17 +1734,49 @@ int main(int argc, char* argv[])
                 // ============================================================
                 // Step 6: Final magnetization m^n with converged h^n = ∇φ^n
                 // (Zhang Eq 3.17: implicit CG transport b(ũ^n, m^n, Z))
+                //
+                // Extra stabilization: re-solve Poisson with Step 6's M,
+                // then re-solve Step 6 with updated φ. This closes the
+                // feedback loop that single-pass Step 6 leaves open.
                 // ============================================================
-                mag.assemble(
-                    mag.get_Mx_old_relevant(),   // M^{n-1}: time derivative + β
-                    mag.get_My_old_relevant(),
-                    poisson.get_solution_relevant(), poisson.get_dof_handler(),  // φ^n (converged)
-                    ch.get_theta_relevant(),         ch.get_theta_dof_handler(),
-                    vel_ux, vel_uy, vel_dof,         // ũ^n
-                    dt, current_time,
-                    /*explicit_transport=*/false);    // Step 6: CG skew transport
-                mag.solve();
-                mag.update_ghosts();
+                constexpr unsigned int step6_picard = 2;
+                for (unsigned int s6 = 0; s6 < step6_picard; ++s6)
+                {
+                    if (s6 == 0)
+                    {
+                        mag.assemble(
+                            mag.get_Mx_old_relevant(),
+                            mag.get_My_old_relevant(),
+                            poisson.get_solution_relevant(), poisson.get_dof_handler(),
+                            ch.get_theta_relevant(),         ch.get_theta_dof_handler(),
+                            vel_ux, vel_uy, vel_dof,
+                            dt, current_time,
+                            /*explicit_transport=*/false);
+                    }
+                    else
+                    {
+                        mag.assemble_rhs_only(
+                            poisson.get_solution_relevant(), poisson.get_dof_handler(),
+                            ch.get_theta_relevant(), ch.get_theta_dof_handler(),
+                            mag.get_Mx_old_relevant(),
+                            mag.get_My_old_relevant(),
+                            dt, current_time,
+                            /*explicit_transport=*/false);
+                    }
+                    mag.solve();
+                    mag.update_ghosts();
+
+                    // Re-solve Poisson with updated M from Step 6
+                    if (s6 < step6_picard - 1)
+                    {
+                        poisson.assemble_rhs(mag.get_Mx_relevant(),
+                                             mag.get_My_relevant(),
+                                             mag.get_dof_handler(),
+                                             current_time);
+                        poisson.solve();
+                        poisson.update_ghosts();
+                    }
+                }
             }
         }
 
