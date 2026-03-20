@@ -14,8 +14,8 @@
 #include "mms/ch/ch_mms_test.h"
 #include "mms/ns/ns_mms.h"
 #include "mms/ns/ns_mms_test.h"
-#include "mms/poisson/poisson_mms.h"
-#include "mms/magnetization/magnetization_mms.h"
+#include "mms/magnetic/poisson_mms.h"
+#include "mms/magnetic/magnetization_mms.h"
 #include "mms/coupled/coupled_mms_test.h"
 
 // Production components

@@ -271,11 +271,20 @@ struct MagMMSError
 {
     double Mx_L2 = 0.0;
     double My_L2 = 0.0;
-    double M_L2 = 0.0;  // Combined ||M||_L2
+    double M_L2 = 0.0;    // Combined ||M||_L2
+    double M_H1 = 0.0;    // Combined ||M||_H1
     double Mx_Linf = 0.0;
     double My_Linf = 0.0;
     double M_Linf = 0.0;
+
+    // Poisson (φ) errors — computed by monolithic system
+    double phi_L2 = 0.0;
+    double phi_H1 = 0.0;
+    double phi_Linf = 0.0;
 };
+
+// Alias used by coupled MMS tests
+using MagneticMMSError = MagMMSError;
 
 // ============================================================================
 // Compute magnetization MMS errors (PARALLEL)
@@ -354,6 +363,16 @@ MagMMSError compute_mag_mms_errors_parallel(
     error.M_Linf = std::max(global_Mx_Linf, global_My_Linf);
 
     return error;
+}
+
+// Alias used by coupled MMS tests
+template <int dim>
+MagMMSError compute_magnetic_mms_errors_parallel(
+    const dealii::DoFHandler<dim>& dof_handler,
+    const dealii::TrilinosWrappers::MPI::Vector& solution,
+    double time, double L_y, MPI_Comm comm)
+{
+    return compute_mag_mms_errors_parallel<dim>(dof_handler, solution, time, L_y, comm);
 }
 
 #endif // MAGNETIZATION_MMS_H

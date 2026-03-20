@@ -173,9 +173,11 @@ private:
     dealii::TrilinosWrappers::SparseMatrix mag_matrix_;
     dealii::TrilinosWrappers::MPI::Vector mag_rhs_;
     dealii::TrilinosWrappers::MPI::Vector mag_solution_;
+    dealii::TrilinosWrappers::MPI::Vector mag_solution_old_;  // M^{k-1} for transport (Eq 42c)
 
     // Ghosted vectors for assembly (read access to ghost values)
     dealii::TrilinosWrappers::MPI::Vector mag_relevant_;
+    dealii::TrilinosWrappers::MPI::Vector mag_old_relevant_;  // ghosted M^{k-1}
 
     // Separate ghost vectors for Mx, My, phi (for NS assembly and diagnostics)
     // These are VIEWS extracted from mag_solution_ after solve

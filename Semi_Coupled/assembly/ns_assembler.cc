@@ -22,6 +22,7 @@
 
 // Kelvin force helpers (Eq. 38)
 #include "physics/kelvin_force.h"
+#include <deal.II/dofs/dof_tools.h>
 #include "physics/applied_field.h"
 #include "physics/material_properties.h"
 
@@ -601,6 +602,27 @@ static void assemble_kelvin_force(
 
     const unsigned int dofs_per_cell_vel = fe_vel.n_dofs_per_cell();
 
+    // Create ghosted copies of solution vectors for face loop.
+    // The face loop reads from neighbor (ghost) cells, so we need
+    // vectors that include ghost DoF values.
+    const MPI_Comm comm = phi_dof_handler.get_communicator();
+    const dealii::IndexSet phi_relevant =
+        dealii::DoFTools::extract_locally_relevant_dofs(phi_dof_handler);
+    const dealii::IndexSet M_relevant =
+        dealii::DoFTools::extract_locally_relevant_dofs(M_dof_handler);
+
+    dealii::TrilinosWrappers::MPI::Vector phi_ghosted(
+        phi_dof_handler.locally_owned_dofs(), phi_relevant, comm);
+    phi_ghosted = phi_solution;
+
+    dealii::TrilinosWrappers::MPI::Vector Mx_ghosted(
+        M_dof_handler.locally_owned_dofs(), M_relevant, comm);
+    Mx_ghosted = Mx_solution;
+
+    dealii::TrilinosWrappers::MPI::Vector My_ghosted(
+        M_dof_handler.locally_owned_dofs(), M_relevant, comm);
+    My_ghosted = My_solution;
+
     dealii::QGauss<dim> quadrature(fe_vel.degree + 2);
     const unsigned int n_q_points = quadrature.size();
 
@@ -708,6 +730,255 @@ static void assemble_kelvin_force(
         ns_constraints.distribute_local_to_global(local_rhs_uy, coupled_uy_dofs, ns_rhs);
 
     }  // end cell loop
+
+    // ========================================================================
+    // Face loop: -μ₀ ([[H]]·{M})(V·n)   (Paper Eq. 57 face term)
+    //
+    // H = ∇φ is the gradient of CG φ — DISCONTINUOUS across element faces.
+    // M is DG — also discontinuous. V is CG velocity test function.
+    //
+    // Process each interior face ONCE (from the minus-side cell).
+    // V is CG so only minus-cell test functions needed (no CG double-counting).
+    //
+    // AMR handling: 3 cases per face (same as magnetic assembler):
+    //   1. Same-level neighbor: standard face integral
+    //   2. Finer neighbor (face->has_children): subface loop
+    //   3. Coarser neighbor: skip (coarser cell handles via case 2)
+    // ========================================================================
+    {
+        dealii::QGauss<dim - 1> face_quadrature(fe_vel.degree + 2);
+        const unsigned int n_face_q = face_quadrature.size();
+
+        // FEFaceValues for velocity test functions (minus side only — CG)
+        dealii::FEFaceValues<dim> ux_fe_face_minus(fe_vel, face_quadrature,
+            dealii::update_values | dealii::update_normal_vectors |
+            dealii::update_JxW_values);
+        dealii::FEFaceValues<dim> uy_fe_face_minus(fe_vel, face_quadrature,
+            dealii::update_values);
+
+        // FEFaceValues for φ (gradients on both sides for [[H]])
+        dealii::FEFaceValues<dim> phi_fe_face_minus(fe_phi, face_quadrature,
+            dealii::update_gradients);
+        dealii::FEFaceValues<dim> phi_fe_face_plus(fe_phi, face_quadrature,
+            dealii::update_gradients);
+
+        // FEFaceValues for M (values on both sides for {M})
+        dealii::FEFaceValues<dim> M_fe_face_minus(fe_M, face_quadrature,
+            dealii::update_values);
+        dealii::FEFaceValues<dim> M_fe_face_plus(fe_M, face_quadrature,
+            dealii::update_values);
+
+        // FESubfaceValues for AMR: coarser cell side when neighbor is finer
+        dealii::FESubfaceValues<dim> ux_fe_subface_minus(fe_vel, face_quadrature,
+            dealii::update_values | dealii::update_normal_vectors |
+            dealii::update_JxW_values);
+        dealii::FESubfaceValues<dim> uy_fe_subface_minus(fe_vel, face_quadrature,
+            dealii::update_values);
+        dealii::FESubfaceValues<dim> phi_fe_subface_minus(fe_phi, face_quadrature,
+            dealii::update_gradients);
+        dealii::FESubfaceValues<dim> M_fe_subface_minus(fe_M, face_quadrature,
+            dealii::update_values);
+
+        // Face quadrature point storage
+        std::vector<dealii::Tensor<1, dim>> phi_grad_minus(n_face_q);
+        std::vector<dealii::Tensor<1, dim>> phi_grad_plus(n_face_q);
+        std::vector<double> Mx_minus(n_face_q), My_minus(n_face_q);
+        std::vector<double> Mx_plus(n_face_q), My_plus(n_face_q);
+
+        // Local RHS for minus cell only (CG — no plus-cell assembly)
+        dealii::Vector<double> face_rhs_ux_minus(dofs_per_cell_vel);
+        dealii::Vector<double> face_rhs_uy_minus(dofs_per_cell_vel);
+
+        std::vector<dealii::types::global_dof_index> ux_dofs_minus(dofs_per_cell_vel);
+        std::vector<dealii::types::global_dof_index> uy_dofs_minus(dofs_per_cell_vel);
+
+        // Lambda: Kelvin face kernel. Takes FEValuesBase refs for minus/plus sides.
+        auto kelvin_face_kernel = [&](
+            const dealii::FEValuesBase<dim>& ux_minus,
+            const dealii::FEValuesBase<dim>& uy_minus,
+            const dealii::FEValuesBase<dim>& phi_minus,
+            const dealii::FEValuesBase<dim>& phi_plus_fv,
+            const dealii::FEValuesBase<dim>& M_minus_fv,
+            const dealii::FEValuesBase<dim>& M_plus_fv)
+        {
+            // Get field values at face quadrature points
+            phi_minus.get_function_gradients(phi_ghosted, phi_grad_minus);
+            phi_plus_fv.get_function_gradients(phi_ghosted, phi_grad_plus);
+            M_minus_fv.get_function_values(Mx_ghosted, Mx_minus);
+            M_minus_fv.get_function_values(My_ghosted, My_minus);
+            M_plus_fv.get_function_values(Mx_ghosted, Mx_plus);
+            M_plus_fv.get_function_values(My_ghosted, My_plus);
+
+            face_rhs_ux_minus = 0;
+            face_rhs_uy_minus = 0;
+
+            const unsigned int n_q = ux_minus.n_quadrature_points;
+            for (unsigned int q = 0; q < n_q; ++q)
+            {
+                const double JxW_face = ux_minus.JxW(q);
+                const dealii::Tensor<1, dim>& normal =
+                    ux_minus.normal_vector(q);
+
+                const dealii::Tensor<1, dim>& H_minus_q = phi_grad_minus[q];
+                const dealii::Tensor<1, dim>& H_plus_q = phi_grad_plus[q];
+
+                dealii::Tensor<1, dim> M_minus_vec =
+                    KelvinForce::make_M_vector<dim>(Mx_minus[q], My_minus[q]);
+                dealii::Tensor<1, dim> M_plus_vec =
+                    KelvinForce::make_M_vector<dim>(Mx_plus[q], My_plus[q]);
+
+                dealii::Tensor<1, dim> jump_H =
+                    KelvinForce::compute_jump_H<dim>(H_minus_q, H_plus_q);
+                dealii::Tensor<1, dim> avg_M =
+                    KelvinForce::compute_avg_M<dim>(M_minus_vec, M_plus_vec);
+
+                for (unsigned int i = 0; i < dofs_per_cell_vel; ++i)
+                {
+                    const double phi_ux = ux_minus.shape_value(i, q);
+                    const double phi_uy = uy_minus.shape_value(i, q);
+
+                    double k_ux, k_uy;
+                    KelvinForce::face_kernel<dim>(
+                        phi_ux, phi_uy, normal, jump_H, avg_M,
+                        mu_0, k_ux, k_uy);
+
+                    face_rhs_ux_minus(i) += k_ux * JxW_face;
+                    face_rhs_uy_minus(i) += k_uy * JxW_face;
+                }
+            }
+
+            // Distribute to global RHS
+            std::vector<dealii::types::global_dof_index> coupled_ux_m(dofs_per_cell_vel);
+            std::vector<dealii::types::global_dof_index> coupled_uy_m(dofs_per_cell_vel);
+            for (unsigned int i = 0; i < dofs_per_cell_vel; ++i)
+            {
+                coupled_ux_m[i] = ux_to_ns_map[ux_dofs_minus[i]];
+                coupled_uy_m[i] = uy_to_ns_map[uy_dofs_minus[i]];
+            }
+            ns_constraints.distribute_local_to_global(
+                face_rhs_ux_minus, coupled_ux_m, ns_rhs);
+            ns_constraints.distribute_local_to_global(
+                face_rhs_uy_minus, coupled_uy_m, ns_rhs);
+        };
+
+        // Synchronized cell iterators for all DoFHandlers
+        auto ux_cell_f = ux_dof_handler.begin_active();
+        auto uy_cell_f = uy_dof_handler.begin_active();
+        auto phi_cell_f = phi_dof_handler.begin_active();
+        auto M_cell_f = M_dof_handler.begin_active();
+
+        for (; ux_cell_f != ux_dof_handler.end();
+             ++ux_cell_f, ++uy_cell_f, ++phi_cell_f, ++M_cell_f)
+        {
+            if (!ux_cell_f->is_locally_owned())
+                continue;
+
+            for (unsigned int face_no = 0;
+                 face_no < dealii::GeometryInfo<dim>::faces_per_cell; ++face_no)
+            {
+                if (ux_cell_f->at_boundary(face_no))
+                    continue;
+
+                const auto face = ux_cell_f->face(face_no);
+
+                // ==============================================================
+                // Case 1: Face has children → neighbor is FINER
+                // Use FESubfaceValues on this (coarser) cell.
+                // ==============================================================
+                if (face->has_children())
+                {
+                    for (unsigned int subface = 0;
+                         subface < face->n_children(); ++subface)
+                    {
+                        // Get finer neighbor child cells for all DoF handlers
+                        const auto ux_child =
+                            ux_cell_f->neighbor_child_on_subface(face_no, subface);
+                        const auto phi_child =
+                            phi_cell_f->neighbor_child_on_subface(face_no, subface);
+                        const auto M_child =
+                            M_cell_f->neighbor_child_on_subface(face_no, subface);
+
+                        // Find which face of the child touches us
+                        unsigned int child_face_no = 0;
+                        for (unsigned int f = 0;
+                             f < dealii::GeometryInfo<dim>::faces_per_cell; ++f)
+                        {
+                            if (!ux_child->at_boundary(f) &&
+                                ux_child->neighbor(f) == ux_cell_f)
+                            {
+                                child_face_no = f;
+                                break;
+                            }
+                        }
+
+                        // Reinit: subface on coarser side, face on finer side
+                        ux_fe_subface_minus.reinit(ux_cell_f, face_no, subface);
+                        uy_fe_subface_minus.reinit(uy_cell_f, face_no, subface);
+                        phi_fe_subface_minus.reinit(phi_cell_f, face_no, subface);
+                        M_fe_subface_minus.reinit(M_cell_f, face_no, subface);
+
+                        phi_fe_face_plus.reinit(phi_child, child_face_no);
+                        M_fe_face_plus.reinit(M_child, child_face_no);
+
+                        // Get minus cell DoF indices
+                        ux_cell_f->get_dof_indices(ux_dofs_minus);
+                        uy_cell_f->get_dof_indices(uy_dofs_minus);
+
+                        kelvin_face_kernel(
+                            ux_fe_subface_minus, uy_fe_subface_minus,
+                            phi_fe_subface_minus, phi_fe_face_plus,
+                            M_fe_subface_minus, M_fe_face_plus);
+                    }
+                    continue;
+                }
+
+                // ==============================================================
+                // Case 2: Neighbor is COARSER → skip
+                // The coarser neighbor handles this face via Case 1.
+                // ==============================================================
+                if (ux_cell_f->neighbor_is_coarser(face_no))
+                    continue;
+
+                // ==============================================================
+                // Case 3: SAME-LEVEL neighbor
+                // Process each face once using cell ID comparison.
+                // ==============================================================
+                const auto ux_neighbor = ux_cell_f->neighbor(face_no);
+
+                if (ux_neighbor->is_locally_owned() &&
+                    (ux_neighbor->level() < ux_cell_f->level() ||
+                     (ux_neighbor->level() == ux_cell_f->level() &&
+                      ux_neighbor->index() < ux_cell_f->index())))
+                    continue;
+
+                const unsigned int neighbor_face_no =
+                    ux_cell_f->neighbor_of_neighbor(face_no);
+
+                const auto phi_neighbor = phi_cell_f->neighbor(face_no);
+                const auto M_neighbor = M_cell_f->neighbor(face_no);
+
+                // Reinit FEFaceValues on minus side (this cell)
+                ux_fe_face_minus.reinit(ux_cell_f, face_no);
+                uy_fe_face_minus.reinit(uy_cell_f, face_no);
+                phi_fe_face_minus.reinit(phi_cell_f, face_no);
+                M_fe_face_minus.reinit(M_cell_f, face_no);
+
+                // Reinit FEFaceValues on plus side (neighbor)
+                phi_fe_face_plus.reinit(phi_neighbor, neighbor_face_no);
+                M_fe_face_plus.reinit(M_neighbor, neighbor_face_no);
+
+                // Get minus cell DoF indices
+                ux_cell_f->get_dof_indices(ux_dofs_minus);
+                uy_cell_f->get_dof_indices(uy_dofs_minus);
+
+                kelvin_face_kernel(
+                    ux_fe_face_minus, uy_fe_face_minus,
+                    phi_fe_face_minus, phi_fe_face_plus,
+                    M_fe_face_minus, M_fe_face_plus);
+
+            }  // end face loop
+        }  // end cell loop (face pass)
+    }
 
     ns_rhs.compress(dealii::VectorOperation::add);
 }
@@ -1123,35 +1394,26 @@ void assemble_ns_system_unified(
     {
         const Parameters& kp = *forces.kelvin_params;
 
-        // Use gradient form when theta is available (production runs).
-        // Falls back to DG skew form for MMS-only tests (no theta).
-        if (forces.theta_cap_dof_handler != nullptr)
-        {
-            // Gradient form: (μ₀/2)|H|²∇χ(θ) + μ₀χ(θ)Hess(φ)·H
-            // Uses ∇θ (well-resolved) → drives Rosensweig spikes
-            assemble_kelvin_force_gradient<dim>(
-                ux_dof_handler, uy_dof_handler,
-                *forces.phi_dof_handler, *forces.theta_cap_dof_handler,
-                *forces.phi_solution, *forces.theta_cap_solution,
-                forces.mu_0, kp.physics.chi_0, kp.physics.epsilon,
-                ux_to_ns_map, uy_to_ns_map,
-                ns_constraints, ns_rhs);
-        }
-        else
-        {
-            // DG skew form: μ₀[(M·∇)H·V + ½div(V)(H·M)] (MMS tests)
-            assemble_kelvin_force<dim>(
-                ux_dof_handler, uy_dof_handler,
-                *forces.phi_dof_handler, *forces.M_dof_handler,
-                *forces.phi_solution, *forces.Mx_solution, *forces.My_solution,
-                forces.mu_0,
-                ux_to_ns_map, uy_to_ns_map,
-                ns_constraints, ns_rhs,
-                kp, forces.kelvin_time);
-        }
+        // ALWAYS use the paper's DG skew form: μ₀ B_h^m(V, H, M)
+        //   = μ₀[(M·∇)H·V + ½div(V)(H·M)]  (Paper Eq. 42e, 57)
+        //
+        // WHY NOT the gradient form:
+        //   The gradient form computes F = (μ₀/2)|H|²∇χ + μ₀χ Hess(φ)·H
+        //   = ∇(μ₀χ|H|²/2), which is a PURE GRADIENT of a scalar.
+        //   For incompressible flow with no-slip BCs, gradient forces are
+        //   entirely absorbed by pressure and produce ZERO velocity effect.
+        //   The Rosensweig instability requires the non-gradient interface
+        //   force -(μ₀/2)|H|²∇χ that only B_h^m provides.
+        assemble_kelvin_force<dim>(
+            ux_dof_handler, uy_dof_handler,
+            *forces.phi_dof_handler, *forces.M_dof_handler,
+            *forces.phi_solution, *forces.Mx_solution, *forces.My_solution,
+            forces.mu_0,
+            ux_to_ns_map, uy_to_ns_map,
+            ns_constraints, ns_rhs,
+            kp, forces.kelvin_time);
 
         // MMS correction: subtract exact Kelvin force F_K(M*, H*)
-        // Only applies to DG skew form (MMS tests use uniform theta)
         if (enable_mms)
         {
             assemble_kelvin_mms_correction<dim>(

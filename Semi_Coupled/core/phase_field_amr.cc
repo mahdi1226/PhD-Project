@@ -241,9 +241,10 @@ void PhaseFieldProblem<dim>::refine_mesh()
         mag_trans = std::make_unique<dealii::parallel::distributed::SolutionTransfer<
             dim, dealii::TrilinosWrappers::MPI::Vector>>(mag_dof_handler_);
 
-        // mag_relevant_ is already ghosted
+        // mag_relevant_ and mag_old_relevant_ are already ghosted
+        mag_old_relevant_ = mag_solution_old_;
         std::vector<const dealii::TrilinosWrappers::MPI::Vector*> mag_pre = {
-            &mag_relevant_};
+            &mag_relevant_, &mag_old_relevant_};
         mag_trans->prepare_for_coarsening_and_refinement(mag_pre);
     }
 
@@ -320,7 +321,7 @@ void PhaseFieldProblem<dim>::refine_mesh()
     if (params_.enable_magnetic)
     {
         std::vector<dealii::TrilinosWrappers::MPI::Vector*> mag_post = {
-            &mag_solution_};
+            &mag_solution_, &mag_solution_old_};
         mag_trans->interpolate(mag_post);
     }
 
@@ -350,6 +351,7 @@ void PhaseFieldProblem<dim>::refine_mesh()
     if (params_.enable_magnetic)
     {
         mag_constraints_.distribute(mag_solution_);
+        mag_constraints_.distribute(mag_solution_old_);
     }
 
     if (params_.enable_ns)
@@ -441,6 +443,7 @@ void PhaseFieldProblem<dim>::refine_mesh()
     if (params_.enable_magnetic)
     {
         mag_relevant_ = mag_solution_;
+        mag_old_relevant_ = mag_solution_old_;
         extract_magnetic_components();  // fills phi/Mx/My auxiliary vectors
     }
 

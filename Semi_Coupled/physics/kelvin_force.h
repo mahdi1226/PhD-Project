@@ -193,7 +193,8 @@ inline void cell_kernel(
     for (unsigned int d = 0; d < dim; ++d)
         H_dot_M += H[d] * M[d];
 
-    // (M·∇)H · V + ½ div(V)(H·M)
+    // +μ₀ [(M·∇)H · V + ½ div(V)(H·M)]
+    // Paper Eq 42e RHS: +μ₀ B_h^m(V, H, M).  Cell part of B_h^m is positive.
     // For V = (φ_ux, 0): div(V) = ∂φ_ux/∂x = grad_phi_ux[0]
     kelvin_ux = mu_0 * (M_grad_H[0] * phi_ux + 0.5 * grad_phi_ux[0] * H_dot_M);
     // For V = (0, φ_uy): div(V) = ∂φ_uy/∂y = grad_phi_uy[1]
@@ -258,10 +259,10 @@ inline void face_kernel(
     for (unsigned int d = 0; d < dim; ++d)
         jump_H_dot_avg_M += jump_H[d] * avg_M[d];
 
-    // -(V·n) [[H]]·{M}
+    // -μ₀ (V·n) [[H]]·{M}
+    // Paper Eq 57: face part of B_h^m has negative sign.
     // For V = (φ_ux, 0): V·n = φ_ux * n[0]
     // For V = (0, φ_uy): V·n = φ_uy * n[1]
-    // This is the invariant form; component-wise is equivalent for split test functions
     kelvin_ux = -mu_0 * (phi_ux * normal[0]) * jump_H_dot_avg_M;
     kelvin_uy = -mu_0 * (phi_uy * normal[1]) * jump_H_dot_avg_M;
 }

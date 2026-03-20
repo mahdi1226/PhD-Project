@@ -57,15 +57,16 @@ void setup_magnetic_system(
     mag_constraints.close();
 
     // ========================================================================
-    // Step 3: Sparsity pattern (cell coupling only — no face flux terms)
+    // Step 3: Sparsity pattern (with face flux coupling for DG transport)
     //
-    // Algebraic M: no DG transport → no face coupling needed.
-    // Cell coupling: all-to-all (M-M, M-phi, phi-M, phi-phi)
+    // Paper Eq 42c: M transport has DG convection B_h^m(U, Z, M) which
+    // couples M DoFs across cell faces. Use make_flux_sparsity_pattern
+    // to include neighbor-cell coupling for DG components.
     // ========================================================================
     dealii::DynamicSparsityPattern dsp(locally_relevant);
-    dealii::DoFTools::make_sparsity_pattern(
+    dealii::DoFTools::make_flux_sparsity_pattern(
         mag_dof_handler, dsp, mag_constraints,
-        /*keep_constrained_dofs=*/false);
+        /*keep_constrained_dofs=*/true);
 
     dealii::SparsityTools::distribute_sparsity_pattern(
         dsp,

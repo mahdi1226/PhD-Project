@@ -131,11 +131,17 @@ struct CoupledMMSConvergenceResult
  *
  * Expected: M L2 = 2 (DG-Q1), φ L2 = 3 (Q2)
  */
-CoupledMMSConvergenceResult run_ch_magnetic_mms(
-    const std::vector<unsigned int>& refinements,
-    const Parameters& params,
-    unsigned int n_time_steps,
-    MPI_Comm mpi_communicator);
+// STUB: needs MagneticExactSolution (not yet implemented)
+inline CoupledMMSConvergenceResult run_ch_magnetic_mms(
+    const std::vector<unsigned int>& /*refinements*/,
+    const Parameters& /*params*/,
+    unsigned int /*n_time_steps*/,
+    MPI_Comm mpi_communicator)
+{
+    int rank; MPI_Comm_rank(mpi_communicator, &rank);
+    if (rank == 0) std::cout << "\n  [STUB] CH-Magnetic coupled MMS not yet implemented.\n";
+    return CoupledMMSConvergenceResult{};
+}
 
 /**
  * @brief Magnetic → NS coupled MMS test (Kelvin force)
@@ -154,11 +160,17 @@ CoupledMMSConvergenceResult run_ch_magnetic_mms(
  *
  * Expected: U L2 = 3, U H1 = 2 (Q2), p L2 = 2 (Q1), M L2 = 2, φ L2 = 3
  */
-CoupledMMSConvergenceResult run_magnetic_ns_mms(
-    const std::vector<unsigned int>& refinements,
-    const Parameters& params,
-    unsigned int n_time_steps,
-    MPI_Comm mpi_communicator);
+// STUB: needs MagneticExactSolution (not yet implemented)
+inline CoupledMMSConvergenceResult run_magnetic_ns_mms(
+    const std::vector<unsigned int>& /*refinements*/,
+    const Parameters& /*params*/,
+    unsigned int /*n_time_steps*/,
+    MPI_Comm mpi_communicator)
+{
+    int rank; MPI_Comm_rank(mpi_communicator, &rank);
+    if (rank == 0) std::cout << "\n  [STUB] Magnetic-NS coupled MMS not yet implemented.\n";
+    return CoupledMMSConvergenceResult{};
+}
 
 /**
  * @brief NS → CH coupled MMS test
@@ -195,10 +207,16 @@ CoupledMMSConvergenceResult run_ns_ch_mms(
  *   - φ: L2 = 3, H1 = 2
  *   - M: L2 = 2
  */
-CoupledMMSConvergenceResult run_full_system_mms(
-    const std::vector<unsigned int>& refinements,
-    const Parameters& params,
-    unsigned int n_time_steps,
-    MPI_Comm mpi_communicator);
+// STUB: needs MagneticExactSolution (not yet implemented)
+inline CoupledMMSConvergenceResult run_full_system_mms(
+    const std::vector<unsigned int>& /*refinements*/,
+    const Parameters& /*params*/,
+    unsigned int /*n_time_steps*/,
+    MPI_Comm mpi_communicator)
+{
+    int rank; MPI_Comm_rank(mpi_communicator, &rank);
+    if (rank == 0) std::cout << "\n  [STUB] Full system coupled MMS not yet implemented.\n";
+    return CoupledMMSConvergenceResult{};
+}
 
 #endif // COUPLED_MMS_TEST_H

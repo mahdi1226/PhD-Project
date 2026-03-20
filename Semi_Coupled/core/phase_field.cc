@@ -25,7 +25,7 @@
 
 // Diagnostics and logging system (these use functions from tools.h)
 #include "diagnostics/system_diagnostics.h"
-#include "diagnostics/magnetization_diagnostics.h"
+#include "diagnostics/magnetic_diagnostics.h"
 #include "diagnostics/validation_diagnostics.h"
 #include "output/console_logger.h"
 #include "output/metrics_logger.h"
@@ -738,7 +738,10 @@ void PhaseFieldProblem<dim>::solve_magnetics(double dt)
     // Update ghosted theta for assembly (from CH solve)
     theta_relevant_ = theta_solution_;
 
-    // Assemble monolithic system (algebraic M = χ·∇φ, no transport)
+    // Update ghosted M_old for transport time derivative (Eq 42c)
+    mag_old_relevant_ = mag_solution_old_;
+
+    // Assemble monolithic system (M transport + Poisson, Eq 42c-42d)
     t_assemble.start();
     magnetic_assembler_->assemble(
         mag_matrix_,
@@ -746,7 +749,7 @@ void PhaseFieldProblem<dim>::solve_magnetics(double dt)
         ux_relevant_,
         uy_relevant_,
         theta_relevant_,
-        mag_relevant_,  // unused by assembler (kept for signature compat)
+        mag_old_relevant_,  // M^{k-1} for time derivative in Eq 42c
         dt,
         time_);
     t_assemble.stop();
@@ -765,6 +768,9 @@ void PhaseFieldProblem<dim>::solve_magnetics(double dt)
     last_mag_info_.iterations = magnetic_solver_->last_n_iterations();
     last_mag_info_.residual = 0.0;
     last_mag_info_.converged = true;
+
+    // Save current solution as M_old for next time step (Eq 42c δM^k/τ)
+    mag_solution_old_ = mag_solution_;
 
     // Update ghosted mag solution
     mag_relevant_ = mag_solution_;
