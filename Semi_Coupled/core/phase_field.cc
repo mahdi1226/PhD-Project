@@ -172,12 +172,16 @@ void PhaseFieldProblem<dim>::run()
     // ========================================================================
     if (params_.enable_magnetic)
     {
+        // Effective surface tension for phase-field: σ_eff = λ/ε
+        // (not λ alone — the capillary force is (λ/ε)θ∇ψ)
+        double sigma_eff = params_.physics.lambda / params_.physics.epsilon;
+        double rho_g_eff = params_.physics.r * params_.physics.gravity;
         double lambda_theory = RosensweigTheory::critical_wavelength(
-            params_.physics.lambda,
-            1.0 + params_.physics.r,
-            params_.physics.gravity);
+            sigma_eff, 1.0, rho_g_eff);
         pcout_ << "\n[Rosensweig Validation Reference]\n";
+        pcout_ << "  Effective surface tension σ = λ/ε = " << sigma_eff << "\n";
         pcout_ << "  Critical wavelength λ_c = " << lambda_theory << "\n";
+        pcout_ << "  Expected spikes in [0,1]: ~" << 1.0/lambda_theory << "\n";
         pcout_ << "  Magnetics: monolithic (no Picard)\n\n";
     }
 
@@ -691,9 +695,10 @@ void PhaseFieldProblem<dim>::run()
     }
 
     // ========================================================================
-    // FINAL OUTPUT
+    // FINAL OUTPUT (only if last step wasn't already output)
     // ========================================================================
-    output_results(output_dir);
+    if ((timestep_number_ - 1) % output_frequency != 0)
+        output_results(output_dir);
 
     // ========================================================================
     // FINAL ROSENSWEIG VALIDATION SUMMARY (printed ONCE at end)
@@ -735,20 +740,22 @@ void PhaseFieldProblem<dim>::solve_magnetics(double dt)
 {
     CumulativeTimer t_assemble, t_solve;
 
-    // Update ghosted theta for assembly (from CH solve)
+    // Update ghosted theta (from CH solve) — but use θ^{k-1} for χ(θ)
+    // per paper Theorem 4.1: material coefficients at OLD theta for stability
     theta_relevant_ = theta_solution_;
 
     // Update ghosted M_old for transport time derivative (Eq 42c)
     mag_old_relevant_ = mag_solution_old_;
 
     // Assemble monolithic system (M transport + Poisson, Eq 42c-42d)
+    // NOTE: χ(θ) must use θ^{k-1} (theta_old_relevant_) per paper Eq 42c
     t_assemble.start();
     magnetic_assembler_->assemble(
         mag_matrix_,
         mag_rhs_,
         ux_relevant_,
         uy_relevant_,
-        theta_relevant_,
+        theta_old_relevant_,  // θ^{k-1} for χ(θ) — paper Theorem 4.1
         mag_old_relevant_,  // M^{k-1} for time derivative in Eq 42c
         dt,
         time_);

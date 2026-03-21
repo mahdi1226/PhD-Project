@@ -18,7 +18,7 @@
 // where V is the velocity TEST FUNCTION (first argument!). Expanding:
 //
 //   Cell: (V·∇)H·M + ½ div(V)(H·M)
-//   Face: -([[H]]·{M})(V·n_F)    → vanishes since H=∇φ is CG ⟹ [[H]]=0
+//   Face: -([[H]]·{M})(V·n_F)    → non-zero: H=∇φ is piecewise, [[∇φ]]≠0 across faces
 //
 // Since H=∇φ, ∇H is symmetric (Hessian), so (V·∇)H·M = (M·∇)H·V.
 // The cell term is thus: (M·∇)H·V + ½ div(V)(H·M)

@@ -674,11 +674,12 @@ static void assemble_kelvin_force(
         ux_cell->get_dof_indices(ux_local_dofs);
         uy_cell->get_dof_indices(uy_local_dofs);
 
-        // Get field values at quadrature points
-        phi_fe_values.get_function_gradients(phi_solution, phi_gradients);
-        phi_fe_values.get_function_hessians(phi_solution, phi_hessians);
-        M_fe_values.get_function_values(Mx_solution, Mx_values);
-        M_fe_values.get_function_values(My_solution, My_values);
+        // Get field values at quadrature points (must use ghosted vectors
+        // so cells at MPI boundaries see correct values for ghost DoFs)
+        phi_fe_values.get_function_gradients(phi_ghosted, phi_gradients);
+        phi_fe_values.get_function_hessians(phi_ghosted, phi_hessians);
+        M_fe_values.get_function_values(Mx_ghosted, Mx_values);
+        M_fe_values.get_function_values(My_ghosted, My_values);
 
         // ====================================================================
         // Cell term: μ₀ B_h^m(V, H, M) = μ₀[(M·∇)H·V + ½ div(V)(H·M)]
@@ -749,11 +750,16 @@ static void assemble_kelvin_force(
         dealii::QGauss<dim - 1> face_quadrature(fe_vel.degree + 2);
         const unsigned int n_face_q = face_quadrature.size();
 
-        // FEFaceValues for velocity test functions (minus side only — CG)
+        // FEFaceValues for velocity test functions (both sides — CG test funcs
+        // on both cells have support at the face and must be assembled)
         dealii::FEFaceValues<dim> ux_fe_face_minus(fe_vel, face_quadrature,
             dealii::update_values | dealii::update_normal_vectors |
             dealii::update_JxW_values);
         dealii::FEFaceValues<dim> uy_fe_face_minus(fe_vel, face_quadrature,
+            dealii::update_values);
+        dealii::FEFaceValues<dim> ux_fe_face_plus(fe_vel, face_quadrature,
+            dealii::update_values);
+        dealii::FEFaceValues<dim> uy_fe_face_plus(fe_vel, face_quadrature,
             dealii::update_values);
 
         // FEFaceValues for φ (gradients on both sides for [[H]])
@@ -785,21 +791,36 @@ static void assemble_kelvin_force(
         std::vector<double> Mx_minus(n_face_q), My_minus(n_face_q);
         std::vector<double> Mx_plus(n_face_q), My_plus(n_face_q);
 
-        // Local RHS for minus cell only (CG — no plus-cell assembly)
+        // Local RHS for both cells (CG test functions on both sides need assembly)
         dealii::Vector<double> face_rhs_ux_minus(dofs_per_cell_vel);
         dealii::Vector<double> face_rhs_uy_minus(dofs_per_cell_vel);
+        dealii::Vector<double> face_rhs_ux_plus(dofs_per_cell_vel);
+        dealii::Vector<double> face_rhs_uy_plus(dofs_per_cell_vel);
 
         std::vector<dealii::types::global_dof_index> ux_dofs_minus(dofs_per_cell_vel);
         std::vector<dealii::types::global_dof_index> uy_dofs_minus(dofs_per_cell_vel);
+        std::vector<dealii::types::global_dof_index> ux_dofs_plus(dofs_per_cell_vel);
+        std::vector<dealii::types::global_dof_index> uy_dofs_plus(dofs_per_cell_vel);
 
         // Lambda: Kelvin face kernel. Takes FEValuesBase refs for minus/plus sides.
+        // CG velocity test functions on BOTH cells must be assembled at each face.
+        // The face-fixed quantities ([[H]], {M}, n_minus) are computed once,
+        // then used for test functions from both cells.
+        //
+        // MPI FIX: neighbor_is_local controls whether plus-cell contributions
+        // are distributed. When neighbor is a ghost, the owning rank processes
+        // the same face from its side, so distributing plus-cell here would
+        // double-count after compress(add).
         auto kelvin_face_kernel = [&](
             const dealii::FEValuesBase<dim>& ux_minus,
             const dealii::FEValuesBase<dim>& uy_minus,
+            const dealii::FEValuesBase<dim>& ux_plus_fv,
+            const dealii::FEValuesBase<dim>& uy_plus_fv,
             const dealii::FEValuesBase<dim>& phi_minus,
             const dealii::FEValuesBase<dim>& phi_plus_fv,
             const dealii::FEValuesBase<dim>& M_minus_fv,
-            const dealii::FEValuesBase<dim>& M_plus_fv)
+            const dealii::FEValuesBase<dim>& M_plus_fv,
+            bool neighbor_is_local = true)
         {
             // Get field values at face quadrature points
             phi_minus.get_function_gradients(phi_ghosted, phi_grad_minus);
@@ -811,6 +832,8 @@ static void assemble_kelvin_force(
 
             face_rhs_ux_minus = 0;
             face_rhs_uy_minus = 0;
+            face_rhs_ux_plus = 0;
+            face_rhs_uy_plus = 0;
 
             const unsigned int n_q = ux_minus.n_quadrature_points;
             for (unsigned int q = 0; q < n_q; ++q)
@@ -832,6 +855,7 @@ static void assemble_kelvin_force(
                 dealii::Tensor<1, dim> avg_M =
                     KelvinForce::compute_avg_M<dim>(M_minus_vec, M_plus_vec);
 
+                // Minus-cell CG test functions
                 for (unsigned int i = 0; i < dofs_per_cell_vel; ++i)
                 {
                     const double phi_ux = ux_minus.shape_value(i, q);
@@ -845,9 +869,24 @@ static void assemble_kelvin_force(
                     face_rhs_ux_minus(i) += k_ux * JxW_face;
                     face_rhs_uy_minus(i) += k_uy * JxW_face;
                 }
+
+                // Plus-cell CG test functions (same normal, same jump_H, same avg_M)
+                for (unsigned int i = 0; i < dofs_per_cell_vel; ++i)
+                {
+                    const double phi_ux = ux_plus_fv.shape_value(i, q);
+                    const double phi_uy = uy_plus_fv.shape_value(i, q);
+
+                    double k_ux, k_uy;
+                    KelvinForce::face_kernel<dim>(
+                        phi_ux, phi_uy, normal, jump_H, avg_M,
+                        mu_0, k_ux, k_uy);
+
+                    face_rhs_ux_plus(i) += k_ux * JxW_face;
+                    face_rhs_uy_plus(i) += k_uy * JxW_face;
+                }
             }
 
-            // Distribute to global RHS
+            // Distribute minus cell to global RHS
             std::vector<dealii::types::global_dof_index> coupled_ux_m(dofs_per_cell_vel);
             std::vector<dealii::types::global_dof_index> coupled_uy_m(dofs_per_cell_vel);
             for (unsigned int i = 0; i < dofs_per_cell_vel; ++i)
@@ -859,6 +898,24 @@ static void assemble_kelvin_force(
                 face_rhs_ux_minus, coupled_ux_m, ns_rhs);
             ns_constraints.distribute_local_to_global(
                 face_rhs_uy_minus, coupled_uy_m, ns_rhs);
+
+            // Distribute plus cell to global RHS
+            // MPI FIX: Only distribute when neighbor is locally owned.
+            // Ghost neighbors are handled by their owning rank.
+            if (neighbor_is_local)
+            {
+                std::vector<dealii::types::global_dof_index> coupled_ux_p(dofs_per_cell_vel);
+                std::vector<dealii::types::global_dof_index> coupled_uy_p(dofs_per_cell_vel);
+                for (unsigned int i = 0; i < dofs_per_cell_vel; ++i)
+                {
+                    coupled_ux_p[i] = ux_to_ns_map[ux_dofs_plus[i]];
+                    coupled_uy_p[i] = uy_to_ns_map[uy_dofs_plus[i]];
+                }
+                ns_constraints.distribute_local_to_global(
+                    face_rhs_ux_plus, coupled_ux_p, ns_rhs);
+                ns_constraints.distribute_local_to_global(
+                    face_rhs_uy_plus, coupled_uy_p, ns_rhs);
+            }
         };
 
         // Synchronized cell iterators for all DoFHandlers
@@ -911,23 +968,32 @@ static void assemble_kelvin_force(
                             }
                         }
 
+                        const auto uy_child =
+                            uy_cell_f->neighbor_child_on_subface(face_no, subface);
+
                         // Reinit: subface on coarser side, face on finer side
                         ux_fe_subface_minus.reinit(ux_cell_f, face_no, subface);
                         uy_fe_subface_minus.reinit(uy_cell_f, face_no, subface);
                         phi_fe_subface_minus.reinit(phi_cell_f, face_no, subface);
                         M_fe_subface_minus.reinit(M_cell_f, face_no, subface);
 
+                        ux_fe_face_plus.reinit(ux_child, child_face_no);
+                        uy_fe_face_plus.reinit(uy_child, child_face_no);
                         phi_fe_face_plus.reinit(phi_child, child_face_no);
                         M_fe_face_plus.reinit(M_child, child_face_no);
 
-                        // Get minus cell DoF indices
+                        // Get DoF indices for both cells
                         ux_cell_f->get_dof_indices(ux_dofs_minus);
                         uy_cell_f->get_dof_indices(uy_dofs_minus);
+                        ux_child->get_dof_indices(ux_dofs_plus);
+                        uy_child->get_dof_indices(uy_dofs_plus);
 
                         kelvin_face_kernel(
                             ux_fe_subface_minus, uy_fe_subface_minus,
+                            ux_fe_face_plus, uy_fe_face_plus,
                             phi_fe_subface_minus, phi_fe_face_plus,
-                            M_fe_subface_minus, M_fe_face_plus);
+                            M_fe_subface_minus, M_fe_face_plus,
+                            ux_child->is_locally_owned());
                     }
                     continue;
                 }
@@ -941,7 +1007,10 @@ static void assemble_kelvin_force(
 
                 // ==============================================================
                 // Case 3: SAME-LEVEL neighbor
-                // Process each face once using cell ID comparison.
+                // Process each face once: CG test functions from the minus cell
+                // are assembled. The plus cell's test functions at the face
+                // give the SAME contribution (normal and jump both flip), so
+                // we must also assemble plus-cell test functions here.
                 // ==============================================================
                 const auto ux_neighbor = ux_cell_f->neighbor(face_no);
 
@@ -957,24 +1026,32 @@ static void assemble_kelvin_force(
                 const auto phi_neighbor = phi_cell_f->neighbor(face_no);
                 const auto M_neighbor = M_cell_f->neighbor(face_no);
 
+                const auto uy_neighbor = uy_cell_f->neighbor(face_no);
+
                 // Reinit FEFaceValues on minus side (this cell)
                 ux_fe_face_minus.reinit(ux_cell_f, face_no);
                 uy_fe_face_minus.reinit(uy_cell_f, face_no);
                 phi_fe_face_minus.reinit(phi_cell_f, face_no);
                 M_fe_face_minus.reinit(M_cell_f, face_no);
 
-                // Reinit FEFaceValues on plus side (neighbor)
+                // Reinit FEFaceValues on plus side (neighbor) — fields AND velocity
+                ux_fe_face_plus.reinit(ux_neighbor, neighbor_face_no);
+                uy_fe_face_plus.reinit(uy_neighbor, neighbor_face_no);
                 phi_fe_face_plus.reinit(phi_neighbor, neighbor_face_no);
                 M_fe_face_plus.reinit(M_neighbor, neighbor_face_no);
 
-                // Get minus cell DoF indices
+                // Get DoF indices for both cells
                 ux_cell_f->get_dof_indices(ux_dofs_minus);
                 uy_cell_f->get_dof_indices(uy_dofs_minus);
+                ux_neighbor->get_dof_indices(ux_dofs_plus);
+                uy_neighbor->get_dof_indices(uy_dofs_plus);
 
                 kelvin_face_kernel(
                     ux_fe_face_minus, uy_fe_face_minus,
+                    ux_fe_face_plus, uy_fe_face_plus,
                     phi_fe_face_minus, phi_fe_face_plus,
-                    M_fe_face_minus, M_fe_face_plus);
+                    M_fe_face_minus, M_fe_face_plus,
+                    ux_neighbor->is_locally_owned());
 
             }  // end face loop
         }  // end cell loop (face pass)
@@ -984,10 +1061,15 @@ static void assemble_kelvin_force(
 }
 
 // ============================================================================
-// Capillary Force Assembly: (λ/ε)θ∇ψ (Paper Eq. 14e)
+// Capillary Force Assembly: -λ θ∇ψ (Paper Eq. 14e)
 //
 // This is the surface tension force that couples the phase field (θ) and
 // chemical potential (ψ) to the momentum equation.
+//
+// The coefficient is -λ (NOT -λ/ε). Since ψ_code = μ/λ where μ is the
+// full chemical potential, the force is -λ·θ·∇(μ/λ) = -θ∇μ, which is
+// the standard capillary force for energy balance with
+// E_CH = λ∫[½ε|∇θ|² + (1/ε)G(θ)].
 //
 // Unlike Kelvin force, this has NO face terms since θ and ψ are continuous.
 // ============================================================================
@@ -1039,11 +1121,12 @@ static void assemble_capillary_force(
     std::vector<double> theta_values(n_q_points);
     std::vector<dealii::Tensor<1, dim>> psi_gradients(n_q_points);
 
-    // Capillary coefficient: -(λ/ε)
-    // SIGN: Code defines ψ = -εΔθ + (1/ε)f (standard chemical potential μ),
-    // but paper defines ψ_paper = εΔθ - (1/ε)f = -μ. The capillary force
-    // f_c = (λ/ε)θ∇ψ_paper = (λ/ε)θ∇(-ψ_code) = -(λ/ε)θ∇ψ_code.
-    const double capillary_coeff = -lambda / epsilon;
+    // Capillary coefficient: -λ
+    //
+    // ψ_code = -εΔθ + (1/ε)G'(θ) = μ/λ  where μ is the full chemical potential.
+    // The capillary force is -θ∇μ = -θ∇(λψ_code) = -λ·θ·∇ψ_code.
+    // Coefficient = -λ (NOT -λ/ε; the 1/ε is already inside ψ_code).
+    const double capillary_coeff = -lambda;
 
     // Cell loop
     auto ux_cell = ux_dof_handler.begin_active();
@@ -1072,7 +1155,7 @@ static void assemble_capillary_force(
         psi_fe_values.get_function_gradients(psi_solution, psi_gradients);
 
         // ====================================================================
-        // Cell term: (λ/ε)θ∇ψ · V
+        // Cell term: -λ·θ·∇ψ · V  (capillary force, ψ_code = μ/λ)
         // ====================================================================
         for (unsigned int q = 0; q < n_q_points; ++q)
         {
@@ -1080,7 +1163,7 @@ static void assemble_capillary_force(
             const double theta_q = theta_values[q];
             const dealii::Tensor<1, dim>& grad_psi_q = psi_gradients[q];
 
-            // Capillary force: F_cap = (λ/ε) θ ∇ψ
+            // Capillary force: F_cap = -λ·θ·∇ψ
             const double F_cap_x = capillary_coeff * theta_q * grad_psi_q[0];
             const double F_cap_y = capillary_coeff * theta_q * grad_psi_q[1];
 
@@ -1424,7 +1507,7 @@ void assemble_ns_system_unified(
         }
     }
 
-    // Step 3: Add capillary force (lambda/epsilon) theta grad(psi) to RHS
+    // Step 3: Add capillary force -lambda * theta * grad(psi) to RHS
     if (forces.has_capillary)
     {
         assemble_capillary_force<dim>(

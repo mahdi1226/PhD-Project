@@ -71,9 +71,11 @@ void assemble_ch_system(
     dealii::FEValues<dim> psi_fe_values(fe_theta, quadrature,
                                         dealii::update_values | dealii::update_gradients);
 
-    // Use velocity FE for velocity evaluation
-    dealii::FEValues<dim> ux_fe_values(fe_vel, quadrature, dealii::update_values);
-    dealii::FEValues<dim> uy_fe_values(fe_vel, quadrature, dealii::update_values);
+    // Use velocity FE for velocity evaluation (need gradients for div(U) in skew form)
+    dealii::FEValues<dim> ux_fe_values(fe_vel, quadrature,
+        dealii::update_values | dealii::update_gradients);
+    dealii::FEValues<dim> uy_fe_values(fe_vel, quadrature,
+        dealii::update_values | dealii::update_gradients);
 
     dealii::FullMatrix<double> local_matrix(2 * dofs_per_cell, 2 * dofs_per_cell);
     dealii::Vector<double> local_rhs(2 * dofs_per_cell);
@@ -85,6 +87,8 @@ void assemble_ch_system(
     std::vector<double> theta_old_values(n_q_points);
     std::vector<double> ux_values(n_q_points);
     std::vector<double> uy_values(n_q_points);
+    std::vector<dealii::Tensor<1, dim>> ux_gradients(n_q_points);
+    std::vector<dealii::Tensor<1, dim>> uy_gradients(n_q_points);
 
     const double eps = params.physics.epsilon;
     const double gamma = params.physics.mobility;
@@ -125,11 +129,15 @@ void assemble_ch_system(
 
             ux_fe_values.get_function_values(ux_solution, ux_values);
             uy_fe_values.get_function_values(uy_solution, uy_values);
+            ux_fe_values.get_function_gradients(ux_solution, ux_gradients);
+            uy_fe_values.get_function_gradients(uy_solution, uy_gradients);
         }
         else
         {
             std::fill(ux_values.begin(), ux_values.end(), 0.0);
             std::fill(uy_values.begin(), uy_values.end(), 0.0);
+            for (auto& g : ux_gradients) g = 0;
+            for (auto& g : uy_gradients) g = 0;
         }
 
         local_matrix = 0;
@@ -146,6 +154,9 @@ void assemble_ch_system(
             U[0] = ux_values[q];
             if constexpr (dim >= 2)
                 U[1] = uy_values[q];
+
+            // div(U) for skew-symmetric convection (Paper Eq. 37)
+            const double div_U = ux_gradients[q][0] + uy_gradients[q][1];
 
             const double f_old = double_well_derivative(theta_old_q);
 
@@ -185,9 +196,14 @@ void assemble_ch_system(
                 // Eq 42a RHS: (θ^{k-1}/τ, Λ) + convection
                 local_rhs(i_theta) += (1.0 / dt) * theta_old_q * Lambda_i * JxW;
 
-                // EXPLICIT convection: (U^{k-1} θ^{k-1}, ∇Λ) on RHS (Paper Eq. 42a)
+                // EXPLICIT skew-symmetric convection (Paper Eq. 37, 42a)
+                // -B_h(U, θ, Λ) = -(U·∇θ, Λ) - ½(divU)(θ, Λ)
+                // IBP form on RHS: (θU, ∇Λ) + ½(divU)(θ, Λ)
                 if (use_velocity_convection)
+                {
                     local_rhs(i_theta) += theta_old_q * (U * grad_Lambda_i) * JxW;
+                    local_rhs(i_theta) += 0.5 * div_U * theta_old_q * Lambda_i * JxW;
+                }
 
                 // Eq 42b RHS: (1/ε)(f(θ^{k-1}), Υ) - (1/η)(θ^{k-1}, Υ)
                 // Paper: -1/ε f - 1/η (θ^k - θ^{k-1}) = 0

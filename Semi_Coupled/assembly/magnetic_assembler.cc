@@ -13,6 +13,10 @@
 //   Cell: (U·∇)Z·M + ½div(U)Z·M
 //   Face: -([[Z]]·{M})(U·n) dS
 //
+// Upwind stabilization S_h^up (Remark 5.4, Eq 94):
+//   S_h^up = ½ Σ_F ∫_F |U·n_F| [[M]] · [[Z]] dS
+// Added to LHS of Eq 42c for better convergence.
+//
 // Sign derivation for C_phi_M:
 //   Paper Eq 42d: (grad phi, grad X) = (h_a - M, grad X)
 //   Rearranged:   (grad phi, grad X) + (M, grad X) = (h_a, grad X)
@@ -316,12 +320,17 @@ void MagneticAssembler<dim>::assemble(
     // fe_minus provides JxW, normals, and minus-cell M test/trial values.
     // fe_plus provides plus-cell M test/trial values.
     // fe_vel_face provides velocity at face quadrature points.
+    // MPI FIX: neighbor_is_local controls whether plus-cell rows/columns
+    // are distributed. When neighbor is a ghost, the owning rank processes
+    // the same face from its side (as "minus"), so distributing plus-cell
+    // contributions here would double-count after compress(add).
     auto assemble_face_kernel = [&](
         const dealii::FEValuesBase<dim>& fe_minus,
         const dealii::FEValuesBase<dim>& fe_plus,
         const dealii::FEValuesBase<dim>& fe_vel_face,
         const typename dealii::DoFHandler<dim>::active_cell_iterator& cell_minus,
-        const typename dealii::DoFHandler<dim>::active_cell_iterator& cell_plus)
+        const typename dealii::DoFHandler<dim>::active_cell_iterator& cell_plus,
+        bool neighbor_is_local = true)
     {
         // Get velocity at face quadrature points
         fe_vel_face.get_function_values(Ux, Ux_face_vals);
@@ -351,6 +360,7 @@ void MagneticAssembler<dim>::assemble(
             U_face[0] = Ux_face_vals[q];
             U_face[1] = Uy_face_vals[q];
             const double U_dot_n = U_face * normal;
+            const double abs_U_dot_n = std::abs(U_dot_n);
 
             for (unsigned int i = 0; i < dofs_per_cell; ++i)
             {
@@ -361,6 +371,9 @@ void MagneticAssembler<dim>::assemble(
                 {
                     const dealii::Tensor<1, dim> M_minus_j = fe_minus[M].value(j, q);
                     const dealii::Tensor<1, dim> M_plus_j = fe_plus[M].value(j, q);
+
+                    // ---- Consistency term from -B_h^m (Eq 57) ----
+                    // Face part of -B_h^m = +([[Z]]·{M})(U·n)
 
                     // mm: +Z⁻ · ½M⁻ · (U·n)
                     face_matrix(i, j) +=
@@ -374,8 +387,39 @@ void MagneticAssembler<dim>::assemble(
                     // pp: -Z⁺ · ½M⁺ · (U·n)
                     face_matrix(dofs_per_cell + i, dofs_per_cell + j) +=
                         -0.5 * (Z_plus_i * M_plus_j) * U_dot_n * JxW_f;
+
+                    // ---- Upwind stabilization S_h^up (Eq 94) ----
+                    // ½|U·n| [[M]]·[[Z]] on LHS
+                    // [[M]] = M⁺-M⁻, [[Z]] = Z⁺-Z⁻
+                    // Expands to: ½|U·n|(M⁻·Z⁻ - M⁺·Z⁻ - M⁻·Z⁺ + M⁺·Z⁺)
+
+                    // mm: +½|U·n| Z⁻·M⁻
+                    face_matrix(i, j) +=
+                        0.5 * abs_U_dot_n * (Z_minus_i * M_minus_j) * JxW_f;
+                    // mp: -½|U·n| Z⁻·M⁺
+                    face_matrix(i, dofs_per_cell + j) +=
+                        -0.5 * abs_U_dot_n * (Z_minus_i * M_plus_j) * JxW_f;
+                    // pm: -½|U·n| Z⁺·M⁻
+                    face_matrix(dofs_per_cell + i, j) +=
+                        -0.5 * abs_U_dot_n * (Z_plus_i * M_minus_j) * JxW_f;
+                    // pp: +½|U·n| Z⁺·M⁺
+                    face_matrix(dofs_per_cell + i, dofs_per_cell + j) +=
+                        0.5 * abs_U_dot_n * (Z_plus_i * M_plus_j) * JxW_f;
                 }
             }
+        }
+
+        // MPI FIX: When neighbor is ghost, zero out plus-cell ROWS only.
+        // Plus-cell rows = equations for the ghost cell's DoFs. The owning rank
+        // assembles these from its side as "minus" rows. Distributing them here
+        // would double-count after compress(add).
+        // Plus-cell COLUMNS in minus rows are kept — they represent how the
+        // neighbor's solution couples into our cell's equations (unique coupling).
+        if (!neighbor_is_local)
+        {
+            for (unsigned int i = dofs_per_cell; i < 2 * dofs_per_cell; ++i)
+                for (unsigned int j = 0; j < 2 * dofs_per_cell; ++j)
+                    face_matrix(i, j) = 0.0;
         }
 
         // Distribute combined face matrix to global system
@@ -441,7 +485,8 @@ void MagneticAssembler<dim>::assemble(
 
                         assemble_face_kernel(
                             fe_subface_mag_minus, fe_face_mag_plus,
-                            fe_subface_vel, cell_mag_f, mag_child);
+                            fe_subface_vel, cell_mag_f, mag_child,
+                            mag_child->is_locally_owned());
                     }
                     continue;
                 }
@@ -476,7 +521,8 @@ void MagneticAssembler<dim>::assemble(
 
                 assemble_face_kernel(
                     fe_face_mag_minus, fe_face_mag_plus,
-                    fe_face_vel, cell_mag_f, mag_neighbor);
+                    fe_face_vel, cell_mag_f, mag_neighbor,
+                    mag_neighbor->is_locally_owned());
             } // end face loop
         } // end cell loop (face pass)
     }
