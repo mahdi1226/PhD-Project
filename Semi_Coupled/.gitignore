@@ -1,0 +1,12 @@
+# Build
+cmake-build-*/
+build/
+
+# Results and logs
+Results/
+*.log
+
+# IDE
+.idea/
+.vscode/
+*.swp

@@ -115,7 +115,8 @@ static void assemble_ns_core(
     const dealii::TrilinosWrappers::MPI::Vector* theta_solution = nullptr,
     double epsilon = 0.01,
     double nu_water = 1.0,
-    double nu_ferro = 2.0)
+    double nu_ferro = 2.0,
+    double r_density = 0.0)
 {
     ns_matrix = 0;
     ns_rhs = 0;
@@ -249,12 +250,19 @@ static void assemble_ns_core(
             // Variable viscosity: ν(θ) = ν_water + (ν_ferro - ν_water)·H(θ/ε)
             // Paper Eq. 17
             double nu_q = nu;  // Default to constant
+            double rho_q = 1.0;  // Default to constant density
             if (use_variable_viscosity)
             {
                 const double theta_q = theta_values[q];
                 const double H_theta = heaviside(theta_q / epsilon);
                 nu_q = nu_water + (nu_ferro - nu_water) * H_theta;
+                // Variable density: ρ(θ) = 1 + r·H(θ/ε)  (Paper Eq. 17)
+                rho_q = 1.0 + r_density * H_theta;
             }
+
+            // Mass coefficient: 1/Δt (Paper Eq. 42e: constant density, no ½)
+            // Paper assumes matched densities (ρ=1) in inertia term.
+            const double mass_coeff = 1.0 / dt;
 
             // ================================================================
             // Compute source terms
@@ -299,11 +307,12 @@ static void assemble_ns_core(
                 local_rhs_ux(i) += F_source[0] * phi_ux_i * JxW;
                 local_rhs_uy(i) += F_source[1] * phi_uy_i * JxW;
 
-                // Time derivative RHS: (U^{n-1}/τ, V)
+                // Time derivative RHS: mass_coeff * (U^{n-1}, V)
+                // Paper Eq. 42e: ½ρ(θ^{k-1})/Δt when variable density, 1/Δt otherwise
                 if (include_time_derivative)
                 {
-                    local_rhs_ux(i) += (ux_old_q / dt) * phi_ux_i * JxW;
-                    local_rhs_uy(i) += (uy_old_q / dt) * phi_uy_i * JxW;
+                    local_rhs_ux(i) += mass_coeff * ux_old_q * phi_ux_i * JxW;
+                    local_rhs_uy(i) += mass_coeff * uy_old_q * phi_uy_i * JxW;
                 }
 
                 // ============================================================
@@ -319,11 +328,12 @@ static void assemble_ns_core(
                     auto T_U_x = compute_T_test_ux<dim>(grad_phi_ux_j);
                     auto T_U_y = compute_T_test_uy<dim>(grad_phi_uy_j);
 
-                    // Time derivative LHS: (U/τ, V)
+                    // Time derivative LHS: mass_coeff * (U^k, V)
+                    // Paper Eq. 42e: ½ρ(θ^{k-1})/Δt when variable density, 1/Δt otherwise
                     if (include_time_derivative)
                     {
-                        local_ux_ux(i, j) += (1.0 / dt) * phi_ux_j * phi_ux_i * JxW;
-                        local_uy_uy(i, j) += (1.0 / dt) * phi_uy_j * phi_uy_i * JxW;
+                        local_ux_ux(i, j) += mass_coeff * phi_ux_j * phi_ux_i * JxW;
+                        local_uy_uy(i, j) += mass_coeff * phi_uy_j * phi_uy_i * JxW;
                     }
 
                     // Viscous term: (ν_θ T(U), T(V)) where T = ½(∇u + (∇u)^T)
@@ -806,11 +816,6 @@ static void assemble_kelvin_force(
         // CG velocity test functions on BOTH cells must be assembled at each face.
         // The face-fixed quantities ([[H]], {M}, n_minus) are computed once,
         // then used for test functions from both cells.
-        //
-        // MPI FIX: neighbor_is_local controls whether plus-cell contributions
-        // are distributed. When neighbor is a ghost, the owning rank processes
-        // the same face from its side, so distributing plus-cell here would
-        // double-count after compress(add).
         auto kelvin_face_kernel = [&](
             const dealii::FEValuesBase<dim>& ux_minus,
             const dealii::FEValuesBase<dim>& uy_minus,
@@ -819,8 +824,7 @@ static void assemble_kelvin_force(
             const dealii::FEValuesBase<dim>& phi_minus,
             const dealii::FEValuesBase<dim>& phi_plus_fv,
             const dealii::FEValuesBase<dim>& M_minus_fv,
-            const dealii::FEValuesBase<dim>& M_plus_fv,
-            bool neighbor_is_local = true)
+            const dealii::FEValuesBase<dim>& M_plus_fv)
         {
             // Get field values at face quadrature points
             phi_minus.get_function_gradients(phi_ghosted, phi_grad_minus);
@@ -900,22 +904,17 @@ static void assemble_kelvin_force(
                 face_rhs_uy_minus, coupled_uy_m, ns_rhs);
 
             // Distribute plus cell to global RHS
-            // MPI FIX: Only distribute when neighbor is locally owned.
-            // Ghost neighbors are handled by their owning rank.
-            if (neighbor_is_local)
+            std::vector<dealii::types::global_dof_index> coupled_ux_p(dofs_per_cell_vel);
+            std::vector<dealii::types::global_dof_index> coupled_uy_p(dofs_per_cell_vel);
+            for (unsigned int i = 0; i < dofs_per_cell_vel; ++i)
             {
-                std::vector<dealii::types::global_dof_index> coupled_ux_p(dofs_per_cell_vel);
-                std::vector<dealii::types::global_dof_index> coupled_uy_p(dofs_per_cell_vel);
-                for (unsigned int i = 0; i < dofs_per_cell_vel; ++i)
-                {
-                    coupled_ux_p[i] = ux_to_ns_map[ux_dofs_plus[i]];
-                    coupled_uy_p[i] = uy_to_ns_map[uy_dofs_plus[i]];
-                }
-                ns_constraints.distribute_local_to_global(
-                    face_rhs_ux_plus, coupled_ux_p, ns_rhs);
-                ns_constraints.distribute_local_to_global(
-                    face_rhs_uy_plus, coupled_uy_p, ns_rhs);
+                coupled_ux_p[i] = ux_to_ns_map[ux_dofs_plus[i]];
+                coupled_uy_p[i] = uy_to_ns_map[uy_dofs_plus[i]];
             }
+            ns_constraints.distribute_local_to_global(
+                face_rhs_ux_plus, coupled_ux_p, ns_rhs);
+            ns_constraints.distribute_local_to_global(
+                face_rhs_uy_plus, coupled_uy_p, ns_rhs);
         };
 
         // Synchronized cell iterators for all DoFHandlers
@@ -992,8 +991,7 @@ static void assemble_kelvin_force(
                             ux_fe_subface_minus, uy_fe_subface_minus,
                             ux_fe_face_plus, uy_fe_face_plus,
                             phi_fe_subface_minus, phi_fe_face_plus,
-                            M_fe_subface_minus, M_fe_face_plus,
-                            ux_child->is_locally_owned());
+                            M_fe_subface_minus, M_fe_face_plus);
                     }
                     continue;
                 }
@@ -1014,10 +1012,12 @@ static void assemble_kelvin_force(
                 // ==============================================================
                 const auto ux_neighbor = ux_cell_f->neighbor(face_no);
 
-                if (ux_neighbor->is_locally_owned() &&
-                    (ux_neighbor->level() < ux_cell_f->level() ||
-                     (ux_neighbor->level() == ux_cell_f->level() &&
-                      ux_neighbor->index() < ux_cell_f->index())))
+                // MPI FIX: Process each face exactly ONCE using global cell
+                // index comparison, regardless of MPI ownership. This prevents
+                // double-assembly at MPI boundaries where both ranks see the face.
+                if (ux_neighbor->level() < ux_cell_f->level() ||
+                    (ux_neighbor->level() == ux_cell_f->level() &&
+                     ux_neighbor->index() < ux_cell_f->index()))
                     continue;
 
                 const unsigned int neighbor_face_no =
@@ -1050,8 +1050,7 @@ static void assemble_kelvin_force(
                     ux_fe_face_minus, uy_fe_face_minus,
                     ux_fe_face_plus, uy_fe_face_plus,
                     phi_fe_face_minus, phi_fe_face_plus,
-                    M_fe_face_minus, M_fe_face_plus,
-                    ux_neighbor->is_locally_owned());
+                    M_fe_face_minus, M_fe_face_plus);
 
             }  // end face loop
         }  // end cell loop (face pass)
@@ -1061,15 +1060,11 @@ static void assemble_kelvin_force(
 }
 
 // ============================================================================
-// Capillary Force Assembly: -λ θ∇ψ (Paper Eq. 14e)
+// Capillary Force Assembly: -(λ/ε) θ∇ψ_code (Paper Eq. 42e: +(λ/ε)θ∇Ψ)
 //
-// This is the surface tension force that couples the phase field (θ) and
-// chemical potential (ψ) to the momentum equation.
-//
-// The coefficient is -λ (NOT -λ/ε). Since ψ_code = μ/λ where μ is the
-// full chemical potential, the force is -λ·θ·∇(μ/λ) = -θ∇μ, which is
-// the standard capillary force for energy balance with
-// E_CH = λ∫[½ε|∇θ|² + (1/ε)G(θ)].
+// Paper Eq. 1: Ψ = εΔθ - (1/ε)f(θ).
+// Code solves: ψ_code = -εΔθ + (1/ε)f(θ) = -Ψ_paper.
+// So: +(λ/ε)θ∇Ψ_paper = -(λ/ε)θ∇ψ_code.
 //
 // Unlike Kelvin force, this has NO face terms since θ and ψ are continuous.
 // ============================================================================
@@ -1121,12 +1116,11 @@ static void assemble_capillary_force(
     std::vector<double> theta_values(n_q_points);
     std::vector<dealii::Tensor<1, dim>> psi_gradients(n_q_points);
 
-    // Capillary coefficient: -λ
-    //
-    // ψ_code = -εΔθ + (1/ε)G'(θ) = μ/λ  where μ is the full chemical potential.
-    // The capillary force is -θ∇μ = -θ∇(λψ_code) = -λ·θ·∇ψ_code.
-    // Coefficient = -λ (NOT -λ/ε; the 1/ε is already inside ψ_code).
-    const double capillary_coeff = -lambda;
+    // Capillary coefficient: -λ/ε  (Paper Eq. 42e: +(λ/ε)(θ∇Ψ,V))
+    // Paper Eq. 1: Ψ = εΔθ - (1/ε)f(θ).
+    // Code solves: (ψ,Υ) - ε(∇θ,∇Υ) - (1/ε)(f,Υ) = 0 → ψ_code = -εΔθ + (1/ε)f = -Ψ_paper.
+    // So ∇Ψ_paper = -∇ψ_code, giving -(λ/ε)(θ∇ψ_code, V).
+    const double capillary_coeff = -lambda / epsilon;
 
     // Cell loop
     auto ux_cell = ux_dof_handler.begin_active();
@@ -1458,7 +1452,8 @@ void assemble_ns_system_unified(
             forces.body_force, forces.body_force_time,
             enable_mms, mms_time, mms_time_old, mms_L_y,
             forces.theta_visc_dof_handler, forces.theta_visc_solution,
-            forces.epsilon_visc, forces.nu_water, forces.nu_ferro);
+            forces.epsilon_visc, forces.nu_water, forces.nu_ferro,
+            forces.r);
     }
     else
     {
@@ -1737,6 +1732,10 @@ void assemble_ns_system_ferrofluid_parallel(
     // Variable viscosity (uses same theta field as capillary)
     forces.enable_variable_viscosity(theta_dof_handler, theta_solution,
                                      epsilon, nu_water, nu_ferro);
+
+    // Density ratio r is needed for variable density mass matrix (Eq. 42e)
+    // even when gravity is disabled, so always set it.
+    forces.r = r;
 
     // Gravity
     if (enable_gravity_flag)

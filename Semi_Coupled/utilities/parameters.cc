@@ -147,73 +147,12 @@ void Parameters::setup_hedgehog()
 
 void Parameters::setup_dome()
 {
-    preset_name = "dome";  // For auto-generating run_name
-
     // Same as hedgehog but WITHOUT demagnetizing field
     // Results in dome shape (Fig. 7) instead of spikes (Fig. 6)
-
-    // Domain (same as hedgehog)
-    domain.x_min = 0.0;
-    domain.x_max = 1.0;
-    domain.y_min = 0.0;
-    domain.y_max = 0.6;
-    domain.initial_cells_x = 15;
-    domain.initial_cells_y = 9;
-    ic.pool_depth = 0.11;
-    time.use_adaptive_dt = false;
-
-    // Physical parameters (same as Hedgehog, Section 6.3)
-    physics.epsilon = 0.005;
-    physics.mobility = 0.0002;
-    physics.lambda = 0.025;
-    physics.chi_0 = 0.9;
-    physics.nu_water = 1.0;
-    physics.nu_ferro = 2.0;
-    physics.r = 0.1;
-    physics.gravity = 30000.0;
-
-    // Same dipoles as hedgehog
-    dipoles.positions.clear();
-    const double x_min_dipole = 0.3;
-    const double x_max_dipole = 0.7;
-    const double x_spacing = (x_max_dipole - x_min_dipole) / 13.0;
-    const std::array<double, 3> y_rows = {-0.5, -0.75, -1.0};
-
-    for (double y : y_rows)
-    {
-        for (int j = 0; j < 14; ++j)
-        {
-            double x = x_min_dipole + j * x_spacing;
-            dipoles.positions.push_back(dealii::Point<2>(x, y));
-        }
-    }
-
-    dipoles.direction = {0.0, 1.0};
-    dipoles.intensity_max = 4.3;
-    dipoles.ramp_time = 4.2;
-
-    // Time-stepping: dt=1e-4 for CFL stability with ε=0.005
-    time.dt = 1e-4;
-    time.t_final = 6.0;
-    time.max_steps = 60000;
-    time.use_adaptive_dt = false;  // Disable adaptive!
-
-    // Same mesh as hedgehog (Paper Section 6.3)
-    mesh.initial_refinement = 3;      // Start coarse
-    mesh.use_amr = true;
-    mesh.amr_interval = 5;
-    mesh.amr_min_level = 1;           // Coarsen bulk aggressively
-    mesh.amr_max_level = 7;           // Default: 7 levels
-
-    // Subsystems
-    enable_magnetic = true;
-    enable_ns = true;
-    enable_gravity = true;
-
-
-
-    // Output
-    output.frequency = 10;
+    // (The demagnetizing field distinction is handled at solver level,
+    //  not here — all parameter values are identical to hedgehog.)
+    setup_hedgehog();
+    preset_name = "dome";  // For auto-generating run_name
 }
 
 void Parameters::setup_droplet()

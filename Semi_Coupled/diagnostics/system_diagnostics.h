@@ -149,109 +149,6 @@ StepData compute_system_diagnostics(
 }
 
 // ============================================================================
-// Compute all system diagnostics (serial version)
-// ============================================================================
-template <int dim>
-StepData compute_system_diagnostics(
-    // CH
-    const dealii::DoFHandler<dim>& theta_dof_handler,
-    const dealii::Vector<double>& theta_solution,
-    // Poisson (can be nullptr if magnetic disabled)
-    const dealii::DoFHandler<dim>* phi_dof_handler,
-    const dealii::Vector<double>* phi_solution,
-    // NS (can be nullptr if NS disabled)
-    const dealii::DoFHandler<dim>* ux_dof_handler,
-    const dealii::DoFHandler<dim>* uy_dof_handler,
-    const dealii::DoFHandler<dim>* p_dof_handler,
-    const dealii::Vector<double>* ux_solution,
-    const dealii::Vector<double>* uy_solution,
-    const dealii::Vector<double>* p_solution,
-    // Parameters and state
-    const Parameters& params,
-    unsigned int step,
-    double time,
-    double dt,
-    double h_min,
-    const StepData& prev_data)
-{
-    StepData data;
-    data.step = step;
-    data.time = time;
-    data.dt = dt;
-
-    // CH diagnostics
-    CHDiagnostics ch = compute_ch_diagnostics<dim>(
-        theta_dof_handler, theta_solution, params);
-
-    data.theta_min = ch.theta_min;
-    data.theta_max = ch.theta_max;
-    data.mass = ch.mass;
-    data.E_CH = ch.energy;
-    data.theta_bounds_violated = ch.bounds_violated;
-
-    // Poisson diagnostics
-    if (params.enable_magnetic && phi_dof_handler != nullptr && phi_solution != nullptr)
-    {
-        MagneticDiagnostics mag = compute_magnetic_diagnostics<dim>(
-            *phi_dof_handler, *phi_solution,
-            theta_dof_handler, theta_solution,
-            params);
-
-        data.phi_min = mag.phi_min;
-        data.phi_max = mag.phi_max;
-        data.H_max = mag.H_max;
-        data.M_max = mag.M_max;
-        data.E_mag = mag.magnetic_energy;
-        data.mu_min = mag.mu_min;
-        data.mu_max = mag.mu_max;
-    }
-
-    // NS diagnostics
-    if (params.enable_ns &&
-        ux_dof_handler != nullptr && uy_dof_handler != nullptr && p_dof_handler != nullptr &&
-        ux_solution != nullptr && uy_solution != nullptr && p_solution != nullptr)
-    {
-        NSDiagnostics ns = compute_ns_diagnostics<dim>(
-            *ux_dof_handler, *uy_dof_handler, *p_dof_handler,
-            *ux_solution, *uy_solution, *p_solution,
-            dt, h_min);
-
-        data.ux_min = ns.ux_min;
-        data.ux_max = ns.ux_max;
-        data.uy_min = ns.uy_min;
-        data.uy_max = ns.uy_max;
-        data.U_max = ns.U_max;
-        data.E_kin = ns.kinetic_energy;
-        data.divU_L2 = ns.div_U_L2;
-        data.divU_Linf = ns.div_U_max;
-        data.CFL = ns.cfl;
-        data.p_min = ns.p_min;
-        data.p_max = ns.p_max;
-    }
-
-    // Interface tracking
-    InterfacePosition iface = compute_interface_position<dim>(
-        theta_dof_handler, theta_solution);
-
-    data.interface_y_min = iface.y_min;
-    data.interface_y_max = iface.y_max;
-    data.interface_y_mean = iface.y_mean;
-
-    if (step == 0)
-        data.interface_y_initial = iface.y_max;
-    else
-        data.interface_y_initial = prev_data.interface_y_initial;
-
-    double domain_width = params.domain.x_max - params.domain.x_min;
-    data.spike_count = estimate_spike_count(iface, domain_width);
-
-    data.compute_derived();
-    data.compute_energy_rates(prev_data);
-
-    return data;
-}
-
-// ============================================================================
 // Update StepData with solver info (call after each solve)
 // ============================================================================
 inline void update_ch_solver_info(StepData& data,
@@ -322,23 +219,6 @@ void update_force_diagnostics(
 {
     ForceDiagnostics forces = compute_force_diagnostics<dim>(
         theta_dof_handler, theta_solution, psi_solution, phi_solution, params, comm);
-
-    data.F_cap_max = forces.F_cap_max;
-    data.F_mag_max = forces.F_mag_max;
-    data.F_grav_max = forces.F_grav_max;
-}
-
-template <int dim>
-void update_force_diagnostics(
-    StepData& data,
-    const dealii::DoFHandler<dim>& theta_dof_handler,
-    const dealii::Vector<double>& theta_solution,
-    const dealii::Vector<double>& psi_solution,
-    const dealii::Vector<double>* phi_solution,
-    const Parameters& params)
-{
-    ForceDiagnostics forces = compute_force_diagnostics<dim>(
-        theta_dof_handler, theta_solution, psi_solution, phi_solution, params);
 
     data.F_cap_max = forces.F_cap_max;
     data.F_mag_max = forces.F_mag_max;

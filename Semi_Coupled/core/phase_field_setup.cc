@@ -458,15 +458,16 @@ void PhaseFieldProblem<dim>::initialize_solutions()
     const double interface_y = params_.ic.pool_depth;
     const double eps = params_.physics.epsilon;
 
-    // IC Type 0: Flat pool
+    // IC Type 0: Flat pool (sharp step)
+    // θ = +1 below interface (ferrofluid), θ = -1 above (non-magnetic)
     class FlatLayerIC : public dealii::Function<dim>
     {
     public:
-        double interface_y_, eps_;
-        FlatLayerIC(double y, double e) : dealii::Function<dim>(1), interface_y_(y), eps_(e) {}
+        double interface_y_;
+        FlatLayerIC(double y, double /*e*/) : dealii::Function<dim>(1), interface_y_(y) {}
         double value(const dealii::Point<dim>& p, unsigned int = 0) const override
         {
-            return -std::tanh((p[1] - interface_y_) / (std::sqrt(2.0) * eps_));
+            return (p[1] <= interface_y_) ? 1.0 : -1.0;
         }
     };
 

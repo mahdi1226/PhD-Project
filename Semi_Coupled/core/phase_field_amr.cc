@@ -364,13 +364,12 @@ void PhaseFieldProblem<dim>::refine_mesh()
     }
 
     // =========================================================================
-    // Step 11: Post-process θ — clamp to [-1, 1]
+    // Step 11: Log θ bounds (diagnostic only — no clamping)
     //
-    // Interpolation causes overshoot. For |θ| > 1:
-    //   W'(θ) = θ³ - θ grows rapidly → CH instability
+    // Truncated double-well (Eq. 2) handles |θ| > 1 naturally.
+    // Clamping removed: it breaks mass conservation and interferes with CH.
     // =========================================================================
     {
-        // Log pre-clamping bounds to quantify interpolation overshoot
         double local_min = std::numeric_limits<double>::max();
         double local_max = std::numeric_limits<double>::lowest();
         for (auto idx = theta_locally_owned_.begin(); idx != theta_locally_owned_.end(); ++idx)
@@ -381,41 +380,8 @@ void PhaseFieldProblem<dim>::refine_mesh()
         }
         const double global_min = dealii::Utilities::MPI::min(local_min, mpi_communicator_);
         const double global_max = dealii::Utilities::MPI::max(local_max, mpi_communicator_);
-        (void)global_min; (void)global_max;  // suppress unused warnings in non-verbose mode
 
-        pcout_ << "[AMR] Pre-clamp θ bounds: [" << global_min << ", " << global_max << "]\n";
-
-        auto clamp_locally_owned = [](dealii::TrilinosWrappers::MPI::Vector& vec,
-                                      const dealii::IndexSet& owned)
-        {
-            unsigned int count = 0;
-            for (auto idx = owned.begin(); idx != owned.end(); ++idx)
-            {
-                if (vec[*idx] < -1.0)
-                {
-                    vec[*idx] = -1.0;
-                    ++count;
-                }
-                else if (vec[*idx] > 1.0)
-                {
-                    vec[*idx] = 1.0;
-                    ++count;
-                }
-            }
-            return count;
-        };
-
-        unsigned int n_clamped_theta = clamp_locally_owned(theta_solution_, theta_locally_owned_);
-        unsigned int n_clamped_old = clamp_locally_owned(theta_old_solution_, theta_locally_owned_);
-
-        // Re-apply constraints after clamping
-        theta_constraints_.distribute(theta_solution_);
-        theta_constraints_.distribute(theta_old_solution_);
-
-        unsigned int total_clamped = dealii::Utilities::MPI::sum(
-            n_clamped_theta + n_clamped_old, mpi_communicator_);
-        if (total_clamped > 0)
-            pcout_ << "[AMR] Clamped " << total_clamped << " theta DoFs to [-1,1]\n";
+        pcout_ << "[AMR] Post-transfer θ bounds: [" << global_min << ", " << global_max << "]\n";
     }
 
     // =========================================================================

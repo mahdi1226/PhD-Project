@@ -19,6 +19,7 @@
 #include "utilities/mpi_tools.h"
 #include "utilities/tools.h"
 #include "physics/applied_field.h"
+#include "physics/material_properties.h"
 
 #include <deal.II/dofs/dof_handler.h>
 #include <deal.II/lac/vector.h>
@@ -56,24 +57,6 @@ struct MagneticDiagnostics
     double mu_min = 1.0;
     double mu_max = 1.0;
 };
-
-// ============================================================================
-// Helper: Smooth Heaviside function for susceptibility
-// ============================================================================
-namespace detail
-{
-    inline double smooth_heaviside(double x)
-    {
-        if (x > 20.0) return 1.0;
-        if (x < -20.0) return 0.0;
-        return 1.0 / (1.0 + std::exp(-x));
-    }
-
-    inline double susceptibility(double theta, double epsilon, double chi_0)
-    {
-        return chi_0 * smooth_heaviside(theta / epsilon);
-    }
-}
 
 // ============================================================================
 // Compute magnetic diagnostics (parallel version with Trilinos vectors)
@@ -134,7 +117,7 @@ MagneticDiagnostics compute_magnetic_diagnostics(
             const double H_norm = H.norm();
 
             const double theta_q = theta_values[q];
-            const double chi_theta = detail::susceptibility(theta_q,
+            const double chi_theta = susceptibility(theta_q,
                 params.physics.epsilon, params.physics.chi_0);
             const double mu_theta = 1.0 + chi_theta;
             const double M_norm = chi_theta * H_norm;
@@ -188,84 +171,6 @@ MagneticDiagnostics compute_magnetic_diagnostics(
 
     result.mu_min = MPIUtils::reduce_min(local_mu_min, comm);
     result.mu_max = MPIUtils::reduce_max(local_mu_max, comm);
-
-    return result;
-}
-
-// ============================================================================
-// Compute magnetic diagnostics (serial version with deal.II vectors)
-// ============================================================================
-template <int dim>
-MagneticDiagnostics compute_magnetic_diagnostics(
-    const dealii::DoFHandler<dim>& phi_dof_handler,
-    const dealii::Vector<double>& phi_solution,
-    const dealii::DoFHandler<dim>& theta_dof_handler,
-    const dealii::Vector<double>& theta_solution,
-    const Parameters& params)
-{
-    MagneticDiagnostics result;
-
-    result.phi_min = *std::min_element(phi_solution.begin(), phi_solution.end());
-    result.phi_max = *std::max_element(phi_solution.begin(), phi_solution.end());
-
-    result.mu_min = std::numeric_limits<double>::max();
-    result.mu_max = std::numeric_limits<double>::lowest();
-
-    const auto& phi_fe = phi_dof_handler.get_fe();
-    const auto& theta_fe = theta_dof_handler.get_fe();
-
-    const unsigned int quad_degree = std::max(phi_fe.degree, theta_fe.degree) + 2;
-    dealii::QGauss<dim> quadrature(quad_degree);
-    const unsigned int n_q_points = quadrature.size();
-
-    dealii::FEValues<dim> phi_fe_values(phi_fe, quadrature,
-        dealii::update_gradients | dealii::update_JxW_values);
-
-    dealii::FEValues<dim> theta_fe_values(theta_fe, quadrature,
-        dealii::update_values);
-
-    std::vector<dealii::Tensor<1, dim>> grad_phi_values(n_q_points);
-    std::vector<double> theta_values(n_q_points);
-
-    double H_L2_sq = 0.0;
-    double M_L2_sq = 0.0;
-
-    auto phi_cell = phi_dof_handler.begin_active();
-    auto theta_cell = theta_dof_handler.begin_active();
-
-    for (; phi_cell != phi_dof_handler.end(); ++phi_cell, ++theta_cell)
-    {
-        phi_fe_values.reinit(phi_cell);
-        theta_fe_values.reinit(theta_cell);
-
-        phi_fe_values.get_function_gradients(phi_solution, grad_phi_values);
-        theta_fe_values.get_function_values(theta_solution, theta_values);
-
-        for (unsigned int q = 0; q < n_q_points; ++q)
-        {
-            const double JxW = phi_fe_values.JxW(q);
-            const dealii::Tensor<1, dim>& H = grad_phi_values[q];
-            const double H_norm = H.norm();
-
-            const double theta_q = theta_values[q];
-            const double chi_theta = detail::susceptibility(theta_q,
-                params.physics.epsilon, params.physics.chi_0);
-            const double mu_theta = 1.0 + chi_theta;
-            const double M_norm = chi_theta * H_norm;
-
-            H_L2_sq += H_norm * H_norm * JxW;
-            M_L2_sq += M_norm * M_norm * JxW;
-            result.magnetic_energy += 0.5 * mu_theta * H_norm * H_norm * JxW;
-
-            result.H_max = std::max(result.H_max, H_norm);
-            result.M_max = std::max(result.M_max, M_norm);
-            result.mu_min = std::min(result.mu_min, mu_theta);
-            result.mu_max = std::max(result.mu_max, mu_theta);
-        }
-    }
-
-    result.H_L2_norm = std::sqrt(H_L2_sq);
-    result.M_L2_norm = std::sqrt(M_L2_sq);
 
     return result;
 }

@@ -320,17 +320,12 @@ void MagneticAssembler<dim>::assemble(
     // fe_minus provides JxW, normals, and minus-cell M test/trial values.
     // fe_plus provides plus-cell M test/trial values.
     // fe_vel_face provides velocity at face quadrature points.
-    // MPI FIX: neighbor_is_local controls whether plus-cell rows/columns
-    // are distributed. When neighbor is a ghost, the owning rank processes
-    // the same face from its side (as "minus"), so distributing plus-cell
-    // contributions here would double-count after compress(add).
     auto assemble_face_kernel = [&](
         const dealii::FEValuesBase<dim>& fe_minus,
         const dealii::FEValuesBase<dim>& fe_plus,
         const dealii::FEValuesBase<dim>& fe_vel_face,
         const typename dealii::DoFHandler<dim>::active_cell_iterator& cell_minus,
-        const typename dealii::DoFHandler<dim>::active_cell_iterator& cell_plus,
-        bool neighbor_is_local = true)
+        const typename dealii::DoFHandler<dim>::active_cell_iterator& cell_plus)
     {
         // Get velocity at face quadrature points
         fe_vel_face.get_function_values(Ux, Ux_face_vals);
@@ -409,19 +404,6 @@ void MagneticAssembler<dim>::assemble(
             }
         }
 
-        // MPI FIX: When neighbor is ghost, zero out plus-cell ROWS only.
-        // Plus-cell rows = equations for the ghost cell's DoFs. The owning rank
-        // assembles these from its side as "minus" rows. Distributing them here
-        // would double-count after compress(add).
-        // Plus-cell COLUMNS in minus rows are kept — they represent how the
-        // neighbor's solution couples into our cell's equations (unique coupling).
-        if (!neighbor_is_local)
-        {
-            for (unsigned int i = dofs_per_cell; i < 2 * dofs_per_cell; ++i)
-                for (unsigned int j = 0; j < 2 * dofs_per_cell; ++j)
-                    face_matrix(i, j) = 0.0;
-        }
-
         // Distribute combined face matrix to global system
         mag_constraints_.distribute_local_to_global(
             face_matrix, face_dof_indices, system_matrix);
@@ -485,8 +467,7 @@ void MagneticAssembler<dim>::assemble(
 
                         assemble_face_kernel(
                             fe_subface_mag_minus, fe_face_mag_plus,
-                            fe_subface_vel, cell_mag_f, mag_child,
-                            mag_child->is_locally_owned());
+                            fe_subface_vel, cell_mag_f, mag_child);
                     }
                     continue;
                 }
@@ -504,11 +485,12 @@ void MagneticAssembler<dim>::assemble(
                 // ==========================================================
                 const auto mag_neighbor = cell_mag_f->neighbor(face_no);
 
-                // Process once: skip if same-level neighbor has lower ID
-                if (mag_neighbor->is_locally_owned() &&
-                    (mag_neighbor->level() < cell_mag_f->level() ||
-                     (mag_neighbor->level() == cell_mag_f->level() &&
-                      mag_neighbor->index() < cell_mag_f->index())))
+                // MPI FIX: Process each face exactly ONCE using global cell
+                // index comparison, regardless of MPI ownership. This prevents
+                // double-assembly at MPI boundaries where both ranks see the face.
+                if (mag_neighbor->level() < cell_mag_f->level() ||
+                    (mag_neighbor->level() == cell_mag_f->level() &&
+                     mag_neighbor->index() < cell_mag_f->index()))
                     continue;
 
                 const unsigned int neighbor_face_no =
@@ -521,8 +503,7 @@ void MagneticAssembler<dim>::assemble(
 
                 assemble_face_kernel(
                     fe_face_mag_minus, fe_face_mag_plus,
-                    fe_face_vel, cell_mag_f, mag_neighbor,
-                    mag_neighbor->is_locally_owned());
+                    fe_face_vel, cell_mag_f, mag_neighbor);
             } // end face loop
         } // end cell loop (face pass)
     }

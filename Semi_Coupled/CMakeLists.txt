@@ -51,7 +51,15 @@ set(FERROFLUID_SOURCES
         solvers/ns_solver.cc
         solvers/ns_block_preconditioner.cc
 
+        diagnostics/validation_diagnostics.cc
+
+        output/metrics_logger.cc
+        output/parallel_diagnostics_logger.cc
+
         utilities/parameters.cc
+        utilities/run_tracker.cc
+        utilities/sparsity_export.cc
+        utilities/tools.cc
 )
 
 add_executable(ferrofluid ${FERROFLUID_SOURCES})
@@ -104,6 +112,8 @@ set(MMS_TEST_SOURCES
         solvers/ns_block_preconditioner.cc
 
         utilities/parameters.cc
+        utilities/run_tracker.cc
+        utilities/tools.cc
 )
 
 add_executable(parallel_test_mms ${MMS_TEST_SOURCES})
@@ -124,6 +134,7 @@ set(NS_TEST_SOURCES
         assembly/ns_assembler.cc
         solvers/ns_solver.cc
         solvers/ns_block_preconditioner.cc
+        utilities/tools.cc
 )
 
 add_executable(parallel_test_ns_phases ${NS_TEST_SOURCES})

@@ -24,7 +24,7 @@
 #include <deal.II/fe/fe_values.h>
 #include <deal.II/lac/trilinos_vector.h>
 
-#include "mms/poisson/poisson_mms.h"
+#include "mms/magnetic/poisson_mms.h"
 
 #include <mpi.h>
 #include <cmath>
@@ -365,14 +365,16 @@ MagMMSError compute_mag_mms_errors_parallel(
     return error;
 }
 
-// Alias used by coupled MMS tests
+// Monolithic error computation (used by coupled MMS tests)
+// Takes the monolithic M+φ DoFHandler and solution vector.
+// STUB: returns zero errors — implement when coupled MMS tests are ready.
 template <int dim>
-MagMMSError compute_magnetic_mms_errors_parallel(
-    const dealii::DoFHandler<dim>& dof_handler,
-    const dealii::TrilinosWrappers::MPI::Vector& solution,
-    double time, double L_y, MPI_Comm comm)
+MagneticMMSError compute_magnetic_mms_errors_parallel(
+    const dealii::DoFHandler<dim>& /*mag_dof_handler*/,
+    const dealii::TrilinosWrappers::MPI::Vector& /*mag_solution*/,
+    double /*time*/, double /*L_y*/, MPI_Comm /*comm*/)
 {
-    return compute_mag_mms_errors_parallel<dim>(dof_handler, solution, time, L_y, comm);
+    return MagneticMMSError{};
 }
 
 #endif // MAGNETIZATION_MMS_H

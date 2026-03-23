@@ -904,7 +904,7 @@ void PhaseFieldProblem<dim>::solve_ns(double dt)
             // Capillary force inputs
             theta_dof_handler_,
             psi_dof_handler_,
-            theta_old_relevant_,  // Use LAGGED θ^{n-1}
+            theta_old_relevant_,  // θ^{k-1} — material coefficients lagged per Theorem 4.1
             psi_relevant_,
             params_.physics.lambda,
             params_.physics.epsilon,

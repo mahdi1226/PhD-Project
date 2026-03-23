@@ -9,7 +9,8 @@
 //   Eq 42b: (ψ^k, Υ) - ε(∇θ^k, ∇Υ) - (1/ε)(f(θ^{k-1}), Υ) - (1/η)(δθ^k, Υ) = 0
 //
 // Convection: EXPLICIT per paper Eq. 42a — θ^{k-1} on RHS with U^{k-1} (CFL-limited).
-// The +γ sign (vs paper's -γ) is due to ψ_code = -ψ_paper.
+// Paper has -γ(∇Ψ,∇Λ); code has +γ(∇ψ,∇Λ) because ψ_code = -Ψ_paper.
+// Paper Eq. 1: Ψ = εΔθ - (1/ε)f(θ); code: ψ = -εΔθ + (1/ε)f(θ).
 //
 // where η = ε (stabilization parameter)
 //
