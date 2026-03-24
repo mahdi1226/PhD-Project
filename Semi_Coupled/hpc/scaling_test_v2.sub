@@ -1,0 +1,49 @@
+#!/bin/bash
+#SBATCH --job-name=rosen_sc2
+#SBATCH --partition=hpcc
+#SBATCH --ntasks=12
+#SBATCH --mem=128G
+#SBATCH --time=2-00:00:00
+#SBATCH --output=Results/scaling_v2_%A_%a.log
+#SBATCH --error=Results/scaling_v2_%A_%a.log
+#SBATCH --array=1-8
+
+module load dealii/9.7.1_umfpack_openmpi
+source /share/apps/common/SPACK_v110_release_a2/spack/opt/spack/linux-x86_64/dealii-9.7.1-wpuqyyr7mk3bxq3xd7x53syqmzecfbeh/.spack/spack-build-env.txt
+
+# ============================================================================
+# Rosensweig Scaling Test v2 — Fine sweep around sweet spot
+# All: L5, dt=1e-3, 2000 steps, t_final=2.0, vtk every 0.05 (interval=50)
+# ============================================================================
+
+# Test matrix: 4 core counts x 2 solvers = 8 tests
+CORES=(   6   8  10  12   6   8  10  12)
+SOLVER=( direct direct direct direct iterative iterative iterative iterative)
+
+idx=$((SLURM_ARRAY_TASK_ID - 1))
+NP=${CORES[$idx]}
+SOL=${SOLVER[$idx]}
+
+RUN_NAME="scale_v2_${SOL}_np${NP}"
+
+if [ "$SOL" = "direct" ]; then
+    SOLVER_FLAG="--direct"
+else
+    SOLVER_FLAG=""
+fi
+
+echo "=== Scaling Test v2: ${SOL} solver, ${NP} ranks ==="
+echo "Run name: ${RUN_NAME}"
+echo "Start: $(date)"
+
+mpirun -np ${NP} ./cmake-build-release/ferrofluid \
+    --rosensweig \
+    --run_name ${RUN_NAME} \
+    --refinement 5 \
+    ${SOLVER_FLAG} \
+    --max_steps 2000 \
+    --dt 1e-3 \
+    --vtk_interval 50
+
+echo "End: $(date)"
+echo "Exit code: $?"
