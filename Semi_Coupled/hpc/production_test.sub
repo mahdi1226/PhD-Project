@@ -1,0 +1,52 @@
+#!/bin/bash
+#SBATCH --job-name=rosen_prod
+#SBATCH --partition=hpcc
+#SBATCH --mem=256G
+#SBATCH --time=14-00:00:00
+#SBATCH --output=Results/prod_%A_%a.log
+#SBATCH --error=Results/prod_%A_%a.log
+#SBATCH --array=1-9
+
+module load dealii/9.7.1_gcc_12.3.0_mvapich
+
+# ============================================================================
+# Rosensweig Production Test Matrix — 9 jobs (3 mesh x 3 dt)
+#
+# All: no clamping, -lambda/eps capillary, sharp IC, t_final=2.0
+# VTK output every 0.05 time units for direct frame comparison
+#
+# SET THESE after scaling tests:
+NP=16              # <-- optimal core count from scaling test
+SOLVER_FLAG=""     # <-- "--direct" or "" for iterative
+# ============================================================================
+
+# 3x3 matrix: L5/L6/L7 x dt 2e-3/5e-4/2e-4
+LEVELS=(    5     5     5     6     6     6     7     7     7)
+DTS=(    2e-3  5e-4  2e-4  2e-3  5e-4  2e-4  2e-3  5e-4  2e-4)
+STEPS=(  1000  4000 10000  1000  4000 10000  1000  4000 10000)
+VTK_INT=(  25   100   250    25   100   250    25   100   250)
+
+idx=$((SLURM_ARRAY_TASK_ID - 1))
+L=${LEVELS[$idx]}
+DT=${DTS[$idx]}
+NSTEPS=${STEPS[$idx]}
+VTKI=${VTK_INT[$idx]}
+
+RUN_NAME="rosen_L${L}_dt${DT}"
+
+echo "=== Production: L${L}, dt=${DT}, ${NSTEPS} steps, vtk every ${VTKI} ==="
+echo "Run name: ${RUN_NAME}"
+echo "Cores: ${NP}, Solver: ${SOLVER_FLAG:-iterative}"
+echo "Start: $(date)"
+
+mpirun -np ${NP} ./cmake-build-release/ferrofluid \
+    --rosensweig \
+    --run_name ${RUN_NAME} \
+    --refinement ${L} \
+    ${SOLVER_FLAG} \
+    --max_steps ${NSTEPS} \
+    --dt ${DT} \
+    --vtk_interval ${VTKI}
+
+echo "End: $(date)"
+echo "Exit code: $?"

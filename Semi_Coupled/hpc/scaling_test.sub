@@ -1,19 +1,22 @@
 #!/bin/bash
 #SBATCH --job-name=rosen_scale
 #SBATCH --partition=hpcc
+#SBATCH --ntasks=32
+#SBATCH --mem=128G
 #SBATCH --time=2-00:00:00
-#SBATCH --output=Results/scaling_%A_%a.out
-#SBATCH --error=Results/scaling_%A_%a.err
+#SBATCH --output=Results/scaling_%A_%a.log
+#SBATCH --error=Results/scaling_%A_%a.log
 #SBATCH --array=1-8
 
-module load dealii/9.7.1_gcc_12.3.0_mvapich
+module load dealii/9.7.1_umfpack_openmpi
+source /share/apps/common/SPACK_v110_release_a2/spack/opt/spack/linux-x86_64/dealii-9.7.1-wpuqyyr7mk3bxq3xd7x53syqmzecfbeh/.spack/spack-build-env.txt
 
 # ============================================================================
 # Rosensweig Scaling Test Matrix
 # All: L5, dt=1e-3, 2000 steps, t_final=2.0, vtk every 0.05 (interval=50)
 # ============================================================================
 
-# Test matrix: 4 core counts × 2 solvers = 8 tests
+# Test matrix: 4 core counts x 2 solvers = 8 tests
 CORES=(   8  16  24  32   8  16  24  32)
 SOLVER=( direct direct direct direct iterative iterative iterative iterative)
 
@@ -21,10 +24,8 @@ idx=$((SLURM_ARRAY_TASK_ID - 1))
 NP=${CORES[$idx]}
 SOL=${SOLVER[$idx]}
 
-# Build run name
 RUN_NAME="scale_${SOL}_np${NP}"
 
-# Solver flag
 if [ "$SOL" = "direct" ]; then
     SOLVER_FLAG="--direct"
 else
@@ -39,12 +40,10 @@ mpirun -np ${NP} ./cmake-build-release/ferrofluid \
     --rosensweig \
     --run_name ${RUN_NAME} \
     --refinement 5 \
-    --amr \
     ${SOLVER_FLAG} \
     --max_steps 2000 \
     --dt 1e-3 \
-    --vtk_interval 50 \
-    > Results/${RUN_NAME}.log 2>&1
+    --vtk_interval 50
 
 echo "End: $(date)"
 echo "Exit code: $?"
