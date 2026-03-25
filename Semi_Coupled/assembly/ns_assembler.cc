@@ -260,9 +260,9 @@ static void assemble_ns_core(
                 rho_q = 1.0 + r_density * H_theta;
             }
 
-            // Mass coefficient: 1/Δt (Paper Eq. 42e: constant density, no ½)
-            // Paper assumes matched densities (ρ=1) in inertia term.
-            const double mass_coeff = 1.0 / dt;
+            // Mass coefficient: ρ(θ^{k-1})/Δt (Paper Eq. 42e with Eq 19)
+            // ρ(θ) = 1 + r·H(θ/ε), where r is the density ratio.
+            const double mass_coeff = rho_q / dt;
 
             // ================================================================
             // Compute source terms
@@ -636,9 +636,12 @@ static void assemble_kelvin_force(
     dealii::QGauss<dim> quadrature(fe_vel.degree + 2);
     const unsigned int n_q_points = quadrature.size();
 
+    const bool use_h_a_only = params.use_h_a_only;
+
     // FEValues for velocity (test functions) - need gradients for div(V) in B_h^m
     dealii::FEValues<dim> ux_fe_values(fe_vel, quadrature,
-        dealii::update_values | dealii::update_gradients | dealii::update_JxW_values);
+        dealii::update_values | dealii::update_gradients | dealii::update_JxW_values
+        | (use_h_a_only ? dealii::update_quadrature_points : dealii::update_default));
     dealii::FEValues<dim> uy_fe_values(fe_vel, quadrature,
         dealii::update_values | dealii::update_gradients);
 
@@ -699,16 +702,35 @@ static void assemble_kelvin_force(
         {
             const double JxW = ux_fe_values.JxW(q);
 
-            // H = ∇φ (total magnetic field from Poisson solve)
+            // H and (M·∇)H
             dealii::Tensor<1, dim> H;
-            H[0] = phi_gradients[q][0];
-            H[1] = phi_gradients[q][1];
-
-            // M vector
+            dealii::Tensor<1, dim> M_grad_H;
             dealii::Tensor<1, dim> M = KelvinForce::make_M_vector<dim>(Mx_values[q], My_values[q]);
 
-            // (M·∇)H = M·Hess(φ) since H = ∇φ
-            dealii::Tensor<1, dim> M_grad_H = KelvinForce::compute_M_grad_H<dim>(M, phi_hessians[q]);
+            if (use_h_a_only)
+            {
+                // H = h_a (Paper Section 5, Eq 66)
+                const dealii::Point<dim>& x_q = ux_fe_values.quadrature_point(q);
+                H = compute_applied_field<dim>(x_q, params, current_time);
+                // (M·∇)h_a via central differences
+                const double fd_eps = 1e-7;
+                for (unsigned int d = 0; d < dim; ++d)
+                {
+                    dealii::Point<dim> xp = x_q, xm = x_q;
+                    xp[d] += fd_eps;
+                    xm[d] -= fd_eps;
+                    auto Hp = compute_applied_field<dim>(xp, params, current_time);
+                    auto Hm = compute_applied_field<dim>(xm, params, current_time);
+                    M_grad_H += M[d] * (Hp - Hm) / (2.0 * fd_eps);
+                }
+            }
+            else
+            {
+                // H = ∇φ (total field from Poisson solve, includes h_a + h_d)
+                H[0] = phi_gradients[q][0];
+                H[1] = phi_gradients[q][1];
+                M_grad_H = KelvinForce::compute_M_grad_H<dim>(M, phi_hessians[q]);
+            }
 
             // Assemble RHS contributions using test function gradients
             for (unsigned int i = 0; i < dofs_per_cell_vel; ++i)
@@ -756,6 +778,7 @@ static void assemble_kelvin_force(
     //   2. Finer neighbor (face->has_children): subface loop
     //   3. Coarser neighbor: skip (coarser cell handles via case 2)
     // ========================================================================
+    if (!use_h_a_only)  // Skip face loop when H = h_a (smooth, [[H]] = 0)
     {
         dealii::QGauss<dim - 1> face_quadrature(fe_vel.degree + 2);
         const unsigned int n_face_q = face_quadrature.size();

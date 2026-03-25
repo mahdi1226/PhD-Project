@@ -429,11 +429,20 @@ void PhaseFieldProblem<dim>::run()
 
         // ====================================================================
         // COMPUTE DIAGNOSTICS (timed for parallel diagnostics)
+        // Controlled by --diagnostics_frequency: 0=off, 1=every step, N=every N steps
         // ====================================================================
+        const bool run_diagnostics =
+            params_.diagnostics_frequency > 0 &&
+            timestep_number_ % params_.diagnostics_frequency == 0;
+
         CumulativeTimer t_diagnostics;
+        StepData data;
+
+        if (run_diagnostics)
+        {
         t_diagnostics.start();
 
-        StepData data = compute_system_diagnostics<dim>(
+        data = compute_system_diagnostics<dim>(
             theta_dof_handler_, theta_relevant_,
             params_.enable_magnetic ? &phi_dof_handler_ : nullptr,
             params_.enable_magnetic ? &phi_relevant_ : nullptr,
@@ -489,14 +498,16 @@ void PhaseFieldProblem<dim>::run()
         // LOGGING
         // ====================================================================
 
-        // CSV logging (every step)
+        // CSV logging (only when diagnostics were computed)
         metrics.log_step(data);
         timing.log_step(timestep_number_, time_, step_timing);
+        } // end if (run_diagnostics)
 
         // ====================================================================
         // PARALLEL DIAGNOSTICS (optional, --parallel-diag flag)
+        // Only logged when diagnostics were computed this step
         // ====================================================================
-        if (parallel_diag)
+        if (run_diagnostics && parallel_diag)
         {
             ParallelStepData pdata;
             pdata.step = timestep_number_;
@@ -642,8 +653,8 @@ void PhaseFieldProblem<dim>::run()
             pcout_ << "[Sparsity Export] NS matrix done.\n";
         }
 
-        // Console output (every N steps)
-        if (timestep_number_ % output_frequency == 0)
+        // Console output (every N steps, only if diagnostics were computed)
+        if (run_diagnostics && timestep_number_ % output_frequency == 0)
         {
             console.print_step(data);
 
@@ -652,11 +663,12 @@ void PhaseFieldProblem<dim>::run()
                 mag_logger.write(compute_field_distribution(params_, time_, timestep_number_));
         }
 
-        // Always check for warnings
-        console.print_warnings(data);
-
-        // Interface/spike notes (only on change)
-        console.print_notes(data);
+        // Warnings and notes (only if diagnostics were computed)
+        if (run_diagnostics)
+        {
+            console.print_warnings(data);
+            console.print_notes(data);
+        }
 
         // VTK output (every N steps)
         if (timestep_number_ % output_frequency == 0)
@@ -672,24 +684,28 @@ void PhaseFieldProblem<dim>::run()
         // TERMINATION CHECKS
         // ====================================================================
 
-        // Check for NaN
-        if (std::isnan(data.E_total) || std::isnan(data.mass))
+        // Termination and safety checks (only when diagnostics were computed)
+        if (run_diagnostics)
         {
-            console.error("NaN detected in solution!");
-            tracker.end("error: NaN detected");
-            console.print_footer("error: NaN detected", data);
-            validation_logger.close();
-            return;
-        }
+            // Check for NaN
+            if (std::isnan(data.E_total) || std::isnan(data.mass))
+            {
+                console.error("NaN detected in solution!");
+                tracker.end("error: NaN detected");
+                console.print_footer("error: NaN detected", data);
+                validation_logger.close();
+                return;
+            }
 
-        // Check for severe bounds violation
-        if (data.theta_min < -1.5 || data.theta_max > 1.5)
-        {
-            console.warning("Severe theta bounds violation - simulation may be unstable");
-        }
+            // Check for severe bounds violation
+            if (data.theta_min < -1.5 || data.theta_max > 1.5)
+            {
+                console.warning("Severe theta bounds violation - simulation may be unstable");
+            }
 
-        // Store for next iteration
-        prev_data = data;
+            // Store for next iteration (energy rate computation)
+            prev_data = data;
+        }
 
         ++timestep_number_;
     }

@@ -3,7 +3,7 @@
 #SBATCH --partition=hpcc
 #SBATCH --ntasks=32
 #SBATCH --mem=128G
-#SBATCH --time=1-00:00:00
+#SBATCH --time=28-00:00:00
 #SBATCH --output=Results/overnight_%A_%a.log
 #SBATCH --error=Results/overnight_%A_%a.log
 #SBATCH --array=1-8

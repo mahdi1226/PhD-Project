@@ -158,6 +158,7 @@ struct Parameters
     bool enable_ns = true;
     bool enable_gravity = true;
     bool enable_mms = false;
+    bool use_h_a_only = false;  // H = h_a (no demagnetizing field, paper Section 5)
 
     // MMS
     double mms_t_init = 0.0;
@@ -226,6 +227,12 @@ struct Parameters
     // Exports SVG/gnuplot of sparsity patterns + bandwidth + per-row nnz
     // ========================================================================
     bool dump_sparsity = false;                     // Export sparsity patterns at step 0
+
+    // ========================================================================
+    // Diagnostics frequency (--diagnostics_frequency N)
+    // 0 = disabled, 1 = every step (default), N = every N steps
+    // ========================================================================
+    unsigned int diagnostics_frequency = 1;
 
     // ========================================================================
     // Build run_name from preset + refinement + amr (call after parsing)

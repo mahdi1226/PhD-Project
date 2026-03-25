@@ -253,16 +253,24 @@ void MagneticAssembler<dim>::assemble(
                     }
                     val += -(U_grad_Z_dot_M + 0.5 * div_U * (Z_i * M_j));
 
-                    // C_M_phi: -(1/tau_M) chi (grad phi_j, Z_i)
-                    val += -relax_coeff * chi_theta * (grad_phi_j * Z_i);
+                    if (!params_.use_h_a_only)
+                    {
+                        // C_M_phi: -(1/tau_M) chi (grad phi_j, Z_i)
+                        val += -relax_coeff * chi_theta * (grad_phi_j * Z_i);
 
-                    // ==== phi block (Eq 42d) ====
+                        // ==== phi block (Eq 42d) ====
 
-                    // C_phi_M: +(M_j, grad X_i)
-                    val += M_j * grad_X_i;
+                        // C_phi_M: +(M_j, grad X_i)
+                        val += M_j * grad_X_i;
 
-                    // A_phi: (grad phi_j, grad X_i)
-                    val += grad_phi_j * grad_X_i;
+                        // A_phi: (grad phi_j, grad X_i)
+                        val += grad_phi_j * grad_X_i;
+                    }
+                    else
+                    {
+                        // Identity for phi block to keep system non-singular
+                        val += grad_phi_j * grad_X_i;
+                    }
 
                     cell_matrix(i, j) += val * JxW;
                 }
@@ -275,8 +283,17 @@ void MagneticAssembler<dim>::assemble(
                 // M block RHS: (1/dt)(M^{k-1}, Z_i)
                 rhs_val += time_coeff * (M_old_vals[q] * Z_i);
 
-                // phi block: (h_a, grad X_i)
-                rhs_val += h_a * grad_X_i;
+                if (params_.use_h_a_only)
+                {
+                    // H = h_a: magnetization relaxes toward chi * h_a
+                    // RHS: +(1/tau_M) chi_theta (h_a, Z_i)
+                    rhs_val += relax_coeff * chi_theta * (h_a * Z_i);
+                }
+                else
+                {
+                    // phi block: (h_a, grad X_i)
+                    rhs_val += h_a * grad_X_i;
+                }
 
                 // MMS sources
                 if (mms_mode)

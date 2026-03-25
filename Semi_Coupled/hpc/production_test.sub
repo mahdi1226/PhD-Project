@@ -2,12 +2,13 @@
 #SBATCH --job-name=rosen_prod
 #SBATCH --partition=hpcc
 #SBATCH --mem=256G
-#SBATCH --time=14-00:00:00
+#SBATCH --time=28-00:00:00
 #SBATCH --output=Results/prod_%A_%a.log
 #SBATCH --error=Results/prod_%A_%a.log
 #SBATCH --array=1-9
 
-module load dealii/9.7.1_gcc_12.3.0_mvapich
+module load dealii/9.7.1_umfpack_openmpi
+source /share/apps/common/SPACK_v110_release_a2/spack/opt/spack/linux-x86_64/dealii-9.7.1-wpuqyyr7mk3bxq3xd7x53syqmzecfbeh/.spack/spack-build-env.txt
 
 # ============================================================================
 # Rosensweig Production Test Matrix — 9 jobs (3 mesh x 3 dt)

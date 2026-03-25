@@ -153,6 +153,7 @@ void Parameters::setup_dome()
     //  not here — all parameter values are identical to hedgehog.)
     setup_hedgehog();
     preset_name = "dome";  // For auto-generating run_name
+    use_h_a_only = true;   // H = h_a, no Poisson/demagnetizing field
 }
 
 void Parameters::setup_droplet()
@@ -447,6 +448,10 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             params.solvers.ns.use_iterative = false;
             params.solvers.ch.use_iterative = false;  // Also use direct for CH
         }
+        else if (std::strcmp(argv[i], "--h_a_only") == 0)
+        {
+            params.use_h_a_only = true;
+        }
 
         // Block-Gauss-Seidel global iteration
         else if (std::strcmp(argv[i], "--bgs_iters") == 0)
@@ -492,6 +497,13 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
         // Sparsity pattern export
         else if (std::strcmp(argv[i], "--dump-sparsity") == 0)
             params.dump_sparsity = true;
+
+        // Diagnostics frequency
+        else if (std::strcmp(argv[i], "--diagnostics_frequency") == 0)
+        {
+            if (++i >= argc) { std::cerr << "--diagnostics_frequency requires a value\n"; std::exit(1); }
+            params.diagnostics_frequency = std::stoul(argv[i]);
+        }
 
         // Debugging
         else if (std::strcmp(argv[i], "--mms") == 0)
@@ -558,6 +570,9 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             std::cout << "  --renumber-dofs           Apply Cuthill-McKee DoF renumbering (reduces bandwidth)\n";
             std::cout << "  --no-renumber-dofs        Disable DoF renumbering (default)\n";
             std::cout << "  --dump-sparsity           Export sparsity patterns (SVG + gnuplot + bandwidth CSV)\n\n";
+
+            std::cout << "DIAGNOSTICS:\n";
+            std::cout << "  --diagnostics_frequency N  Compute diagnostics every N steps (0=off, 1=every step [default])\n\n";
 
             std::cout << "DEBUGGING:\n";
             std::cout << "  --mms                 MMS verification mode\n";
