@@ -3,7 +3,7 @@
 #SBATCH --partition=hpcc
 #SBATCH --ntasks=44
 #SBATCH --mem=128G
-#SBATCH --time=28-00:00:00
+#SBATCH --time=12-00:00:00
 #SBATCH --output=Results/scaling_L7_%A_%a.log
 #SBATCH --error=Results/scaling_L7_%A_%a.log
 #SBATCH --array=1-8

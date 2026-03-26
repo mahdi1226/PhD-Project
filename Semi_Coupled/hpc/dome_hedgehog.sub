@@ -2,7 +2,7 @@
 #SBATCH --job-name=dome_hedge
 #SBATCH --partition=hpcc
 #SBATCH --mem=256G
-#SBATCH --time=28-00:00:00
+#SBATCH --time=12-00:00:00
 #SBATCH --output=Results/dh_%A_%a.log
 #SBATCH --error=Results/dh_%A_%a.log
 #SBATCH --array=1-8
