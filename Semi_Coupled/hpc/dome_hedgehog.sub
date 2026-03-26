@@ -1,6 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=dome_hedge
 #SBATCH --partition=hpcc
+#SBATCH --ntasks=16
 #SBATCH --mem=256G
 #SBATCH --time=12-00:00:00
 #SBATCH --output=Results/dh_%A_%a.log
