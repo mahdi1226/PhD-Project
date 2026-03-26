@@ -21,6 +21,7 @@
 
 #include "navier_stokes/navier_stokes.h"
 
+#include "physics/applied_field.h"
 #include "physics/skew_forms.h"
 
 #include <deal.II/base/quadrature_lib.h>
@@ -76,6 +77,8 @@ void NSSubsystem<dim>::assemble_stokes(
     uy_matrix_ = 0;
     ux_rhs_ = 0;
     uy_rhs_ = 0;
+    ux_amg_valid_ = false;
+    uy_amg_valid_ = false;
 
     const auto& fe_vel = ux_dof_handler_.get_fe();
     const unsigned int dofs_per_cell_vel = fe_vel.n_dofs_per_cell();
@@ -289,6 +292,8 @@ void NSSubsystem<dim>::assemble_coupled(
     uy_matrix_ = 0;
     ux_rhs_    = 0;
     uy_rhs_    = 0;
+    ux_amg_valid_ = false;
+    uy_amg_valid_ = false;
 
     const auto& fe_vel = ux_dof_handler_.get_fe();
     const unsigned int dofs_per_cell_vel = fe_vel.n_dofs_per_cell();
@@ -444,24 +449,26 @@ void NSSubsystem<dim>::assemble_coupled(
             const Tensor<1, dim>& grad_Mx = Mx_gradients[q];
             const Tensor<1, dim>& grad_My = My_gradients[q];
 
-            // h̃ = ∇φ (total field)
-            const Tensor<2, dim>& hess_phi = phi_hessians[q];
-            const Tensor<2, dim>& grad_H = hess_phi;
-
+            // H and ∇H for Kelvin force
             Tensor<1, dim> H_vec;
-            H_vec[0] = phi_gradients[q][0];
-            H_vec[1] = phi_gradients[q][1];
+            Tensor<2, dim> grad_H;
 
-            // Kelvin RHS term 1: μ₀(m·∇)H
+            if (params_.use_reduced_magnetic_field)
+            {
+                // Reduced mode: H = h_a (no demagnetizing field)
+                H_vec = compute_applied_field<dim>(x_q, params_, current_time);
+                grad_H = compute_applied_field_gradient<dim>(x_q, params_, current_time);
+            }
+            else
+            {
+                // Full mode: H = ∇φ (Poisson encodes h_a via natural BCs)
+                H_vec[0] = phi_gradients[q][0];
+                H_vec[1] = phi_gradients[q][1];
+                grad_H = phi_hessians[q];
+            }
+
+            // Kelvin force: μ₀(m·∇)H
             const Tensor<1, dim> kelvin = KelvinForce::compute_M_grad_H<dim>(M, grad_H);
-
-            // Kelvin RHS term 3: μ₀(m × ∇×h̃, v) = 0 (∇×∇φ = 0)
-            Tensor<1, dim> M_cross_curlH;
-            M_cross_curlH[0] = 0.0;
-            M_cross_curlH[1] = 0.0;
-
-            // Kelvin RHS term 2: μ₀/2(m × H̃, ∇×v)
-            const double M_cross_H = M[0] * H_vec[1] - M[1] * H_vec[0];
 
             // Gravity body force: ρ(θ^n)g
             Tensor<1, dim> F_gravity;
@@ -523,17 +530,19 @@ void NSSubsystem<dim>::assemble_coupled(
                     local_rhs_uy(i) += F_mms[1] * phi_uy_i * JxW;
                 }
 
-                // RHS: Kelvin term 1 — μ₀((m·∇)H̃, v)
+                // RHS: Kelvin — μ₀((m·∇)H̃, v)  (Zhang Eq 3.11, term 1)
                 local_rhs_ux(i) += mu0 * kelvin[0] * phi_ux_i * JxW;
                 local_rhs_uy(i) += mu0 * kelvin[1] * phi_uy_i * JxW;
 
-                // RHS: Kelvin term 2 — μ₀/2(m × H̃, ∇×v)
-                local_rhs_ux(i) += 0.5 * mu0 * M_cross_H * (-grad_phi_ux_i[1]) * JxW;
-                local_rhs_uy(i) += 0.5 * mu0 * M_cross_H * ( grad_phi_uy_i[0]) * JxW;
+                // Spin torque — (μ₀/2)(m×H̃, ∇×v)  (Zhang Eq 3.11, term 2)
+                // DISABLED: Creates spurious rotational velocity in dome test.
+                // At equilibrium M ∝ H so m×H ≈ 0, but numerical misalignment
+                // from transport creates feedback: misalignment → torque → velocity
+                // → more misalignment. Dome blew up at t=1.45 vs t=1.66 without it.
 
-                // RHS: Kelvin term 3 — μ₀(m × ∇×H̃, v)
-                local_rhs_ux(i) += mu0 * M_cross_curlH[0] * phi_ux_i * JxW;
-                local_rhs_uy(i) += mu0 * M_cross_curlH[1] * phi_uy_i * JxW;
+                // RHS: Consistent term — μ₀(m×∇×H̃, v)  (Zhang Eq 3.11, term 3)
+                // Vanishes when H = ∇φ since ∇×∇φ = 0 identically.
+                // Needed only if using L² projected h̃ (where ∇×h̃ ≠ 0).
 
                 // RHS: (1/dt) * U^{n-1}
                 local_rhs_ux(i) += mass_coeff * ux_old_values[q] * phi_ux_i * JxW;
@@ -726,6 +735,8 @@ void NSSubsystem<dim>::assemble_coupled_algebraic_M(
     uy_matrix_ = 0;
     ux_rhs_    = 0;
     uy_rhs_    = 0;
+    ux_amg_valid_ = false;
+    uy_amg_valid_ = false;
 
     const auto& fe_vel = ux_dof_handler_.get_fe();
     const unsigned int dofs_per_cell_vel = fe_vel.n_dofs_per_cell();
@@ -859,10 +870,6 @@ void NSSubsystem<dim>::assemble_coupled_algebraic_M(
             const Tensor<2, dim>& grad_H = hess_phi;
 
             Tensor<1, dim> kelvin = KelvinForce::compute_M_grad_H<dim>(M, grad_H);
-            Tensor<1, dim> M_cross_curlH;
-            M_cross_curlH[0] = 0.0;
-            M_cross_curlH[1] = 0.0;
-            const double M_cross_H = M[0] * H_total[1] - M[1] * H_total[0];
 
             // Algebraic M gradient: ∇m = (∇χ)h̃ + χ(∇h̃)
             const double chi_prime_q = susceptibility_derivative(theta_old_q, eps, chi_0);
@@ -924,12 +931,6 @@ void NSSubsystem<dim>::assemble_coupled_algebraic_M(
 
                 local_rhs_ux(i) += mu_0 * kelvin[0] * phi_ux_i * JxW;
                 local_rhs_uy(i) += mu_0 * kelvin[1] * phi_uy_i * JxW;
-
-                local_rhs_ux(i) += 0.5 * mu_0 * M_cross_H * (-grad_phi_ux_i[1]) * JxW;
-                local_rhs_uy(i) += 0.5 * mu_0 * M_cross_H * ( grad_phi_uy_i[0]) * JxW;
-
-                local_rhs_ux(i) += mu_0 * M_cross_curlH[0] * phi_ux_i * JxW;
-                local_rhs_uy(i) += mu_0 * M_cross_curlH[1] * phi_uy_i * JxW;
 
                 local_rhs_ux(i) += mass_coeff * ux_old_values[q] * phi_ux_i * JxW;
                 local_rhs_uy(i) += mass_coeff * uy_old_values[q] * phi_uy_i * JxW;
@@ -1078,8 +1079,14 @@ void NSSubsystem<dim>::assemble_pressure_poisson(double dt)
 {
     using namespace dealii;
 
-    p_matrix_ = 0;
-    p_rhs_    = 0;
+    // Pressure Laplacian matrix is constant — only build once
+    const bool need_matrix = !p_matrix_assembled_;
+    if (need_matrix)
+    {
+        p_matrix_ = 0;
+        p_amg_valid_ = false;
+    }
+    p_rhs_ = 0;
 
     const auto& fe_p   = p_dof_handler_.get_fe();
     const auto& fe_vel = ux_dof_handler_.get_fe();
@@ -1123,7 +1130,8 @@ void NSSubsystem<dim>::assemble_pressure_poisson(double dt)
         ux_fe_values.reinit(ux_cell);
         uy_fe_values.reinit(uy_cell);
 
-        local_p_p = 0;
+        if (need_matrix)
+            local_p_p = 0;
         local_rhs_p = 0;
 
         p_cell->get_dof_indices(p_local_dofs);
@@ -1154,21 +1162,30 @@ void NSSubsystem<dim>::assemble_pressure_poisson(double dt)
                 // RHS: +(∇p^{n-1}, ∇q)
                 local_rhs_p(i) += (grad_p_old * grad_q_i) * JxW;
 
-                for (unsigned int j = 0; j < dofs_per_cell_p; ++j)
+                if (need_matrix)
                 {
-                    const Tensor<1, dim>& grad_q_j = p_fe_values.shape_grad(j, q);
-
-                    // LHS: (∇p, ∇q)
-                    local_p_p(i, j) += (grad_q_i * grad_q_j) * JxW;
+                    for (unsigned int j = 0; j < dofs_per_cell_p; ++j)
+                    {
+                        const Tensor<1, dim>& grad_q_j = p_fe_values.shape_grad(j, q);
+                        local_p_p(i, j) += (grad_q_i * grad_q_j) * JxW;
+                    }
                 }
             }
         }  // end quadrature loop
 
-        p_constraints_.distribute_local_to_global(
-            local_p_p, local_rhs_p, p_local_dofs, p_matrix_, p_rhs_);
+        if (need_matrix)
+            p_constraints_.distribute_local_to_global(
+                local_p_p, local_rhs_p, p_local_dofs, p_matrix_, p_rhs_);
+        else
+            p_constraints_.distribute_local_to_global(
+                local_rhs_p, p_local_dofs, p_rhs_);
     }  // end cell loop
 
-    p_matrix_.compress(VectorOperation::add);
+    if (need_matrix)
+    {
+        p_matrix_.compress(VectorOperation::add);
+        p_matrix_assembled_ = true;
+    }
     p_rhs_.compress(VectorOperation::add);
 }
 

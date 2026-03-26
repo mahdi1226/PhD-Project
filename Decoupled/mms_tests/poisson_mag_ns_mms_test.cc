@@ -1138,10 +1138,17 @@ PoissonMagNSConvergenceResult run_poisson_mag_ns_mms(
         std::cout << "\n";
     }
 
+    // Scale time steps with refinement so dt ~ h² (temporal error
+    // doesn't dominate spatial error). Each refinement halves h,
+    // so multiply steps by 4 to keep dt/h² constant.
+    unsigned int steps_for_ref = n_time_steps;
     for (unsigned int ref : refinements)
+    {
         result.results.push_back(
-            run_single_level(ref, p, n_time_steps, mpi_comm,
+            run_single_level(ref, p, steps_for_ref, mpi_comm,
                              use_projected_velocity, mag_only));
+        steps_for_ref *= 4;
+    }
 
     result.compute_rates();
     return result;

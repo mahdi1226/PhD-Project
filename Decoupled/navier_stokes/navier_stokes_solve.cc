@@ -12,6 +12,9 @@
 //   use_iterative = true  → CG + AMG (default for projection method)
 //   use_iterative = false → Direct (MUMPS → KLU), via --ns-direct
 //
+// AMG preconditioners are cached as member variables (ux_amg_, uy_amg_,
+// p_amg_) and rebuilt only when invalidated by matrix changes.
+//
 // Reference: Zhang, He & Yang, SIAM J. Sci. Comput. 43(1), 2021
 // ============================================================================
 
@@ -27,15 +30,17 @@
 #include <iomanip>
 
 // ============================================================================
-// Helper: Solve a single scalar system with CG+AMG.
-// Returns iteration count (0 if RHS was zero).
+// Helper: Solve a single scalar system with CG + cached AMG.
+// AMG is rebuilt only if *amg_valid is false.
 // ============================================================================
 template <int dim>
-static unsigned int solve_scalar_cg_amg(
+static unsigned int solve_scalar_cg_amg_cached(
     const dealii::TrilinosWrappers::SparseMatrix& matrix,
     dealii::TrilinosWrappers::MPI::Vector& solution,
     const dealii::TrilinosWrappers::MPI::Vector& rhs,
     const dealii::AffineConstraints<double>& constraints,
+    dealii::TrilinosWrappers::PreconditionAMG& amg,
+    bool& amg_valid,
     double tol, unsigned int max_iter, bool higher_order)
 {
     const double rhs_norm = rhs.l2_norm();
@@ -45,17 +50,21 @@ static unsigned int solve_scalar_cg_amg(
         return 0;
     }
 
+    // Rebuild AMG only when invalidated
+    if (!amg_valid)
+    {
+        dealii::TrilinosWrappers::PreconditionAMG::AdditionalData amg_data;
+        amg_data.elliptic = true;
+        amg_data.higher_order_elements = higher_order;
+        amg_data.smoother_sweeps = 2;
+        amg_data.aggregation_threshold = 0.02;
+
+        amg.initialize(matrix, amg_data);
+        amg_valid = true;
+    }
+
     dealii::SolverControl control(max_iter, tol * rhs_norm);
     dealii::SolverCG<dealii::TrilinosWrappers::MPI::Vector> cg(control);
-
-    dealii::TrilinosWrappers::PreconditionAMG::AdditionalData amg_data;
-    amg_data.elliptic = true;
-    amg_data.higher_order_elements = higher_order;
-    amg_data.smoother_sweeps = 2;
-    amg_data.aggregation_threshold = 0.02;
-
-    dealii::TrilinosWrappers::PreconditionAMG amg;
-    amg.initialize(matrix, amg_data);
 
     cg.solve(matrix, solution, rhs, amg);
     constraints.distribute(solution);
@@ -138,11 +147,12 @@ SolverInfo NSSubsystem<dim>::solve_velocity()
         {
             pcout_ << "  [NS Velocity] Direct solver failed: " << e.what()
                    << ", falling back to CG+AMG\n";
-            // Fall through to iterative
-            info.iterations  = solve_scalar_cg_amg<dim>(ux_matrix_, ux_solution_, ux_rhs_,
-                                                        ux_constraints_, tol, max_iter, true);
-            info.iterations += solve_scalar_cg_amg<dim>(uy_matrix_, uy_solution_, uy_rhs_,
-                                                        uy_constraints_, tol, max_iter, true);
+            info.iterations  = solve_scalar_cg_amg_cached<dim>(
+                ux_matrix_, ux_solution_, ux_rhs_, ux_constraints_,
+                ux_amg_, ux_amg_valid_, tol, max_iter, true);
+            info.iterations += solve_scalar_cg_amg_cached<dim>(
+                uy_matrix_, uy_solution_, uy_rhs_, uy_constraints_,
+                uy_amg_, uy_amg_valid_, tol, max_iter, true);
             info.solver_name = "NS-Velocity-CG+AMG(fallback)";
             info.used_direct = false;
             info.converged = true;
@@ -150,13 +160,15 @@ SolverInfo NSSubsystem<dim>::solve_velocity()
     }
     else
     {
-        // CG+AMG path (default)
+        // CG+AMG path (default) — uses cached preconditioners
         info.solver_name = "NS-Velocity-CG+AMG";
         info.used_direct = false;
-        info.iterations  = solve_scalar_cg_amg<dim>(ux_matrix_, ux_solution_, ux_rhs_,
-                                                    ux_constraints_, tol, max_iter, true);
-        info.iterations += solve_scalar_cg_amg<dim>(uy_matrix_, uy_solution_, uy_rhs_,
-                                                    uy_constraints_, tol, max_iter, true);
+        info.iterations  = solve_scalar_cg_amg_cached<dim>(
+            ux_matrix_, ux_solution_, ux_rhs_, ux_constraints_,
+            ux_amg_, ux_amg_valid_, tol, max_iter, true);
+        info.iterations += solve_scalar_cg_amg_cached<dim>(
+            uy_matrix_, uy_solution_, uy_rhs_, uy_constraints_,
+            uy_amg_, uy_amg_valid_, tol, max_iter, true);
         info.converged = true;
     }
 
@@ -211,8 +223,9 @@ SolverInfo NSSubsystem<dim>::solve_pressure()
         {
             pcout_ << "  [NS Pressure] Direct solver failed: " << e.what()
                    << ", falling back to CG+AMG\n";
-            info.iterations = solve_scalar_cg_amg<dim>(p_matrix_, p_solution_, p_rhs_,
-                                                       p_constraints_, tol, max_iter, false);
+            info.iterations = solve_scalar_cg_amg_cached<dim>(
+                p_matrix_, p_solution_, p_rhs_, p_constraints_,
+                p_amg_, p_amg_valid_, tol, max_iter, false);
             info.solver_name = "NS-Pressure-CG+AMG(fallback)";
             info.used_direct = false;
             info.converged = true;
@@ -220,11 +233,12 @@ SolverInfo NSSubsystem<dim>::solve_pressure()
     }
     else
     {
-        // CG+AMG path (default)
+        // CG+AMG path (default) — uses cached preconditioner
         info.solver_name = "NS-Pressure-CG+AMG";
         info.used_direct = false;
-        info.iterations = solve_scalar_cg_amg<dim>(p_matrix_, p_solution_, p_rhs_,
-                                                   p_constraints_, tol, max_iter, false);
+        info.iterations = solve_scalar_cg_amg_cached<dim>(
+            p_matrix_, p_solution_, p_rhs_, p_constraints_,
+            p_amg_, p_amg_valid_, tol, max_iter, false);
         info.converged = true;
     }
 

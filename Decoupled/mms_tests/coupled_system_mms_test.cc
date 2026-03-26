@@ -157,11 +157,9 @@ static CoupledMMSResult run_single_level(
     CoupledCHSourceTheta<dim> coupled_ch_theta_src(
         params.physics.mobility, dt, L_y, L_y);
 
-    // CH source: ψ-equation (no convection coupling)
-    // S1 = 1/ε for standard (non-SAV) assembly
-    const double S1_val = 1.0 / params.physics.epsilon;
+    // CH source: ψ-equation (Zhang Eq 3.10, {0,1} convention)
     CoupledCHSourcePsi<dim> coupled_ch_psi_src(
-        params.physics.epsilon, S1_val, dt, L_y);
+        params.physics.epsilon, params.physics.lambda, dt, L_y);
 
     ch.set_mms_source(
         [&](const Point<dim>& pt, double t) -> double {

@@ -176,7 +176,7 @@ public:
             ri << "  NS:             " << (params.enable_ns ? "ON" : "OFF") << "\n\n";
             ri << "[Coupling]\n";
             ri << "  mag_poisson:       Zhang single-pass (no Picard)\n";
-            ri << "  use_sav:           " << (params.use_sav ? "ON" : "OFF") << "\n";
+            ri << "  SAV:               ON (always — Zhang's scheme)\n";
             ri << "  sav_S1:            " << params.sav.S1 << "\n";
             ri << "  algebraic_M:       " << (params.use_algebraic_magnetization ? "ON" : "OFF") << "\n\n";
             ri << "[Validation]\n";
@@ -1199,8 +1199,7 @@ int main(int argc, char* argv[])
         pcout << "  NS(ux+uy+p)=" << ns.get_ux_dof_handler().n_dofs()
                                     + ns.get_uy_dof_handler().n_dofs()
                                     + ns.get_p_dof_handler().n_dofs();
-    if (params.use_sav)
-        pcout << "  SAV=ON";
+    pcout << "  SAV=ON";
     pcout << "\n\n";
 
     // ----------------------------------------------------------------
@@ -1415,7 +1414,6 @@ int main(int argc, char* argv[])
     double sav_S1 = params.sav.S1;
     constexpr double sav_C0 = 1.0; // SAV positivity constant (standard choice)
 
-    if (params.use_sav)
     {
         // Auto-compute S if not set.
         // Convexity: (λ/ε)*f'(θ) + S >= 0.
@@ -1480,13 +1478,10 @@ int main(int argc, char* argv[])
                             params.enable_ns, params.enable_magnetic);
 
                 // SAV variable must be recomputed after mesh change
-                if (params.use_sav)
-                {
-                    sav_E1_old = ch.compute_bulk_energy(ch.get_theta_relevant());
-                    sav_r = std::sqrt(sav_E1_old + sav_C0);
-                    pcout << "[AMR] SAV recomputed: E1=" << sav_E1_old
-                          << ", r=" << sav_r << "\n";
-                }
+                sav_E1_old = ch.compute_bulk_energy(ch.get_theta_relevant());
+                sav_r = std::sqrt(sav_E1_old + sav_C0);
+                pcout << "[AMR] SAV recomputed: E1=" << sav_E1_old
+                      << ", r=" << sav_r << "\n";
             }
         }
 
@@ -1516,36 +1511,25 @@ int main(int argc, char* argv[])
                 &vel_ux, &vel_uy
             };
 
-            if (params.use_sav)
+            // SAV factor: r^n / sqrt(E1(theta^n) + C0)
+            const double denom = std::sqrt(sav_E1_old + sav_C0);
+            const double sav_factor = (denom > 1e-15) ? sav_r / denom : 1.0;
+
+            ch.assemble_sav(ch.get_theta_relevant(), vel_comps, vel_dof,
+                            dt, current_time, sav_S1, sav_factor);
+            ch.solve();
+            ch.update_ghosts();
+
+            // SAV update: r^{n+1} = r^n + inner_product / (2*sqrt(E1_old + C0))
+            if (denom > 1e-15)
             {
-
-                // SAV factor: r^n / sqrt(E1(theta^n) + C0)
-                const double denom = std::sqrt(sav_E1_old + sav_C0);
-                const double sav_factor = (denom > 1e-15) ? sav_r / denom : 1.0;
-
-                ch.assemble_sav(ch.get_theta_relevant(), vel_comps, vel_dof,
-                                dt, current_time, sav_S1, sav_factor);
-                ch.solve();
-                ch.update_ghosts();
-
-                // SAV update: r^{n+1} = r^n + inner_product / (2*sqrt(E1_old + C0))
-                if (denom > 1e-15)
-                {
-                    const double inner_prod = ch.compute_sav_inner_product(
-                        ch.get_theta_relevant(), theta_old);
-                    sav_r += inner_prod / (2.0 * denom);
-                }
-
-                // Update E1 for next timestep
-                sav_E1_old = ch.compute_bulk_energy(ch.get_theta_relevant());
+                const double inner_prod = ch.compute_sav_inner_product(
+                    ch.get_theta_relevant(), theta_old);
+                sav_r += inner_prod / (2.0 * denom);
             }
-            else
-            {
-                ch.assemble(ch.get_theta_relevant(), vel_comps, vel_dof,
-                            dt, current_time);
-                ch.solve();
-                ch.update_ghosts();
-            }
+
+            // Update E1 for next timestep
+            sav_E1_old = ch.compute_bulk_energy(ch.get_theta_relevant());
         }
 
         // ============================================================
@@ -1690,7 +1674,11 @@ int main(int argc, char* argv[])
                 // Matrix assembled once (mass-only, doesn't depend on φ).
                 // Only RHS changes between iterations (H = ∇φ^(k) updates).
                 // ============================================================
-                constexpr unsigned int picard_max = 3;
+                constexpr unsigned int picard_max = 20;
+                constexpr double picard_tol = 1e-4;
+
+                // Save φ^{n-1} for convergence check
+                dealii::TrilinosWrappers::MPI::Vector phi_prev(poisson.get_solution());
 
                 for (unsigned int pic = 0; pic < picard_max; ++pic)
                 {
@@ -1727,6 +1715,29 @@ int main(int argc, char* argv[])
                                          current_time);
                     poisson.solve();
                     poisson.update_ghosts();
+
+                    // Convergence check: ‖φ^(k) - φ^(k-1)‖ / ‖φ^(k)‖
+                    phi_prev -= poisson.get_solution();   // phi_prev = φ^(k-1) - φ^(k)
+                    const double diff_norm = phi_prev.l2_norm();
+                    const double sol_norm  = poisson.get_solution().l2_norm();
+                    const double rel_change = (sol_norm > 1e-14) ? diff_norm / sol_norm : diff_norm;
+
+                    if (rel_change < picard_tol && pic > 0)
+                    {
+                        pcout << "    Step5 Picard converged in " << (pic + 1)
+                              << " its (|Δφ|/|φ|=" << std::scientific << std::setprecision(1)
+                              << rel_change << std::defaultfloat << ")\n";
+                        break;
+                    }
+
+                    if (pic == picard_max - 1)
+                    {
+                        pcout << "    WARNING: Step5 Picard NOT converged after " << picard_max
+                              << " its (|Δφ|/|φ|=" << std::scientific << std::setprecision(1)
+                              << rel_change << std::defaultfloat << ")\n";
+                    }
+
+                    phi_prev = poisson.get_solution();
                 }
 
                 // ============================================================
@@ -1737,8 +1748,13 @@ int main(int argc, char* argv[])
                 // then re-solve Step 6 with updated φ. This closes the
                 // feedback loop that single-pass Step 6 leaves open.
                 // ============================================================
-                constexpr unsigned int step6_picard = 2;
-                for (unsigned int s6 = 0; s6 < step6_picard; ++s6)
+                constexpr unsigned int step6_picard_max = 15;
+                constexpr double step6_picard_tol = 1e-4;
+
+                // Save φ before Step 6 iterations
+                dealii::TrilinosWrappers::MPI::Vector phi_prev_s6(poisson.get_solution());
+
+                for (unsigned int s6 = 0; s6 < step6_picard_max; ++s6)
                 {
                     if (s6 == 0)
                     {
@@ -1765,15 +1781,36 @@ int main(int argc, char* argv[])
                     mag.update_ghosts();
 
                     // Re-solve Poisson with updated M from Step 6
-                    if (s6 < step6_picard - 1)
+                    poisson.assemble_rhs(mag.get_Mx_relevant(),
+                                         mag.get_My_relevant(),
+                                         mag.get_dof_handler(),
+                                         current_time);
+                    poisson.solve();
+                    poisson.update_ghosts();
+
+                    // Convergence check
+                    phi_prev_s6 -= poisson.get_solution();
+                    const double diff_norm_s6 = phi_prev_s6.l2_norm();
+                    const double sol_norm_s6  = poisson.get_solution().l2_norm();
+                    const double rel_change_s6 = (sol_norm_s6 > 1e-14)
+                        ? diff_norm_s6 / sol_norm_s6 : diff_norm_s6;
+
+                    if (rel_change_s6 < step6_picard_tol && s6 > 0)
                     {
-                        poisson.assemble_rhs(mag.get_Mx_relevant(),
-                                             mag.get_My_relevant(),
-                                             mag.get_dof_handler(),
-                                             current_time);
-                        poisson.solve();
-                        poisson.update_ghosts();
+                        pcout << "    Step6 Picard converged in " << (s6 + 1)
+                              << " its (|Δφ|/|φ|=" << std::scientific << std::setprecision(1)
+                              << rel_change_s6 << std::defaultfloat << ")\n";
+                        break;
                     }
+
+                    if (s6 == step6_picard_max - 1)
+                    {
+                        pcout << "    WARNING: Step6 Picard NOT converged after " << step6_picard_max
+                              << " its (|Δφ|/|φ|=" << std::scientific << std::setprecision(1)
+                              << rel_change_s6 << std::defaultfloat << ")\n";
+                    }
+
+                    phi_prev_s6 = poisson.get_solution();
                 }
             }
         }
@@ -1784,167 +1821,181 @@ int main(int argc, char* argv[])
         auto wall_end = std::chrono::high_resolution_clock::now();
         double wall_s = std::chrono::duration<double>(wall_end - wall_start).count();
 
-        auto ch_diag = ch.compute_diagnostics();
+        const unsigned int diag_freq = params.output.diagnostics_frequency;
+        const bool do_diag = (diag_freq > 0)
+                          && (step % diag_freq == 0 || step == 1);
 
+        CahnHilliardSubsystem<dim>::Diagnostics ch_diag;
         PoissonSubsystem<dim>::Diagnostics poi_diag;
         MagnetizationSubsystem<dim>::Diagnostics mag_diag;
         NSSubsystem<dim>::Diagnostics ns_diag;
-
-        if (params.enable_magnetic)
-        {
-            poi_diag = poisson.compute_diagnostics(
-                ch.get_theta_relevant(), ch.get_theta_dof_handler(), current_time);
-            if (!params.use_algebraic_magnetization)
-            {
-                mag_diag = mag.compute_diagnostics(
-                    poisson.get_solution_relevant(), poisson.get_dof_handler(),
-                    ch.get_theta_relevant(), ch.get_theta_dof_handler(),
-                    current_time);
-            }
-            // When using algebraic M, mag_diag stays default (zeros).
-            // The key physics are in poi_diag (H_max, E_mag, etc.)
-        }
-        if (params.enable_ns)
-            ns_diag = ns.compute_diagnostics(dt);
-
-        double E_total = compute_discrete_energy(
-            ch_diag, ns_diag, mag_diag, poi_diag, params);
-
-        // Force diagnostics
+        double E_total = 0.0;
         ForceDiagnostics force_diag;
-        if (params.enable_magnetic && params.enable_ns)
+        InterfacePosition iface;
+
+        if (do_diag)
         {
-            force_diag = compute_force_diagnostics<dim>(
-                ch.get_theta_dof_handler(),
-                ch.get_theta_relevant(),
-                ch.get_psi_relevant(),
-                poisson.get_dof_handler(),
-                poisson.get_solution_relevant(),
-                mag.get_dof_handler(),
-                mag.get_Mx_relevant(),
-                mag.get_My_relevant(),
-                params, mpi_comm);
-        }
+            ch_diag = ch.compute_diagnostics();
 
-        // Interface tracking
-        auto iface = compute_interface_position<dim>(
-            ch.get_theta_dof_handler(),
-            ch.get_theta_relevant(),
-            mpi_comm);
-
-        // ============================================================
-        // Energy sanity check — abort if solution has blown up
-        //
-        // Detects runaway energy growth that indicates numerical
-        // instability (e.g., Picard divergence, CFL violation).
-        // Uses absolute thresholds on individual components plus
-        // a relative check against initial energy.
-        // ============================================================
-        {
-            static double E_total_initial = 0.0;
-            static bool   energy_baseline_set = false;
-            const double  abs_energy_cap = 1e15;  // absolute ceiling
-            const double  rel_energy_cap = 1e8;   // relative to initial
-
-            if (!energy_baseline_set && step >= 2)
+            if (params.enable_magnetic)
             {
-                E_total_initial = std::abs(E_total);
-                energy_baseline_set = true;
+                poi_diag = poisson.compute_diagnostics(
+                    ch.get_theta_relevant(), ch.get_theta_dof_handler(), current_time);
+                if (!params.use_algebraic_magnetization)
+                {
+                    mag_diag = mag.compute_diagnostics(
+                        poisson.get_solution_relevant(), poisson.get_dof_handler(),
+                        ch.get_theta_relevant(), ch.get_theta_dof_handler(),
+                        current_time);
+                }
+                // When using algebraic M, mag_diag stays default (zeros).
+                // The key physics are in poi_diag (H_max, E_mag, etc.)
+            }
+            if (params.enable_ns)
+                ns_diag = ns.compute_diagnostics(dt);
+
+            E_total = compute_discrete_energy(
+                ch_diag, ns_diag, mag_diag, poi_diag, params);
+
+            // Force diagnostics + interface tracking (gated by csv_interval)
+            const bool do_csv = (params.output.csv_interval > 0)
+                             && (step % params.output.csv_interval == 0 || step == 1);
+            if (do_csv)
+            {
+                if (params.enable_magnetic && params.enable_ns)
+                {
+                    force_diag = compute_force_diagnostics<dim>(
+                        ch.get_theta_dof_handler(),
+                        ch.get_theta_relevant(),
+                        ch.get_psi_relevant(),
+                        poisson.get_dof_handler(),
+                        poisson.get_solution_relevant(),
+                        mag.get_dof_handler(),
+                        mag.get_Mx_relevant(),
+                        mag.get_My_relevant(),
+                        params, mpi_comm);
+                }
+
+                iface = compute_interface_position<dim>(
+                    ch.get_theta_dof_handler(),
+                    ch.get_theta_relevant(),
+                    mpi_comm);
             }
 
-            bool blown_up = false;
-            std::string reason;
+            // ============================================================
+            // Energy sanity check — abort if solution has blown up
+            //
+            // Detects runaway energy growth that indicates numerical
+            // instability (e.g., Picard divergence, CFL violation).
+            // Uses absolute thresholds on individual components plus
+            // a relative check against initial energy.
+            // ============================================================
+            {
+                static double E_total_initial = 0.0;
+                static bool   energy_baseline_set = false;
+                const double  abs_energy_cap = 1e15;  // absolute ceiling
+                const double  rel_energy_cap = 1e8;   // relative to initial
 
-            if (std::isnan(E_total) || std::isinf(E_total))
-            {
-                blown_up = true;
-                reason = "E_total is NaN/Inf";
-            }
-            else if (std::isnan(ch_diag.E_total) || std::isnan(ns_diag.E_kin))
-            {
-                blown_up = true;
-                reason = "NaN in energy component (E_CH or E_kin)";
-            }
-            else if (std::abs(ch_diag.E_total) > abs_energy_cap)
-            {
-                blown_up = true;
-                reason = "E_CH = " + std::to_string(ch_diag.E_total)
-                         + " exceeds absolute cap " + std::to_string(abs_energy_cap);
-            }
-            else if (std::abs(ns_diag.E_kin) > abs_energy_cap)
-            {
-                blown_up = true;
-                reason = "E_kin = " + std::to_string(ns_diag.E_kin)
-                         + " exceeds absolute cap " + std::to_string(abs_energy_cap);
-            }
-            else if (std::abs(poi_diag.E_mag) > abs_energy_cap)
-            {
-                blown_up = true;
-                reason = "E_mag = " + std::to_string(poi_diag.E_mag)
-                         + " exceeds absolute cap " + std::to_string(abs_energy_cap);
-            }
-            else if (energy_baseline_set && E_total_initial > 1e-14
-                     && std::abs(E_total) > rel_energy_cap * E_total_initial)
-            {
-                blown_up = true;
-                reason = "E_total = " + std::to_string(E_total)
-                         + " exceeds " + std::to_string(rel_energy_cap)
-                         + "x initial (" + std::to_string(E_total_initial) + ")";
+                if (!energy_baseline_set && step >= 2)
+                {
+                    E_total_initial = std::abs(E_total);
+                    energy_baseline_set = true;
+                }
+
+                bool blown_up = false;
+                std::string reason;
+
+                if (std::isnan(E_total) || std::isinf(E_total))
+                {
+                    blown_up = true;
+                    reason = "E_total is NaN/Inf";
+                }
+                else if (std::isnan(ch_diag.E_total) || std::isnan(ns_diag.E_kin))
+                {
+                    blown_up = true;
+                    reason = "NaN in energy component (E_CH or E_kin)";
+                }
+                else if (std::abs(ch_diag.E_total) > abs_energy_cap)
+                {
+                    blown_up = true;
+                    reason = "E_CH = " + std::to_string(ch_diag.E_total)
+                             + " exceeds absolute cap " + std::to_string(abs_energy_cap);
+                }
+                else if (std::abs(ns_diag.E_kin) > abs_energy_cap)
+                {
+                    blown_up = true;
+                    reason = "E_kin = " + std::to_string(ns_diag.E_kin)
+                             + " exceeds absolute cap " + std::to_string(abs_energy_cap);
+                }
+                else if (std::abs(poi_diag.E_mag) > abs_energy_cap)
+                {
+                    blown_up = true;
+                    reason = "E_mag = " + std::to_string(poi_diag.E_mag)
+                             + " exceeds absolute cap " + std::to_string(abs_energy_cap);
+                }
+                else if (energy_baseline_set && E_total_initial > 1e-14
+                         && std::abs(E_total) > rel_energy_cap * E_total_initial)
+                {
+                    blown_up = true;
+                    reason = "E_total = " + std::to_string(E_total)
+                             + " exceeds " + std::to_string(rel_energy_cap)
+                             + "x initial (" + std::to_string(E_total_initial) + ")";
+                }
+
+                if (blown_up)
+                {
+                    pcout << "\n"
+                          << "============================================================\n"
+                          << "  ENERGY SANITY CHECK FAILED — aborting run\n"
+                          << "  Step " << step << ", t = " << current_time << "\n"
+                          << "  Reason: " << reason << "\n"
+                          << "  E_CH  = " << ch_diag.E_total << "\n"
+                          << "  E_kin = " << ns_diag.E_kin << "\n"
+                          << "  E_mag = " << poi_diag.E_mag << "\n"
+                          << "  E_tot = " << E_total << "\n"
+                          << "============================================================\n"
+                          << std::endl;
+
+                    // Log final state before exit
+                    logger.log(step, current_time, dt,
+                               ch_diag, poi_diag, mag_diag, ns_diag,
+                               force_diag, iface,
+                               E_total, wall_s);
+
+                    throw std::runtime_error(
+                        "Energy sanity check failed at step "
+                        + std::to_string(step) + ": " + reason);
+                }
             }
 
-            if (blown_up)
-            {
-                pcout << "\n"
-                      << "============================================================\n"
-                      << "  ENERGY SANITY CHECK FAILED — aborting run\n"
-                      << "  Step " << step << ", t = " << current_time << "\n"
-                      << "  Reason: " << reason << "\n"
-                      << "  E_CH  = " << ch_diag.E_total << "\n"
-                      << "  E_kin = " << ns_diag.E_kin << "\n"
-                      << "  E_mag = " << poi_diag.E_mag << "\n"
-                      << "  E_tot = " << E_total << "\n"
-                      << "============================================================\n"
-                      << std::endl;
-
-                // Log final state before exit
+            if (do_csv)
                 logger.log(step, current_time, dt,
                            ch_diag, poi_diag, mag_diag, ns_diag,
                            force_diag, iface,
                            E_total, wall_s);
 
-                throw std::runtime_error(
-                    "Energy sanity check failed at step "
-                    + std::to_string(step) + ": " + reason);
-            }
-        }
-
-        logger.log(step, current_time, dt,
-                   ch_diag, poi_diag, mag_diag, ns_diag,
-                   force_diag, iface,
-                   E_total, wall_s);
-
-        // Console output
-        if (step % 10 == 0 || step == 1)
-        {
-            pcout << "  step " << std::setw(5) << step
-                  << "  t=" << std::scientific << std::setprecision(3)
-                  << current_time
-                  << "  θ=[" << std::setprecision(2) << ch_diag.theta_min
-                  << "," << ch_diag.theta_max << "]"
-                  << "  E_CH=" << std::setprecision(4) << ch_diag.E_total;
-            if (params.enable_ns)
-                pcout << "  |U|=" << std::setprecision(2) << ns_diag.U_max;
-            if (params.enable_magnetic)
+            // Console output
+            if (step % 10 == 0 || step == 1)
             {
-                if (!params.use_algebraic_magnetization)
-                    pcout << "  |M|=" << std::setprecision(2) << mag_diag.M_magnitude_max;
-                pcout << "  |H|=" << std::setprecision(2) << poi_diag.H_max;
-            }
-            if (params.use_sav)
+                pcout << "  step " << std::setw(5) << step
+                      << "  t=" << std::scientific << std::setprecision(3)
+                      << current_time
+                      << "  θ=[" << std::setprecision(2) << ch_diag.theta_min
+                      << "," << ch_diag.theta_max << "]"
+                      << "  E_CH=" << std::setprecision(4) << ch_diag.E_total;
+                if (params.enable_ns)
+                    pcout << "  |U|=" << std::setprecision(2) << ns_diag.U_max;
+                if (params.enable_magnetic)
+                {
+                    if (!params.use_algebraic_magnetization)
+                        pcout << "  |M|=" << std::setprecision(2) << mag_diag.M_magnitude_max;
+                    pcout << "  |H|=" << std::setprecision(2) << poi_diag.H_max;
+                }
                 pcout << "  r=" << std::setprecision(4) << sav_r;
-            pcout << "  wall=" << std::fixed << std::setprecision(1) << wall_s << "s"
-                  << "\n";
-        }
+                pcout << "  wall=" << std::fixed << std::setprecision(1) << wall_s << "s"
+                      << "\n";
+            }
+        } // end if (do_diag)
 
         // VTK output
         if (step % vtk_interval == 0)
@@ -2018,18 +2069,8 @@ int main(int argc, char* argv[])
     double total_s = std::chrono::duration<double>(
         wall_end_total - wall_start_total).count();
 
-    // Write final VTK
     unsigned int final_step = static_cast<unsigned int>(
         std::min(current_time / dt, static_cast<double>(max_steps)));
-    if (has_mag_vectors)
-        write_combined_vtu(output_dir, final_step, current_time,
-                           ch, poisson, mag, ns, triangulation, mpi_comm);
-    else if (has_algebraic_M)
-        write_algebraic_M_vtu(output_dir, final_step, current_time,
-                              ch, poisson, ns, params, triangulation, mpi_comm);
-    else
-        write_ch_only_vtu(output_dir, final_step, current_time,
-                          ch, triangulation, mpi_comm);
 
     pcout << "\n"
           << "============================================================\n"

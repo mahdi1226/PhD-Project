@@ -263,10 +263,7 @@ public:
      * Must be called AFTER solve() and BEFORE update_ghosts().
      * The M^k values are read from the ghosted vectors (still valid from
      * the previous update_ghosts() call; solve() only overwrites owned vectors).
-     *
-     * @param omega  Under-relaxation factor (0 < ω ≤ 1)
      */
-    void apply_under_relaxation(double omega);
 
     /**
      * @brief Copy owned → ghosted (lazy: skips if already valid).

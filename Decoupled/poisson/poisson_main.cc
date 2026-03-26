@@ -297,8 +297,6 @@ int main(int argc, char* argv[])
             params.domain.y_min = 0.0;  params.domain.y_max = 0.6;
             params.domain.initial_cells_x = 10;
             params.domain.initial_cells_y = 6;
-            params.fe.degree_potential = 1;
-
             const double L_y = params.domain.y_max - params.domain.y_min;
             const unsigned int fe_degree = params.fe.degree_potential;
 

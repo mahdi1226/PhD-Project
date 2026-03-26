@@ -191,13 +191,14 @@ struct Parameters
     // non-zero ∂²φ/∂x² and ∂²φ/∂y², giving correct force directions.
     // This matches the Round1/Parallel code (degree_potential = 2).
     // ========================================================================
+    // Zhang Eq 3.6: l₁ = l₂ = l₃ = 2 (fixed, not tunable)
     struct FE
     {
-        unsigned int degree_potential = 2;       // Poisson φ: CG Q2 (MUST be ≥2 for Hess)
-        unsigned int degree_magnetization = 1;   // Magnetization M: DG Q1 (Paper: M_h)
-        unsigned int degree_velocity = 2;        // Velocity U: CG Q2 (Paper: V_h)
-        unsigned int degree_phase = 2;           // CH θ, ψ: CG Q2 (Paper: Θ_h)
-        unsigned int degree_pressure = 1;        // Pressure p: DG Q1 (Paper: Q_h)
+        static constexpr unsigned int degree_potential     = 2;  // φ: CG Q2 (MUST ≥2 for Hess)
+        static constexpr unsigned int degree_magnetization = 1;  // M: CG Q_{l₃-1} = Q1
+        static constexpr unsigned int degree_velocity      = 2;  // U: CG Q_{l₁} = Q2
+        static constexpr unsigned int degree_phase         = 2;  // θ,ψ: CG Q_{l₂} = Q2
+        static constexpr unsigned int degree_pressure      = 1;  // p: Q_{l₁-1} = Q1
     } fe;
 
     // ========================================================================
@@ -208,6 +209,8 @@ struct Parameters
         std::string folder = "./Results";
         bool verbose = false;
         unsigned int vtk_interval = 50;
+        unsigned int csv_interval = 1;   // 0 = off, 1 = every step (default)
+        unsigned int diagnostics_frequency = 1; // 0 = off, 1 = every step (default), N = every N steps
     } output;
 
     // ========================================================================
@@ -349,7 +352,7 @@ struct Parameters
     //   Makes Poisson nonlinear: ((1+chi(theta)) grad phi, grad X) = ((1-chi(theta)) h_a, grad X)
     // ========================================================================
     bool use_algebraic_magnetization = false;  // true = m=chi(theta)h, false = mag PDE
-    bool use_sav = true;                       // Zhang's SAV energy stabilization (always on)
+    // SAV is always on — it's integral to Zhang's scheme, not optional.
 
     struct SAV
     {

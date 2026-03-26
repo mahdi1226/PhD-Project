@@ -191,11 +191,9 @@ int main(int argc, char* argv[])
     params.domain.y_max = 0.6;
     params.domain.initial_cells_x = 10;
     params.domain.initial_cells_y = 6;
-    params.fe.degree_potential = 1;  // Q1
-
-    const unsigned int fe_degree = params.fe.degree_potential;
-    const double expected_L2 = fe_degree + 1;  // 2.0 for Q1
-    const double expected_H1 = fe_degree;      // 1.0 for Q1
+    const unsigned int fe_degree = params.fe.degree_potential;  // Q2 (Zhang Eq 3.6)
+    const double expected_L2 = fe_degree + 1;  // 3.0 for Q2
+    const double expected_H1 = fe_degree;      // 2.0 for Q2
 
     // ================================================================
     // Run convergence study

@@ -106,17 +106,22 @@ private:
 };
 
 // ============================================================================
-// Coupled CH source: f_ψ = ψⁿ − εΔθⁿ + (1/ε)f(θⁿ⁻¹) + (S₁/dt)(θⁿ − θⁿ⁻¹)
+// Coupled CH source: f_ψ for the ψ equation (Zhang Eq 3.10)
 //
-// This is the same as the standalone CHSourcePsi (no velocity coupling in
-// the ψ equation). The stabilization parameter S₁ replaces 1/η = 1/ε.
+// Assembler strong form (from cahn_hilliard_assemble.cc):
+//   ψ + λε·Δθ + S·θ^n = -(λ/ε)·g(θ^{n-1}) + S·θ^{n-1} + f_mms
+//
+// where S = λ/(4ε) and g(θ) = θ³ - 1.5θ² + 0.5θ ({0,1} convention).
+//
+// Rearranging for f_mms:
+//   f_mms = ψ* + λε·Δθ* + S·(θ*_new - θ*_old) + (λ/ε)·g(θ*_old)
 // ============================================================================
 template <int dim>
 class CoupledCHSourcePsi
 {
 public:
-    CoupledCHSourcePsi(double epsilon, double S1, double dt, double L_y)
-        : epsilon_(epsilon), S1_(S1), dt_(dt), L_y_(L_y) {}
+    CoupledCHSourcePsi(double epsilon, double lambda, double dt, double L_y)
+        : epsilon_(epsilon), lambda_(lambda), dt_(dt), L_y_(L_y) {}
 
     double operator()(const dealii::Point<dim>& p, double t_new) const
     {
@@ -128,18 +133,22 @@ public:
         const double psi_new   = CHMMS::psi_exact_value<dim>(p, t_new, L);
         const double lap_theta = CHMMS::lap_theta_exact<dim>(p, t_new, L);
 
-        // f(θ) = (θ³ − θ)/4 (derivative of bulk potential F(θ) = (θ²−1)²/16)
-        const double f_old = 0.25 * (theta_old * theta_old * theta_old - theta_old);
+        // g(θ) = θ³ - 1.5θ² + 0.5θ ({0,1} convention double-well derivative)
+        const double g_old = theta_old * theta_old * theta_old
+                           - 1.5 * theta_old * theta_old
+                           + 0.5 * theta_old;
 
-        // f_ψ = ψ^n − εΔθ^n + (1/ε)f(θ^{n-1}) + (1/η)(θ^n − θ^{n-1})
-        // where η = ε, so (1/η) = S1_ = 1/ε. Note: NO 1/dt factor.
-        return psi_new - epsilon_ * lap_theta
-               + (1.0 / epsilon_) * f_old
-               + S1_ * (theta_new - theta_old);
+        const double S_stab = lambda_ / (4.0 * epsilon_);
+
+        // Strong form: ψ - λε·Δθ + S·θ_new = -(λ/ε)·g(θ_old) + S·θ_old + f_mms
+        // => f_mms = ψ* - λε·Δθ* + S·(θ*_new - θ*_old) + (λ/ε)·g(θ*_old)
+        return psi_new - lambda_ * epsilon_ * lap_theta
+               + (lambda_ / epsilon_) * g_old
+               + S_stab * (theta_new - theta_old);
     }
 
 private:
-    double epsilon_, S1_, dt_, L_y_;
+    double epsilon_, lambda_, dt_, L_y_;
 };
 
 // ============================================================================

@@ -34,6 +34,12 @@
 template <int dim>
 void NSSubsystem<dim>::setup()
 {
+    // Reset cached state (mesh may have changed via AMR)
+    ux_amg_valid_ = false;
+    uy_amg_valid_ = false;
+    p_amg_valid_  = false;
+    p_matrix_assembled_ = false;
+
     // ========================================================================
     // Step 1: Distribute DoFs
     //

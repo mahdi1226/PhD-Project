@@ -475,6 +475,11 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             if (++i >= argc) { std::cerr << "--vtk_interval requires a value\n"; std::exit(1); }
             params.output.vtk_interval = std::stoul(argv[i]);
         }
+        else if (std::strcmp(argv[i], "--diagnostics_frequency") == 0)
+        {
+            if (++i >= argc) { std::cerr << "--diagnostics_frequency requires a value\n"; std::exit(1); }
+            params.output.diagnostics_frequency = std::stoul(argv[i]);
+        }
         else if (std::strcmp(argv[i], "--verbose") == 0 ||
                  std::strcmp(argv[i], "-v") == 0)
             params.output.verbose = true;
@@ -524,6 +529,7 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             std::cout << "    --dump-sparsity    Export sparsity patterns\n\n";
             std::cout << "  Output:\n";
             std::cout << "    --vtk_interval N   VTK output every N steps\n";
+            std::cout << "    --diagnostics_frequency N  Compute diagnostics every N steps (0=off, 1=every step)\n";
             std::cout << "    --verbose          Verbose output\n";
             std::exit(0);
         }

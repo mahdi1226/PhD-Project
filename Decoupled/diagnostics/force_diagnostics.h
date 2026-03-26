@@ -95,9 +95,9 @@ ForceDiagnostics compute_force_diagnostics(
     dealii::FEValues<dim> phi_fv(phi_fe, quadrature,
         dealii::update_gradients | dealii::update_hessians);
 
-    // M needs values + gradients (for div(M))
+    // M needs values only (Kelvin uses M and Hessian of φ)
     dealii::FEValues<dim> mag_fv(mag_fe, quadrature,
-        dealii::update_values | dealii::update_gradients);
+        dealii::update_values);
 
     // Scratch arrays
     std::vector<double>                    theta_vals(n_q);
@@ -106,8 +106,6 @@ ForceDiagnostics compute_force_diagnostics(
     std::vector<dealii::Tensor<2, dim>>    phi_hessians(n_q);
     std::vector<double>                    Mx_vals(n_q);
     std::vector<double>                    My_vals(n_q);
-    std::vector<dealii::Tensor<1, dim>>    Mx_grads(n_q);
-    std::vector<dealii::Tensor<1, dim>>    My_grads(n_q);
 
     // Local accumulators
     double local_cap_sq = 0.0, local_mag_sq = 0.0, local_grav_sq = 0.0;
@@ -135,8 +133,6 @@ ForceDiagnostics compute_force_diagnostics(
         phi_fv.get_function_hessians(phi_relevant, phi_hessians);
         mag_fv.get_function_values(Mx_relevant, Mx_vals);
         mag_fv.get_function_values(My_relevant, My_vals);
-        mag_fv.get_function_gradients(Mx_relevant, Mx_grads);
-        mag_fv.get_function_gradients(My_relevant, My_grads);
 
         for (unsigned int q = 0; q < n_q; ++q)
         {
@@ -162,20 +158,14 @@ ForceDiagnostics compute_force_diagnostics(
                 M[0] = Mx_vals[q];
                 M[1] = My_vals[q];
 
-                const dealii::Tensor<1, dim>& H = phi_grads[q];
-
                 // (M·∇)H from Hessian of φ
                 const dealii::Tensor<1, dim> M_grad_H =
                     KelvinForce::compute_M_grad_H<dim>(M, phi_hessians[q]);
 
-                // ∇·M from component gradients
-                const double div_M =
-                    KelvinForce::compute_div_M<dim>(Mx_grads[q], My_grads[q]);
-
-                // Full Kelvin: μ₀[(M·∇)H + ½(∇·M)H]
+                // Kelvin: μ₀(M·∇)H
                 dealii::Tensor<1, dim> F_kel;
                 for (unsigned int d = 0; d < dim; ++d)
-                    F_kel[d] = mu0 * (M_grad_H[d] + 0.5 * div_M * H[d]);
+                    F_kel[d] = mu0 * M_grad_H[d];
 
                 const double F_kel_mag = F_kel.norm();
                 local_mag_sq  += F_kel_mag * F_kel_mag * JxW;

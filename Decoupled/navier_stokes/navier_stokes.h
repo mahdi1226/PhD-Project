@@ -34,6 +34,7 @@
 #include <deal.II/dofs/dof_handler.h>
 #include <deal.II/fe/fe_q.h>
 #include <deal.II/lac/affine_constraints.h>
+#include <deal.II/lac/trilinos_precondition.h>
 #include <deal.II/lac/trilinos_sparse_matrix.h>
 #include <deal.II/lac/trilinos_sparsity_pattern.h>
 #include <deal.II/lac/trilinos_vector.h>
@@ -341,10 +342,21 @@ private:
     dealii::TrilinosWrappers::MPI::Vector  vel_mass_lumped_;
 
     // ========================================================================
+    // Cached AMG preconditioners — rebuilt only when matrix changes
+    // ========================================================================
+    dealii::TrilinosWrappers::PreconditionAMG ux_amg_;
+    dealii::TrilinosWrappers::PreconditionAMG uy_amg_;
+    dealii::TrilinosWrappers::PreconditionAMG p_amg_;
+    bool ux_amg_valid_ = false;
+    bool uy_amg_valid_ = false;
+    bool p_amg_valid_  = false;
+
+    // ========================================================================
     // Cached state
     // ========================================================================
     double last_assembled_viscosity_ = 0.0;
     double last_assembled_dt_        = -1.0;
+    bool   p_matrix_assembled_       = false;  // pressure Laplacian is constant
     SolverInfo last_solve_info_;
 
     // ========================================================================

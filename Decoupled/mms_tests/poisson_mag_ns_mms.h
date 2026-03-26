@@ -405,9 +405,9 @@ struct PoissonMagNSConvergenceResult
     std::vector<double> M_L2_rate;
 
     // Expected rates
-    double expected_ux_L2  = 3.0;  // CG Q2
-    double expected_p_L2   = 2.0;  // DG P1
-    double expected_phi_L2 = 3.0;  // CG Q2
+    double expected_ux_L2  = 2.0;  // CG Q2, limited by O(dt) time splitting
+    double expected_p_L2   = 2.0;  // CG Q1
+    double expected_phi_L2 = 2.0;  // CG Q2, limited by O(dt) time splitting
     double expected_M_L2   = 2.0;  // DG Q1
 
     void compute_rates()
