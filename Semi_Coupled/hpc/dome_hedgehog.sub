@@ -1,0 +1,61 @@
+#!/bin/bash
+#SBATCH --job-name=dome_hedge
+#SBATCH --partition=hpcc
+#SBATCH --mem=256G
+#SBATCH --time=28-00:00:00
+#SBATCH --output=Results/dh_%A_%a.log
+#SBATCH --error=Results/dh_%A_%a.log
+#SBATCH --array=1-8
+
+module load dealii/9.7.1_umfpack_openmpi
+source /share/apps/common/SPACK_v110_release_a2/spack/opt/spack/linux-x86_64/dealii-9.7.1-wpuqyyr7mk3bxq3xd7x53syqmzecfbeh/.spack/spack-build-env.txt
+
+# ============================================================================
+# Dome vs Hedgehog Test Matrix — 8 jobs
+#
+# Dome:     H = h_a only (no Poisson/demagnetizing field)
+# Hedgehog: H = grad(phi) (full Poisson, includes h_a + h_d)
+#
+# All: t_final=6.0, iterative solver, no clamping, sharp IC
+# VTK output every 0.3 time units (~20 frames each)
+# ============================================================================
+
+#              1       2       3       4       5       6       7       8
+PRESETS=( dome    dome    hedge   hedge   dome    dome    hedge   hedge)
+LEVELS=(  5       5       5       5       6       6       6       6)
+DTS=(     1e-3    5e-4    1e-3    5e-4    1e-3    5e-4    1e-3    5e-4)
+STEPS=(   6000    12000   6000    12000   6000    12000   6000    12000)
+VTK_INT=( 300     600     300     600     300     600     300     600)
+NPS=(     8       8       8       8       16      16      16      16)
+
+idx=$((SLURM_ARRAY_TASK_ID - 1))
+PRESET=${PRESETS[$idx]}
+L=${LEVELS[$idx]}
+DT=${DTS[$idx]}
+NSTEPS=${STEPS[$idx]}
+VTKI=${VTK_INT[$idx]}
+NP=${NPS[$idx]}
+
+if [ "$PRESET" = "dome" ]; then
+    PRESET_FLAG="--dome"
+elif [ "$PRESET" = "hedge" ]; then
+    PRESET_FLAG="--hedgehog"
+fi
+
+RUN_NAME="${PRESET}_L${L}_dt${DT}"
+
+echo "=== Dome/Hedgehog: ${PRESET} L${L}, dt=${DT}, ${NSTEPS} steps, vtk every ${VTKI} ==="
+echo "Run name: ${RUN_NAME}"
+echo "Cores: ${NP}, Solver: iterative"
+echo "Start: $(date)"
+
+mpirun -np ${NP} ./cmake-build-release/ferrofluid \
+    ${PRESET_FLAG} \
+    --run_name ${RUN_NAME} \
+    --refinement ${L} \
+    --max_steps ${NSTEPS} \
+    --dt ${DT} \
+    --vtk_interval ${VTKI}
+
+echo "End: $(date)"
+echo "Exit code: $?"
