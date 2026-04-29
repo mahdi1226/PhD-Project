@@ -64,6 +64,17 @@ struct LinearSolverParams
     // If n_dofs < direct_dof_threshold, use direct solver automatically
     // Set to 0 to disable auto-selection
     unsigned int direct_dof_threshold = 2000000;  // 2M DoFs
+
+    // =========================================================================
+    // ILU configuration (for iterative solvers using ILU preconditioner)
+    // =========================================================================
+    // ilu_fill = level of fill-in. Higher = stronger but more memory.
+    //   0   - cheap, OK when system is diagonal-dominant or trivially coupled
+    //   2-4 - typical for moderate Poisson-type blocks
+    //   5+  - stronger, useful for fine meshes
+    // Placed here (not in the brace-init region above) to avoid shifting
+    // existing brace-initializers.
+    unsigned int ilu_fill = 0;
 };
 
 /**

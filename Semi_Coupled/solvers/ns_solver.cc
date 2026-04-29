@@ -125,16 +125,15 @@ SolverInfo solve_ns_system_schur_parallel(
     residual -= rhs;
     info.residual = residual.l2_norm() / rhs_norm;
 
-    /*if (verbose && rank == 0)
+    if (verbose && rank == 0)
     {
         std::cout << "[NS Schur] FGMRES: " << info.iterations << " iters"
                   << ", inner A: " << preconditioner.n_iterations_A
                   << ", inner S: " << preconditioner.n_iterations_S
                   << ", rel_res: " << std::scientific << std::setprecision(2) << info.residual
                   << ", time: " << std::fixed << std::setprecision(2) << info.solve_time << "s"
-                  << ", alpha: " << std::scientific << std::setprecision(2) << preconditioner.get_schur_alpha()
                   << "\n";
-    } */
+    }
 
     return info;
 }

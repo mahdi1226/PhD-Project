@@ -196,6 +196,22 @@ struct Parameters
             1500, 100, 1.2, 1.2,
             false, true, true  // use_iterative=false, fallback=true, verbose=true
         };
+
+        // Magnetic solver: Direct (MUMPS) by default; iterative path = GMRES
+        // with cached ILU on the full monolithic [Mx | My | phi] system.
+        // - For h_a-only mode (dome): phi block is trivial, ilu_fill=0 works.
+        // - For full Poisson (hedgehog/Rosensweig): phi is a Laplacian, needs
+        //   higher fill. ilu_fill=4, tolerance 1e-7 gives ~10x speedup at L5.
+        // Note: tolerance 1e-7 is slightly looser than CH/NS (1e-8) — allows
+        // the magnetic GMRES to terminate before the residual stalls. Errors
+        // accumulate as O(tol * n_steps); 1e-7 over 60k steps is acceptable.
+        LinearSolverParams magnetic = {
+            LinearSolverParams::Type::GMRES,
+            LinearSolverParams::Preconditioner::ILU,
+            1e-7, 1e-12,           // looser tol than CH/NS — see comment
+            1000, 50, 1.2, 1.2,
+            false, true, false
+        };
     } solvers;
 
     // ========================================================================

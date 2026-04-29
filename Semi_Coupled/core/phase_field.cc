@@ -34,6 +34,7 @@
 #include "diagnostics/parallel_data.h"
 #include "utilities/sparsity_export.h"
 
+#include <deal.II/dofs/dof_tools.h>
 #include <deal.II/numerics/data_out.h>
 #include <deal.II/numerics/vector_tools.h>
 #include <deal.II/grid/grid_tools.h>
@@ -777,9 +778,19 @@ void PhaseFieldProblem<dim>::solve_magnetics(double dt)
         time_);
     t_assemble.stop();
 
-    // Solve monolithic system
+    // Solve monolithic system.
+    // The solver dispatches on params_.solvers.magnetic.use_iterative:
+    //   - false: MUMPS direct cascade
+    //   - true:  GMRES + cached ILU on full monolithic system
+    // setup_magnetic_system() (called after AMR) recreates magnetic_solver_,
+    // which drops the cached preconditioner — so rebuild is implicit on AMR.
     t_solve.start();
-    magnetic_solver_->solve(mag_matrix_, mag_solution_, mag_rhs_);
+    magnetic_solver_->solve(
+        mag_matrix_,
+        mag_solution_,
+        mag_rhs_,
+        params_.solvers.magnetic,
+        /*rebuild_preconditioner=*/false);
     t_solve.stop();
 
     // Apply constraints

@@ -139,7 +139,13 @@ void Parameters::setup_hedgehog()
     enable_ns = true;
     enable_gravity = true;
 
-
+    // Iterative magnetic solver: ilu_fill=0 is fast and works well for the
+    // dome test (h_a only, trivial phi block). For hedgehog/Rosensweig (full
+    // Poisson), ILU at any reasonable fill level does not converge — these
+    // tests should use --direct (the default for magnetic) or fall back via
+    // fallback_to_direct=true. A proper block AMG-on-phi preconditioner is
+    // needed for hedgehog iterative; tracked as a future improvement.
+    solvers.magnetic.ilu_fill = 0;
 
     // Output
     output.frequency = 10;
@@ -446,7 +452,36 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
         else if (std::strcmp(argv[i], "--direct") == 0)
         {
             params.solvers.ns.use_iterative = false;
-            params.solvers.ch.use_iterative = false;  // Also use direct for CH
+            params.solvers.ch.use_iterative = false;
+            params.solvers.magnetic.use_iterative = false;
+        }
+        else if (std::strcmp(argv[i], "--iterative") == 0)
+        {
+            // Enable iterative paths that have been validated end-to-end:
+            // - CH: GMRES+AMG (validated working)
+            //
+            // NOT enabled by --iterative (opt-in via dedicated flags):
+            // - --iterative_mag : GMRES+ILU magnetic. ILU is sufficient for
+            //   the dome test (h_a-only, trivial phi block) where it gives
+            //   ~2x speedup. For hedgehog/Rosensweig the Laplacian phi block
+            //   needs a stronger preconditioner (block AMG-on-phi); current
+            //   ILU(4) does not converge and falls back to direct, which is
+            //   slower than direct alone.
+            // - --iterative_ns : FGMRES + Block Schur. Pre-existing bug in
+            //   BlockSchurPreconditionerParallel ctor (Epetra non-std throw).
+            params.solvers.ch.use_iterative = true;
+        }
+        else if (std::strcmp(argv[i], "--iterative_ch") == 0)
+        {
+            params.solvers.ch.use_iterative = true;
+        }
+        else if (std::strcmp(argv[i], "--iterative_ns") == 0)
+        {
+            params.solvers.ns.use_iterative = true;
+        }
+        else if (std::strcmp(argv[i], "--iterative_mag") == 0)
+        {
+            params.solvers.magnetic.use_iterative = true;
         }
         else if (std::strcmp(argv[i], "--h_a_only") == 0)
         {
@@ -553,7 +588,14 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             std::cout << "  --no_adaptive_dt      Disable adaptive time stepping (paper default)\n\n";
 
             std::cout << "SOLVER:\n";
-            std::cout << "  --direct              Use direct solver (recommended)\n";
+            std::cout << "  --direct              Direct solver everywhere (MUMPS, default)\n";
+            std::cout << "  --iterative           Iterative CH (GMRES+AMG); validated, no regressions.\n";
+            std::cout << "  --iterative_ch        Iterative CH only\n";
+            std::cout << "  --iterative_mag       Iterative Magnetic (GMRES + cached ILU on monolithic\n";
+            std::cout << "                        system). ~2x speedup for dome (h_a-only). For\n";
+            std::cout << "                        hedgehog/Rosensweig the Laplacian phi block makes\n";
+            std::cout << "                        ILU non-convergent; falls back to direct (slower).\n";
+            std::cout << "  --iterative_ns        Iterative NS (Block Schur). PRE-EXISTING BUG — do not use.\n";
             std::cout << "  --bgs_iters N         Max Block-GS iterations (default: 1)\n";
             std::cout << "  --bgs_tol TOL         Block-GS convergence tolerance (default: 1e-2)\n\n";
 
