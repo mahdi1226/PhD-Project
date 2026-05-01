@@ -221,7 +221,7 @@ void PhaseFieldProblem<dim>::run()
         update_force_diagnostics<dim>(data,
                                       theta_dof_handler_, theta_relevant_, psi_relevant_,
                                       params_.enable_magnetic ? &phi_relevant_ : nullptr,
-                                      params_, mpi_communicator_);
+                                      params_, time_, mpi_communicator_);
 
         // Add validation diagnostics (CSV logging only - no console output)
         if (params_.enable_magnetic)
@@ -460,7 +460,7 @@ void PhaseFieldProblem<dim>::run()
         update_force_diagnostics<dim>(data,
                                       theta_dof_handler_, theta_relevant_, psi_relevant_,
                                       params_.enable_magnetic ? &phi_relevant_ : nullptr,
-                                      params_, mpi_communicator_);
+                                      params_, time_, mpi_communicator_);
 
         // Add validation diagnostics (CSV logging only - NO console output in loop)
         if (params_.enable_magnetic)
@@ -781,15 +781,25 @@ void PhaseFieldProblem<dim>::solve_magnetics(double dt)
     // Solve monolithic system.
     // The solver dispatches on params_.solvers.magnetic.use_iterative:
     //   - false: MUMPS direct cascade
-    //   - true:  GMRES + cached ILU on full monolithic system
+    //   - true:  GMRES + cached MagneticBlockPreconditioner
+    //           (ILU on M block, AMG on phi block, extracted via Trilinos)
     // setup_magnetic_system() (called after AMR) recreates magnetic_solver_,
     // which drops the cached preconditioner — so rebuild is implicit on AMR.
+    //
+    // Compute n_M_dofs (split point between M and phi in component_wise layout).
+    const auto dofs_per_component =
+        dealii::DoFTools::count_dofs_per_fe_component(mag_dof_handler_);
+    dealii::types::global_dof_index n_M_dofs = 0;
+    for (unsigned int d = 0; d < dim; ++d)
+        n_M_dofs += dofs_per_component[d];
+
     t_solve.start();
     magnetic_solver_->solve(
         mag_matrix_,
         mag_solution_,
         mag_rhs_,
         params_.solvers.magnetic,
+        n_M_dofs,
         /*rebuild_preconditioner=*/false);
     t_solve.stop();
 

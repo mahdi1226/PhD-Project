@@ -60,6 +60,11 @@ struct MagneticDiagnostics
 
 // ============================================================================
 // Compute magnetic diagnostics (parallel version with Trilinos vectors)
+//
+// In h_a-only mode (params.use_h_a_only = true), the Poisson scalar potential
+// φ is not solved (or is solved trivially), so |∇φ| = 0 even though the
+// physical magnetic field H = h_a is non-zero. We special-case that path:
+// H is taken from compute_applied_field(x, t) instead.
 // ============================================================================
 template <int dim>
 MagneticDiagnostics compute_magnetic_diagnostics(
@@ -68,6 +73,7 @@ MagneticDiagnostics compute_magnetic_diagnostics(
     const dealii::DoFHandler<dim>& theta_dof_handler,
     const dealii::TrilinosWrappers::MPI::Vector& theta_solution,
     const Parameters& params,
+    double current_time = 0.0,
     MPI_Comm comm = MPI_COMM_WORLD)
 {
     const auto& phi_fe = phi_dof_handler.get_fe();
@@ -78,7 +84,8 @@ MagneticDiagnostics compute_magnetic_diagnostics(
     const unsigned int n_q_points = quadrature.size();
 
     dealii::FEValues<dim> phi_fe_values(phi_fe, quadrature,
-        dealii::update_gradients | dealii::update_JxW_values);
+        dealii::update_gradients | dealii::update_quadrature_points |
+        dealii::update_JxW_values);
 
     dealii::FEValues<dim> theta_fe_values(theta_fe, quadrature,
         dealii::update_values);
@@ -113,7 +120,19 @@ MagneticDiagnostics compute_magnetic_diagnostics(
         for (unsigned int q = 0; q < n_q_points; ++q)
         {
             const double JxW = phi_fe_values.JxW(q);
-            const dealii::Tensor<1, dim>& H = grad_phi_values[q];
+
+            // In h_a-only mode φ is trivial (≈0). The physical magnetic field
+            // is H = h_a; otherwise H = ∇φ from the Poisson solve.
+            dealii::Tensor<1, dim> H;
+            if (params.use_h_a_only)
+            {
+                const dealii::Point<dim>& x_q = phi_fe_values.quadrature_point(q);
+                H = compute_applied_field<dim>(x_q, params, current_time);
+            }
+            else
+            {
+                H = grad_phi_values[q];
+            }
             const double H_norm = H.norm();
 
             const double theta_q = theta_values[q];

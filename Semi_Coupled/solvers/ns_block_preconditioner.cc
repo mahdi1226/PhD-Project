@@ -232,15 +232,21 @@ BlockSchurPreconditionerParallel::BlockSchurPreconditionerParallel(
     auto vel_crs = std::make_unique<Epetra_CrsMatrix>(Copy, vel_row_map, entries_per_row.data(), true);
 
     // Second pass: fill matrix values
+    //
+    // NOTE: Epetra_Map vel_row_map is built with 64-bit GIDs (long long), so
+    // we MUST call InsertGlobalValues with long long row/col indices, not int.
+    // Calling the int overload on a 64-bit map raises a non-std exception
+    // ("Unknown exception" at top-level). This was the pre-existing bug.
     for (int local_row = 0; local_row < num_my_rows; ++local_row)
     {
         const long long ns_row = epetra_mat.GRID64(local_row);
         if (ns_row < 0 || static_cast<dealii::types::global_dof_index>(ns_row) >= n_total_)
             continue;
 
-        const int vel_row = global_to_vel_[static_cast<dealii::types::global_dof_index>(ns_row)];
-        if (vel_row < 0)
+        const int vel_row_int = global_to_vel_[static_cast<dealii::types::global_dof_index>(ns_row)];
+        if (vel_row_int < 0)
             continue;
+        const long long vel_row = static_cast<long long>(vel_row_int);
 
         auto it = gid_to_local.find(vel_row);
         if (it == gid_to_local.end())
@@ -251,8 +257,8 @@ BlockSchurPreconditionerParallel::BlockSchurPreconditionerParallel(
         int* col_indices = nullptr;
         epetra_mat.ExtractMyRowView(local_row, num_entries, values, col_indices);
 
-        // Collect velocity entries for this row
-        std::vector<int> col_gids;
+        // Collect velocity entries for this row (64-bit GIDs)
+        std::vector<long long> col_gids;
         std::vector<double> col_vals;
         col_gids.reserve(num_entries);
         col_vals.reserve(num_entries);
@@ -266,7 +272,7 @@ BlockSchurPreconditionerParallel::BlockSchurPreconditionerParallel(
             const int vel_col = global_to_vel_[static_cast<dealii::types::global_dof_index>(ns_col)];
             if (vel_col >= 0)
             {
-                col_gids.push_back(vel_col);
+                col_gids.push_back(static_cast<long long>(vel_col));
                 col_vals.push_back(values[k]);
             }
         }
@@ -277,7 +283,11 @@ BlockSchurPreconditionerParallel::BlockSchurPreconditionerParallel(
                                                    static_cast<int>(col_gids.size()),
                                                    col_vals.data(),
                                                    col_gids.data());
-            (void)err; // Ignore return for simplicity
+            if (err != 0 && rank_ == 0)
+            {
+                std::cerr << "[BSP] InsertGlobalValues err=" << err
+                          << " row=" << vel_row << " ncols=" << col_gids.size() << "\n";
+            }
         }
     }
 

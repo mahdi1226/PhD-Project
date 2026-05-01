@@ -1,21 +1,17 @@
 // ============================================================================
 // solvers/magnetic_solver.h - Monolithic Magnetics Solver (PARALLEL)
 //
-// Two solver paths:
-//   1. Direct: MUMPS → SuperLU_DIST → KLU cascade (default)
-//   2. Iterative: GMRES + ILU(k) on the full monolithic system, with the
-//      preconditioner cached across non-AMR steps.
+// Direct (default) and iterative (GMRES + cached block preconditioner) paths.
 //
-// ILU fill level k is configurable via LinearSolverParams::ilu_fill (set in
-// utilities/parameters.h). For dome (h_a only, phi block trivial), k=0 works.
-// For hedgehog/Rosensweig (full Laplacian phi block), k=4-5 is typically
-// needed, with relative tolerance ~1e-7.
+// The iterative path uses MagneticBlockPreconditioner: ILU(0) on the M block
+// (mass-coefficient dominated) and AMG on the phi block (Laplacian).
+// Sub-block extraction goes through the Trilinos Epetra backend (see
+// magnetic_block_preconditioner.cc) to avoid a deal.II 9.7.1 SparseMatrix
+// iterator bug at the M/phi block boundary.
 //
-// Note: a pure block preconditioner with AMG on phi was attempted (see
-// magnetic_block_preconditioner.{h,cc}) but the deal.II SparseMatrix iterator
-// misbehaves at the M/phi boundary in this version, blocking sub-matrix
-// extraction. ILU(k) on the monolithic system is the practical alternative
-// and produces correct results when GMRES converges.
+// The cached preconditioner is rebuilt at AMR steps (when the PhaseFieldProblem
+// recreates magnetic_solver_ inside setup_magnetic_system()) and reused
+// between AMR events.
 //
 // Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
 // ============================================================================
@@ -25,9 +21,9 @@
 #include <deal.II/base/index_set.h>
 #include <deal.II/lac/trilinos_sparse_matrix.h>
 #include <deal.II/lac/trilinos_vector.h>
-#include <deal.II/lac/trilinos_precondition.h>
 
 #include "solvers/solver_info.h"
+#include "solvers/magnetic_block_preconditioner.h"
 
 #include <memory>
 #include <mpi.h>
@@ -42,15 +38,24 @@ public:
 
     /**
      * @brief Solve system_matrix * solution = rhs.
+     *
+     * @param params                 Solver configuration.
+     * @param n_M_dofs               Boundary between M (DG vector) and phi
+     *                               (CG scalar) blocks in the component_wise
+     *                               renumbered monolithic system. Required for
+     *                               the iterative path; ignored for direct.
+     * @param rebuild_preconditioner If true (or no cache exists), rebuild the
+     *                               block preconditioner before solving.
      */
     void solve(
         const dealii::TrilinosWrappers::SparseMatrix& system_matrix,
         dealii::TrilinosWrappers::MPI::Vector& solution,
         const dealii::TrilinosWrappers::MPI::Vector& rhs,
         const LinearSolverParams& params,
+        dealii::types::global_dof_index n_M_dofs,
         bool rebuild_preconditioner);
 
-    /// Backward-compatible overload (defaults to direct).
+    /// Backward-compatible overload (always direct, no n_M_dofs needed).
     void solve(
         const dealii::TrilinosWrappers::SparseMatrix& system_matrix,
         dealii::TrilinosWrappers::MPI::Vector& solution,
@@ -60,7 +65,7 @@ public:
     bool last_used_direct() const { return last_used_direct_; }
 
     /// Drop the cached preconditioner (forces rebuild on next iterative solve).
-    void invalidate_preconditioner() { cached_ilu_.reset(); }
+    void invalidate_preconditioner() { cached_block_prec_.reset(); }
 
 private:
     bool solve_direct(
@@ -73,6 +78,7 @@ private:
         dealii::TrilinosWrappers::MPI::Vector& solution,
         const dealii::TrilinosWrappers::MPI::Vector& rhs,
         const LinearSolverParams& params,
+        dealii::types::global_dof_index n_M_dofs,
         bool rebuild_preconditioner);
 
     dealii::IndexSet locally_owned_;
@@ -80,8 +86,7 @@ private:
     unsigned int last_n_iterations_;
     bool last_used_direct_;
 
-    // Cached ILU preconditioner (rebuild on AMR; reuse otherwise).
-    std::unique_ptr<dealii::TrilinosWrappers::PreconditionILU> cached_ilu_;
+    std::unique_ptr<MagneticBlockPreconditioner> cached_block_prec_;
 };
 
 #endif // MAGNETIC_SOLVER_H

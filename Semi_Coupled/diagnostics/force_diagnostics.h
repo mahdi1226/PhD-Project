@@ -16,6 +16,7 @@
 #include "utilities/parameters.h"
 #include "utilities/mpi_tools.h"
 #include "physics/material_properties.h"
+#include "physics/applied_field.h"
 
 #include <deal.II/dofs/dof_handler.h>
 #include <deal.II/lac/vector.h>
@@ -50,6 +51,7 @@ ForceDiagnostics compute_force_diagnostics(
     const dealii::TrilinosWrappers::MPI::Vector& psi_solution,
     const dealii::TrilinosWrappers::MPI::Vector* phi_solution,
     const Parameters& params,
+    double current_time = 0.0,
     MPI_Comm comm = MPI_COMM_WORLD)
 {
     const double eps = params.physics.epsilon;
@@ -62,7 +64,8 @@ ForceDiagnostics compute_force_diagnostics(
     const unsigned int n_q_points = quadrature.size();
 
     dealii::UpdateFlags update_flags = dealii::update_values |
-        dealii::update_gradients | dealii::update_JxW_values;
+        dealii::update_gradients | dealii::update_quadrature_points |
+        dealii::update_JxW_values;
 
     dealii::FEValues<dim> fe_values(fe, quadrature, update_flags);
 
@@ -112,10 +115,27 @@ ForceDiagnostics compute_force_diagnostics(
 
             // ================================================================
             // Kelvin force diagnostic: (μ₀/2)|H|²χ'∇θ (interface term)
+            //
+            // H source depends on the magnetic mode:
+            //   - h_a-only mode: H = h_a (∇φ is identically zero here)
+            //   - full Poisson:  H = ∇φ (the demagnetizing field is built in)
             // ================================================================
-            if (phi_solution != nullptr)
+            if (params.enable_magnetic)
             {
-                const dealii::Tensor<1, dim>& H = phi_gradients[q];
+                dealii::Tensor<1, dim> H;
+                if (params.use_h_a_only)
+                {
+                    const dealii::Point<dim>& x_q = fe_values.quadrature_point(q);
+                    H = compute_applied_field<dim>(x_q, params, current_time);
+                }
+                else if (phi_solution != nullptr)
+                {
+                    H = phi_gradients[q];
+                }
+                else
+                {
+                    H = 0;
+                }
                 const double H_sq = H.norm_square();
 
                 // χ'(θ) = (χ₀/ε) * H(θ/ε) * (1 - H(θ/ε))

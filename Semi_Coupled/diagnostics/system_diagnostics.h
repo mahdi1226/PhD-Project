@@ -80,7 +80,7 @@ StepData compute_system_diagnostics(
         MagneticDiagnostics mag = compute_magnetic_diagnostics<dim>(
             *phi_dof_handler, *phi_solution,
             theta_dof_handler, theta_solution,
-            params, comm);
+            params, time, comm);
 
         data.phi_min = mag.phi_min;
         data.phi_max = mag.phi_max;
@@ -215,10 +215,12 @@ void update_force_diagnostics(
     const dealii::TrilinosWrappers::MPI::Vector& psi_solution,
     const dealii::TrilinosWrappers::MPI::Vector* phi_solution,
     const Parameters& params,
+    double current_time = 0.0,
     MPI_Comm comm = MPI_COMM_WORLD)
 {
     ForceDiagnostics forces = compute_force_diagnostics<dim>(
-        theta_dof_handler, theta_solution, psi_solution, phi_solution, params, comm);
+        theta_dof_handler, theta_solution, psi_solution, phi_solution,
+        params, current_time, comm);
 
     data.F_cap_max = forces.F_cap_max;
     data.F_mag_max = forces.F_mag_max;

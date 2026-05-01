@@ -1,14 +1,12 @@
 // ============================================================================
 // solvers/magnetic_solver.cc - Monolithic Magnetics Solver (PARALLEL)
-//
-// Direct (default) and iterative (GMRES + cached ILU) paths.
-// Reference: Nochetto, Salgado & Tomas, CMAME 309 (2016) 497-531
 // ============================================================================
 
 #include "solvers/magnetic_solver.h"
 
 #include <deal.II/base/utilities.h>
 #include <deal.II/lac/solver_control.h>
+#include <deal.II/lac/solver_gmres.h>
 #include <deal.II/lac/trilinos_solver.h>
 
 #include <iostream>
@@ -28,7 +26,7 @@ MagneticSolver<dim>::MagneticSolver(
 }
 
 // ============================================================================
-// Direct solver cascade (MUMPS → SuperLU_DIST → KLU)
+// Direct cascade (MUMPS → SuperLU_DIST → KLU)
 // ============================================================================
 template <int dim>
 bool MagneticSolver<dim>::solve_direct(
@@ -77,7 +75,7 @@ bool MagneticSolver<dim>::solve_direct(
 }
 
 // ============================================================================
-// Iterative solver (GMRES + cached ILU)
+// Iterative path: GMRES + cached MagneticBlockPreconditioner
 // ============================================================================
 template <int dim>
 bool MagneticSolver<dim>::solve_iterative(
@@ -85,6 +83,7 @@ bool MagneticSolver<dim>::solve_iterative(
     dealii::TrilinosWrappers::MPI::Vector& solution,
     const dealii::TrilinosWrappers::MPI::Vector& rhs,
     const LinearSolverParams& params,
+    dealii::types::global_dof_index n_M_dofs,
     bool rebuild_preconditioner)
 {
     const unsigned int rank =
@@ -96,36 +95,40 @@ bool MagneticSolver<dim>::solve_iterative(
     dealii::SolverControl solver_control(
         params.max_iterations, tol, /*log_history=*/false, /*log_result=*/false);
 
-    if (rebuild_preconditioner || !cached_ilu_)
+    if (rebuild_preconditioner || !cached_block_prec_)
     {
-        cached_ilu_ = std::make_unique<dealii::TrilinosWrappers::PreconditionILU>();
-        dealii::TrilinosWrappers::PreconditionILU::AdditionalData ilu_data;
-        ilu_data.ilu_fill = static_cast<unsigned int>(params.ilu_fill);
-        ilu_data.ilu_atol = 1e-10;
-        ilu_data.ilu_rtol = 1.0;
         try
         {
-            cached_ilu_->initialize(system_matrix, ilu_data);
+            cached_block_prec_ = std::make_unique<MagneticBlockPreconditioner>(
+                system_matrix, locally_owned_, n_M_dofs, mpi_communicator_);
         }
         catch (const std::exception& e)
         {
             if (rank == 0)
-                std::cerr << "[Magnetic] ILU initialize failed: " << e.what() << "\n";
-            cached_ilu_.reset();
+                std::cerr << "[Magnetic] Block preconditioner build failed: "
+                          << e.what() << "\n";
+            cached_block_prec_.reset();
             return false;
         }
     }
 
-    dealii::TrilinosWrappers::SolverGMRES solver(solver_control);
+    // Use deal.II's templated SolverGMRES so we can pass our custom
+    // preconditioner (only requires vmult()).
+    dealii::SolverGMRES<dealii::TrilinosWrappers::MPI::Vector>::AdditionalData
+        gmres_data;
+    gmres_data.right_preconditioning = true;
+    gmres_data.max_n_tmp_vectors = params.gmres_restart;
+    dealii::SolverGMRES<dealii::TrilinosWrappers::MPI::Vector>
+        solver(solver_control, gmres_data);
 
     try
     {
-        solver.solve(system_matrix, solution, rhs, *cached_ilu_);
+        solver.solve(system_matrix, solution, rhs, *cached_block_prec_);
         last_n_iterations_ = solver_control.last_step();
         last_used_direct_ = false;
         if (params.verbose && rank == 0)
         {
-            std::cout << "[Magnetic GMRES+ILU] " << last_n_iterations_
+            std::cout << "[Magnetic GMRES+Block] " << last_n_iterations_
                       << " iters, res = " << solver_control.last_value() << "\n";
         }
         return true;
@@ -135,7 +138,7 @@ bool MagneticSolver<dim>::solve_iterative(
         last_n_iterations_ = e.last_step;
         if (rank == 0)
         {
-            std::cerr << "[Magnetic GMRES+ILU] did NOT converge: "
+            std::cerr << "[Magnetic GMRES+Block] did NOT converge: "
                       << "iters=" << e.last_step
                       << ", res=" << e.last_residual << "\n";
         }
@@ -144,13 +147,13 @@ bool MagneticSolver<dim>::solve_iterative(
     catch (const std::exception& e)
     {
         if (rank == 0)
-            std::cerr << "[Magnetic GMRES+ILU] exception: " << e.what() << "\n";
+            std::cerr << "[Magnetic GMRES+Block] exception: " << e.what() << "\n";
         return false;
     }
 }
 
 // ============================================================================
-// Solve (parameterized API)
+// Public solve (parameterized)
 // ============================================================================
 template <int dim>
 void MagneticSolver<dim>::solve(
@@ -158,6 +161,7 @@ void MagneticSolver<dim>::solve(
     dealii::TrilinosWrappers::MPI::Vector& solution,
     const dealii::TrilinosWrappers::MPI::Vector& rhs,
     const LinearSolverParams& params,
+    dealii::types::global_dof_index n_M_dofs,
     bool rebuild_preconditioner)
 {
     const unsigned int rank =
@@ -174,14 +178,15 @@ void MagneticSolver<dim>::solve(
 
     if (params.use_iterative)
     {
-        if (solve_iterative(system_matrix, solution, rhs, params, rebuild_preconditioner))
+        if (solve_iterative(system_matrix, solution, rhs, params,
+                            n_M_dofs, rebuild_preconditioner))
             return;
 
         if (params.fallback_to_direct)
         {
             if (rank == 0)
                 std::cerr << "[Magnetic] Iterative failed; falling back to direct\n";
-            cached_ilu_.reset();
+            cached_block_prec_.reset();
             if (solve_direct(system_matrix, solution, rhs))
                 return;
         }
@@ -193,11 +198,12 @@ void MagneticSolver<dim>::solve(
     if (!solve_direct(system_matrix, solution, rhs))
     {
         if (rank == 0)
-            std::cerr << "[Magnetic] All direct solvers failed; trying iterative fallback\n";
+            std::cerr << "[Magnetic] All direct solvers failed; trying iterative\n";
         LinearSolverParams fb = params;
         fb.use_iterative = true;
         fb.max_iterations = 2000;
-        solve_iterative(system_matrix, solution, rhs, fb, /*rebuild=*/true);
+        solve_iterative(system_matrix, solution, rhs, fb,
+                        n_M_dofs, /*rebuild=*/true);
     }
 }
 
@@ -213,7 +219,8 @@ void MagneticSolver<dim>::solve(
     LinearSolverParams default_params;
     default_params.use_iterative = false;
     default_params.fallback_to_direct = false;
-    solve(system_matrix, solution, rhs, default_params, /*rebuild=*/true);
+    solve(system_matrix, solution, rhs, default_params,
+          /*n_M_dofs=*/0, /*rebuild=*/true);
 }
 
 // ============================================================================
