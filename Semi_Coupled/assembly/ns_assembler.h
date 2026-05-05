@@ -210,7 +210,8 @@ void assemble_ns_system_unified(
     bool enable_mms = false,
     double mms_time = 0.0,
     double mms_time_old = 0.0,
-    double mms_L_y = 1.0);
+    double mms_L_y = 1.0,
+    bool mms_analytical_dt = false);
 
 
 // ============================================================================
@@ -300,7 +301,8 @@ void assemble_ns_system_with_kelvin_force_parallel(
     bool enable_mms = false,
     double mms_time = 0.0,
     double mms_time_old = 0.0,
-    double mms_L_y = 1.0);
+    double mms_L_y = 1.0,
+    bool mms_analytical_dt = false);
 
 // ============================================================================
 // Legacy wrapper: Full ferrofluid NS assembly (Kelvin + Capillary + Gravity)

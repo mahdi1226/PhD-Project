@@ -116,7 +116,8 @@ static void assemble_ns_core(
     double epsilon = 0.01,
     double nu_water = 1.0,
     double nu_ferro = 2.0,
-    double r_density = 0.0)
+    double r_density = 0.0,
+    bool mms_analytical_dt = false)
 {
     ns_matrix = 0;
     ns_rhs = 0;
@@ -284,7 +285,8 @@ static void assemble_ns_core(
                 else if (!include_time_derivative && include_convection)
                     F_source += compute_steady_ns_mms_source<dim>(x_q, mms_time, nu, mms_L_y);
                 else
-                    F_source += compute_unsteady_ns_mms_source<dim>(x_q, mms_time, mms_time_old, nu, mms_L_y);
+                    F_source += compute_unsteady_ns_mms_source<dim>(
+                        x_q, mms_time, mms_time_old, nu, mms_L_y, mms_analytical_dt);
             }
 
             // ================================================================
@@ -1460,7 +1462,8 @@ void assemble_ns_system_unified(
     bool enable_mms,
     double mms_time,
     double mms_time_old,
-    double mms_L_y)
+    double mms_L_y,
+    bool mms_analytical_dt)
 {
     // Step 1: Assemble core NS (time, viscous, convection, pressure, body/MMS source)
     // Optionally with variable viscosity nu(theta)
@@ -1476,7 +1479,7 @@ void assemble_ns_system_unified(
             enable_mms, mms_time, mms_time_old, mms_L_y,
             forces.theta_visc_dof_handler, forces.theta_visc_solution,
             forces.epsilon_visc, forces.nu_water, forces.nu_ferro,
-            forces.r);
+            forces.r, mms_analytical_dt);
     }
     else
     {
@@ -1487,7 +1490,10 @@ void assemble_ns_system_unified(
             ux_to_ns_map, uy_to_ns_map, p_to_ns_map,
             ns_constraints, ns_matrix, ns_rhs,
             forces.body_force, forces.body_force_time,
-            enable_mms, mms_time, mms_time_old, mms_L_y);
+            enable_mms, mms_time, mms_time_old, mms_L_y,
+            /*theta_dof=*/nullptr, /*theta_sol=*/nullptr,
+            /*epsilon=*/0.01, /*nu_water=*/1.0, /*nu_ferro=*/2.0,
+            /*r=*/0.0, mms_analytical_dt);
     }
 
     // Step 2: Add Kelvin force to RHS (if enabled)
@@ -1664,7 +1670,8 @@ void assemble_ns_system_with_kelvin_force_parallel(
     bool enable_mms,
     double mms_time,
     double mms_time_old,
-    double mms_L_y)
+    double mms_L_y,
+    bool mms_analytical_dt)
 {
     // Create default params for Kelvin force (empty dipoles => H = grad(phi))
     Parameters mms_params;
@@ -1682,7 +1689,7 @@ void assemble_ns_system_with_kelvin_force_parallel(
         ux_to_ns_map, uy_to_ns_map, p_to_ns_map,
         ns_constraints, ns_matrix, ns_rhs,
         forces,
-        enable_mms, mms_time, mms_time_old, mms_L_y);
+        enable_mms, mms_time, mms_time_old, mms_L_y, mms_analytical_dt);
 }
 
 // ============================================================================
@@ -1789,7 +1796,7 @@ template void assemble_ns_system_unified<2>(
     const dealii::AffineConstraints<double>&,
     dealii::TrilinosWrappers::SparseMatrix&, dealii::TrilinosWrappers::MPI::Vector&,
     const NSForceData<2>&,
-    bool, double, double, double);
+    bool, double, double, double, bool);
 
 // Legacy wrappers
 template void assemble_ns_system_parallel<2>(
@@ -1830,7 +1837,7 @@ template void assemble_ns_system_with_kelvin_force_parallel<2>(
     const dealii::TrilinosWrappers::MPI::Vector&,
     const dealii::TrilinosWrappers::MPI::Vector&,
     const dealii::TrilinosWrappers::MPI::Vector&,
-    double, bool, double, double, double);
+    double, bool, double, double, double, bool);
 
 template void assemble_ns_system_ferrofluid_parallel<2>(
     const dealii::DoFHandler<2>&, const dealii::DoFHandler<2>&, const dealii::DoFHandler<2>&,

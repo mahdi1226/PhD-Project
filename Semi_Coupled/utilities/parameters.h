@@ -163,6 +163,24 @@ struct Parameters
     // MMS
     double mms_t_init = 0.0;
 
+    // ------------------------------------------------------------------------
+    // MMS time-derivative source convention (added 2026-05-05).
+    //
+    // false (default): MMS sources use **discrete** time differences,
+    //   e.g.  f = (theta_new - theta_old)/dt + ... .  This matches the
+    //   discrete scheme exactly in time and yields tau-independent error
+    //   in the temporal convergence tests — useful for verifying that the
+    //   *implementation* matches the discrete equations.
+    //
+    // true: MMS sources use **analytical** time derivatives,
+    //   e.g.  f = dtheta_dt(t) + ... .  This exposes the BE truncation
+    //   error so the temporal tests can measure the formal scheme order
+    //   (expected ~1.0 for backward Euler).
+    //
+    // Toggle with `--mms-analytical` in the MMS test driver.
+    // ------------------------------------------------------------------------
+    bool mms_analytical_dt = false;
+
     // Gravity direction (unit vector)
     dealii::Tensor<1, 2> gravity_direction;
 

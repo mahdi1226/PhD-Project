@@ -131,6 +131,24 @@ dealii::Tensor<1, dim> mag_mms_exact_M(
 }
 
 // ============================================================================
+// Analytical time derivative dM/dt (used when params.mms_analytical_dt = true).
+//   Mx = t · sin(πx) sin(πy/L_y)        → dMx/dt = sin(πx) sin(πy/L_y)
+//   My = t · cos(πx) sin(πy/L_y)        → dMy/dt = cos(πx) sin(πy/L_y)
+// (M is linear in t, so dM/dt = M/t for t≠0.)
+// ============================================================================
+template <int dim>
+dealii::Tensor<1, dim> mag_mms_exact_dMdt(
+    const dealii::Point<dim>& p,
+    double /*time*/,
+    double L_y = 1.0)
+{
+    dealii::Tensor<1, dim> dMdt;
+    dMdt[0] = std::sin(M_PI * p[0]) * std::sin(M_PI * p[1] / L_y);
+    dMdt[1] = std::cos(M_PI * p[0]) * std::sin(M_PI * p[1] / L_y);
+    return dMdt;
+}
+
+// ============================================================================
 // MMS source for STANDALONE test (U=0, H=0)
 //
 // Equation: ∂M/∂t + M/τ_M = f_M
@@ -145,19 +163,32 @@ dealii::Tensor<1, dim> compute_mag_mms_source_standalone(
     double t_old,
     double tau_M,
     double chi,        // ADD THIS
-    double L_y = 1.0)
+    double L_y = 1.0,
+    bool analytical_dt = false)
 {
-    const double dt = t_new - t_old;
-
     dealii::Tensor<1, dim> M_new = mag_mms_exact_M<dim>(pt, t_new, L_y);
-    dealii::Tensor<1, dim> M_old = mag_mms_exact_M<dim>(pt, t_old, L_y);
+
+    // dM/dt: discrete (cancels BE truncation; default) vs analytical
+    // (exposes formal BE temporal rate).
+    dealii::Tensor<1, dim> dMdt;
+    if (analytical_dt)
+    {
+        dMdt = mag_mms_exact_dMdt<dim>(pt, t_new, L_y);
+    }
+    else
+    {
+        const double dt = t_new - t_old;
+        dealii::Tensor<1, dim> M_old = mag_mms_exact_M<dim>(pt, t_old, L_y);
+        dMdt[0] = (M_new[0] - M_old[0]) / dt;
+        dMdt[1] = (M_new[1] - M_old[1]) / dt;
+    }
 
     // H_exact = -∇φ_exact (from poisson_mms.h)
     dealii::Tensor<1, dim> H_exact = poisson_mms_exact_H<dim>(pt, t_new, L_y);
 
     dealii::Tensor<1, dim> f;
-    f[0] = (M_new[0] - M_old[0]) / dt + M_new[0] / tau_M - chi * H_exact[0] / tau_M;
-    f[1] = (M_new[1] - M_old[1]) / dt + M_new[1] / tau_M - chi * H_exact[1] / tau_M;
+    f[0] = dMdt[0] + M_new[0] / tau_M - chi * H_exact[0] / tau_M;
+    f[1] = dMdt[1] + M_new[1] / tau_M - chi * H_exact[1] / tau_M;
 
     return f;
 }
@@ -217,12 +248,24 @@ dealii::Tensor<1, dim> compute_mag_mms_source_with_transport(
     const dealii::Tensor<1, dim>& H,  // Discrete H from Poisson solve
     const dealii::Tensor<1, dim>& U,
     double div_U,
-    double L_y = 1.0)
+    double L_y = 1.0,
+    bool analytical_dt = false)
 {
-    const double dt = t_new - t_old;
-
     dealii::Tensor<1, dim> M_new = mag_mms_exact_M<dim>(pt, t_new, L_y);
-    dealii::Tensor<1, dim> M_old = mag_mms_exact_M<dim>(pt, t_old, L_y);
+
+    // dM/dt: discrete vs analytical (see compute_mag_mms_source_standalone).
+    dealii::Tensor<1, dim> dMdt;
+    if (analytical_dt)
+    {
+        dMdt = mag_mms_exact_dMdt<dim>(pt, t_new, L_y);
+    }
+    else
+    {
+        const double dt = t_new - t_old;
+        dealii::Tensor<1, dim> M_old = mag_mms_exact_M<dim>(pt, t_old, L_y);
+        dMdt[0] = (M_new[0] - M_old[0]) / dt;
+        dMdt[1] = (M_new[1] - M_old[1]) / dt;
+    }
 
     // Gradient of exact M at new time
     const double x = pt[0];
@@ -252,8 +295,8 @@ dealii::Tensor<1, dim> compute_mag_mms_source_with_transport(
 
     // Source = time derivative + convection + skew + relaxation
     dealii::Tensor<1, dim> f;
-    f[0] = (M_new[0] - M_old[0]) / dt + convect_Mx + skew_Mx;
-    f[1] = (M_new[1] - M_old[1]) / dt + convect_My + skew_My;
+    f[0] = dMdt[0] + convect_Mx + skew_Mx;
+    f[1] = dMdt[1] + convect_My + skew_My;
 
     if (tau_M > 0.0)
     {

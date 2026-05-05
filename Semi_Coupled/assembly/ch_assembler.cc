@@ -225,7 +225,8 @@ void assemble_ch_system(
             if (use_velocity_convection)
             {
                 // Explicit convection MMS source: U·∇θ^{n-1} (gradient at old time)
-                CHSourceThetaWithConvection<dim> source_theta(gamma, dt, L_y);
+                CHSourceThetaWithConvection<dim> source_theta(
+                    gamma, dt, L_y, params.mms_analytical_dt);
                 CHSourcePsi<dim> source_psi(eps, dt, L_y);
                 source_theta.set_time(current_time);
                 source_psi.set_time(current_time);
@@ -250,7 +251,8 @@ void assemble_ch_system(
             }
             else
             {
-                CHSourceTheta<dim> source_theta(gamma, dt, L_y);
+                CHSourceTheta<dim> source_theta(
+                    gamma, dt, L_y, params.mms_analytical_dt);
                 CHSourcePsi<dim> source_psi(eps, dt, L_y);
                 source_theta.set_time(current_time);
                 source_psi.set_time(current_time);

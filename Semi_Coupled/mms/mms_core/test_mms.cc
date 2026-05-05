@@ -166,6 +166,9 @@ void print_usage(const char* program_name)
         << "  --refs <r1> <r2> ...  Refinement levels (default: 3 4 5)\n"
         << "  --steps <n>           Number of time steps (default: 10)\n"
         << "  --temporal-ref <r>    Refinement for temporal tests (default: 5)\n"
+        << "  --mms-analytical      Use analytical d/dt in MMS sources (default: discrete\n"
+        << "                        differences, which cancel BE truncation by construction).\n"
+        << "                        Pass --mms-analytical to expose the BE temporal rate ~1.0.\n"
         << "  --temporal-steps <n1> <n2> ...  Time step counts for temporal tests\n"
         << "                        (default: 10 20 40 80 160)\n"
         << "  --help                Show this help\n"
@@ -196,6 +199,9 @@ int main(int argc, char* argv[])
     std::vector<unsigned int> refinements = {3, 4, 5};
     unsigned int n_time_steps = 10;
     unsigned int temporal_ref = 5;
+    bool mms_analytical_dt = false;  // --mms-analytical: use analytical d/dt
+                                     // in MMS sources (vs discrete differences).
+                                     // Required to measure formal BE temporal rate.
     std::vector<unsigned int> temporal_steps = {10, 20, 40, 80, 160};
 
     for (int i = 1; i < argc; ++i)
@@ -274,6 +280,10 @@ int main(int argc, char* argv[])
                 temporal_steps.push_back(std::stoi(argv[++i]));
             }
         }
+        else if (arg == "--mms-analytical")
+        {
+            mms_analytical_dt = true;
+        }
         else if (arg == "--help" || arg == "-h")
         {
             if (this_rank == 0)
@@ -284,12 +294,17 @@ int main(int argc, char* argv[])
 
     // Production parameters from parameters.h - no overrides
     Parameters params;
+    params.mms_analytical_dt = mms_analytical_dt;
 
     if (this_rank == 0)
     {
         std::cout << "\n=== Parallel MMS Test ===\n";
         std::cout << "MPI ranks: " << n_ranks << "\n";
         std::cout << "Level: " << test_type_to_string(test_type) << "\n";
+        std::cout << "MMS d/dt: "
+                  << (mms_analytical_dt ? "ANALYTICAL (exposes BE rate)"
+                                        : "discrete (matches discrete scheme exactly)")
+                  << "\n";
 
         if (is_temporal_test(test_type))
         {

@@ -576,7 +576,8 @@ static CoupledMMSResult run_full_system_single(
             phi_dof, M_dof,
             phi_rel, Mx_rel, My_rel,
             mu_0,
-            true, current_time, t_old_time, L_y);  // MMS params
+            true, current_time, t_old_time, L_y,
+            params.mms_analytical_dt);  // MMS params
 
         ns_solution = 0;
         solve_ns_system_direct_parallel(

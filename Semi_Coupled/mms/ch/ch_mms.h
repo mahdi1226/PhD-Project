@@ -42,6 +42,7 @@ namespace CHMMS
 {
     // ---- small math helpers to avoid duplication ----
     inline double t4(const double t) { return t * t * t * t; }
+    inline double t3_x4(const double t) { return 4.0 * t * t * t; }   // d(t^4)/dt = 4 t^3
 
     // ============================================================================
     // Exact solutions with L_y scaling (consistent with NS MMS)
@@ -56,6 +57,18 @@ namespace CHMMS
         const double x = p[0];
         const double y = (dim >= 2 ? p[1] : 0.0);
         return t4(t) * std::cos(M_PI * x) * std::cos(M_PI * y / L_y);
+    }
+
+    // Analytical time derivative dθ/dt = 4t³ cos(πx) cos(πy/L_y)
+    // (Used by MMS sources when params.mms_analytical_dt = true to expose the
+    //  formal BE temporal rate. With the default discrete-difference path, the
+    //  MMS source matches the discrete scheme exactly and τ-error is zero.)
+    template <int dim>
+    inline double theta_exact_dtdt(const dealii::Point<dim>& p, const double t, const double L_y = 1.0)
+    {
+        const double x = p[0];
+        const double y = (dim >= 2 ? p[1] : 0.0);
+        return t3_x4(t) * std::cos(M_PI * x) * std::cos(M_PI * y / L_y);
     }
 
     template <int dim>
@@ -200,8 +213,10 @@ template <int dim>
 class CHSourceTheta : public dealii::Function<dim>
 {
 public:
-    CHSourceTheta(const double gamma, const double dt, const double L_y = 1.0)
-        : dealii::Function<dim>(1), gamma_(gamma), dt_(dt), L_y_(L_y)
+    CHSourceTheta(const double gamma, const double dt, const double L_y = 1.0,
+                  const bool analytical_dt = false)
+        : dealii::Function<dim>(1), gamma_(gamma), dt_(dt), L_y_(L_y),
+          analytical_dt_(analytical_dt)
     {
     }
 
@@ -209,13 +224,22 @@ public:
                  const unsigned int /*component*/  = 0) const override
     {
         const double t = this->get_time();
-        const double t_old = t - dt_;
-
-        const double theta_n = CHMMS::theta_exact_value<dim>(p, t, L_y_);
-        const double theta_old = CHMMS::theta_exact_value<dim>(p, t_old, L_y_);
         const double lap_psi_n = CHMMS::lap_psi_exact<dim>(p, t, L_y_);
 
-        const double dtheta_dt = (theta_n - theta_old) / dt_;
+        // dθ/dt: discrete (matches BE exactly, zero τ-error) vs analytical
+        // (exposes BE truncation, gives formal rate ~1 in temporal tests).
+        double dtheta_dt;
+        if (analytical_dt_)
+        {
+            dtheta_dt = CHMMS::theta_exact_dtdt<dim>(p, t, L_y_);
+        }
+        else
+        {
+            const double t_old = t - dt_;
+            const double theta_n = CHMMS::theta_exact_value<dim>(p, t, L_y_);
+            const double theta_old = CHMMS::theta_exact_value<dim>(p, t_old, L_y_);
+            dtheta_dt = (theta_n - theta_old) / dt_;
+        }
 
         return dtheta_dt - gamma_ * lap_psi_n;
     }
@@ -224,6 +248,7 @@ private:
     const double gamma_;
     const double dt_;
     const double L_y_;
+    const bool   analytical_dt_;
 };
 
 
@@ -463,8 +488,10 @@ class CHSourceThetaWithConvection : public dealii::Function<dim>
 public:
     CHSourceThetaWithConvection(const double gamma,
                                 const double dt,
-                                const double L_y = 1.0)
-        : dealii::Function<dim>(1), gamma_(gamma), dt_(dt), L_y_(L_y)
+                                const double L_y = 1.0,
+                                const bool analytical_dt = false)
+        : dealii::Function<dim>(1), gamma_(gamma), dt_(dt), L_y_(L_y),
+          analytical_dt_(analytical_dt)
     {
     }
 
@@ -479,10 +506,18 @@ public:
         const double x = p[0];
         const double y = p[1];
 
-        // Discrete time derivative term (using L_y-scaled θ)
-        const double theta_n = CHMMS::theta_exact_value<dim>(p, t, L_y_);
-        const double theta_old = CHMMS::theta_exact_value<dim>(p, t_old, L_y_);
-        const double dtheta_dt = (theta_n - theta_old) / dt_;
+        // Time derivative term: discrete vs analytical (see CHSourceTheta).
+        double dtheta_dt;
+        if (analytical_dt_)
+        {
+            dtheta_dt = CHMMS::theta_exact_dtdt<dim>(p, t, L_y_);
+        }
+        else
+        {
+            const double theta_n = CHMMS::theta_exact_value<dim>(p, t, L_y_);
+            const double theta_old = CHMMS::theta_exact_value<dim>(p, t_old, L_y_);
+            dtheta_dt = (theta_n - theta_old) / dt_;
+        }
 
         // Convection uses U^n · ∇θ^{n-1} per Nochetto Eq. 42a
         // Velocity at CURRENT time t, gradient at OLD time t_old
@@ -514,6 +549,7 @@ private:
     const double gamma_;
     const double dt_;
     const double L_y_;
+    const bool   analytical_dt_;
 };
 
 // ============================================================================
@@ -544,8 +580,10 @@ class CHSourceThetaWithImplicitConvection : public dealii::Function<dim>
 public:
     CHSourceThetaWithImplicitConvection(const double gamma,
                                         const double dt,
-                                        const double L_y = 1.0)
-        : dealii::Function<dim>(1), gamma_(gamma), dt_(dt), L_y_(L_y)
+                                        const double L_y = 1.0,
+                                        const bool analytical_dt = false)
+        : dealii::Function<dim>(1), gamma_(gamma), dt_(dt), L_y_(L_y),
+          analytical_dt_(analytical_dt)
     {
     }
 
@@ -560,10 +598,18 @@ public:
         const double x = p[0];
         const double y = p[1];
 
-        // Discrete time derivative term (using L_y-scaled θ)
-        const double theta_n = CHMMS::theta_exact_value<dim>(p, t, L_y_);
-        const double theta_old = CHMMS::theta_exact_value<dim>(p, t_old, L_y_);
-        const double dtheta_dt = (theta_n - theta_old) / dt_;
+        // Time derivative term: discrete vs analytical (see CHSourceTheta).
+        double dtheta_dt;
+        if (analytical_dt_)
+        {
+            dtheta_dt = CHMMS::theta_exact_dtdt<dim>(p, t, L_y_);
+        }
+        else
+        {
+            const double theta_n = CHMMS::theta_exact_value<dim>(p, t, L_y_);
+            const double theta_old = CHMMS::theta_exact_value<dim>(p, t_old, L_y_);
+            dtheta_dt = (theta_n - theta_old) / dt_;
+        }
 
         // IMPLICIT convection uses U^{n-1} · ∇θ^n (gradient at CURRENT time t)
         // This is the KEY difference from explicit: grad at t, not t_old
@@ -593,6 +639,7 @@ private:
     const double gamma_;
     const double dt_;
     const double L_y_;
+    const bool   analytical_dt_;
 };
 
 #endif // CH_MMS_H

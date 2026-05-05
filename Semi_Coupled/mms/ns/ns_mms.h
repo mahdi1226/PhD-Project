@@ -371,7 +371,8 @@ dealii::Tensor<1, dim> compute_unsteady_ns_mms_source(
     double t_new,
     double t_old,
     double nu,
-    double L_y = 1.0)
+    double L_y = 1.0,
+    bool analytical_dt = false)
 {
     const double x = pt[0];
     const double y = pt[1];
@@ -400,10 +401,21 @@ dealii::Tensor<1, dim> compute_unsteady_ns_mms_source(
     const double duy_dx_new = -t_new * 2.0 * pi2 * cos_2px * sin_py * sin_py;
     const double duy_dy_new = -t_new * (pi2 / L_y) * sin_2px * sin_2py;
 
-    // DISCRETE time derivative: (U^n - U^{n-1})/dt
-    const double dt = t_new - t_old;
-    const double dux_dt = (ux_new - ux_old) / dt;
-    const double duy_dt = (uy_new - uy_old) / dt;
+    // dU/dt: discrete (cancels BE truncation; default) vs analytical
+    // (exposes formal BE temporal rate). U is linear in t, so analytical
+    // dU/dt is just the spatial pattern (no t dependence).
+    double dux_dt, duy_dt;
+    if (analytical_dt)
+    {
+        dux_dt =  (pi / L_y) * sin_px * sin_px * sin_2py;
+        duy_dt = -pi * sin_2px * sin_py * sin_py;
+    }
+    else
+    {
+        const double dt = t_new - t_old;
+        dux_dt = (ux_new - ux_old) / dt;
+        duy_dt = (uy_new - uy_old) / dt;
+    }
 
     // Semi-implicit convection: (U^{n-1}·∇)U^n
     const double convect_x = ux_old * dux_dx_new + uy_old * dux_dy_new;
