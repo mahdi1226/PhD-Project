@@ -365,16 +365,168 @@ MagMMSError compute_mag_mms_errors_parallel(
     return error;
 }
 
-// Monolithic error computation (used by coupled MMS tests)
-// Takes the monolithic M+φ DoFHandler and solution vector.
-// STUB: returns zero errors — implement when coupled MMS tests are ready.
+// ============================================================================
+// Monolithic error computation (used by coupled MMS tests, 2026-05-05).
+//
+// The joint mag DoFHandler uses an FESystem  FE_DGQ(deg_M)^dim + FE_Q(deg_phi)
+// with components ordered [Mx, My, ..., phi]. We extract M (vector) and phi
+// (scalar) via FEValuesExtractors, compare to MagExactMx/My + PoissonExactSolution
+// at quadrature points, and return L2 / H1-seminorm / L∞ errors.
+//
+// For phi (Q2 with homogeneous Neumann), the solution is unique only up to
+// an additive constant. We follow the standalone Poisson MMS convention:
+// compute mean-shift ∫(phi_h - phi_exact)/|Ω|, subtract it, then form L2/L∞.
+// H1 seminorm is unaffected by the constant.
+// ============================================================================
 template <int dim>
 MagneticMMSError compute_magnetic_mms_errors_parallel(
-    const dealii::DoFHandler<dim>& /*mag_dof_handler*/,
-    const dealii::TrilinosWrappers::MPI::Vector& /*mag_solution*/,
-    double /*time*/, double /*L_y*/, MPI_Comm /*comm*/)
+    const dealii::DoFHandler<dim>& mag_dof_handler,
+    const dealii::TrilinosWrappers::MPI::Vector& mag_solution,
+    double time, double L_y, MPI_Comm comm)
 {
-    return MagneticMMSError{};
+    MagneticMMSError error;
+
+    const auto& fe = mag_dof_handler.get_fe();
+    const unsigned int quad_degree = fe.degree + 2;
+    dealii::QGauss<dim> quadrature(quad_degree);
+    const unsigned int n_q_points = quadrature.size();
+
+    dealii::FEValues<dim> fe_values(
+        fe, quadrature,
+        dealii::update_values | dealii::update_gradients
+            | dealii::update_quadrature_points | dealii::update_JxW_values);
+
+    // Extractors matching component ordering [Mx, My, ..., phi]
+    const dealii::FEValuesExtractors::Vector M_extractor(0);
+    const dealii::FEValuesExtractors::Scalar phi_extractor(dim);
+
+    std::vector<dealii::Tensor<1, dim>> M_values(n_q_points);
+    std::vector<dealii::Tensor<2, dim>> M_grads(n_q_points);
+    std::vector<double>                  phi_values(n_q_points);
+    std::vector<dealii::Tensor<1, dim>>  phi_grads(n_q_points);
+
+    MagExactMx<dim>           exact_Mx(time, L_y);
+    MagExactMy<dim>           exact_My(time, L_y);
+    PoissonExactSolution<dim> exact_phi(time, L_y);
+
+    // ---- First pass: M errors directly (H1 + L2 + L∞), and phi mean shift ----
+    double local_Mx_L2_sq = 0.0, local_My_L2_sq = 0.0;
+    double local_M_H1_sq  = 0.0;
+    double local_Mx_Linf  = 0.0, local_My_Linf  = 0.0;
+
+    double local_volume   = 0.0;
+    double local_phi_mean_diff = 0.0;
+    double local_phi_H1_sq     = 0.0;
+    double local_phi_Linf      = 0.0;
+
+    for (const auto& cell : mag_dof_handler.active_cell_iterators())
+    {
+        if (!cell->is_locally_owned()) continue;
+
+        fe_values.reinit(cell);
+        fe_values[M_extractor].get_function_values(mag_solution, M_values);
+        fe_values[M_extractor].get_function_gradients(mag_solution, M_grads);
+        fe_values[phi_extractor].get_function_values(mag_solution, phi_values);
+        fe_values[phi_extractor].get_function_gradients(mag_solution, phi_grads);
+
+        for (unsigned int q = 0; q < n_q_points; ++q)
+        {
+            const double JxW = fe_values.JxW(q);
+            const auto& x_q  = fe_values.quadrature_point(q);
+
+            // ---- M errors ----
+            const double Mx_exact = exact_Mx.value(x_q);
+            const double My_exact = exact_My.value(x_q);
+            const double Mx_err = M_values[q][0] - Mx_exact;
+            const double My_err = (dim >= 2) ? (M_values[q][1] - My_exact) : 0.0;
+
+            local_Mx_L2_sq += Mx_err * Mx_err * JxW;
+            local_My_L2_sq += My_err * My_err * JxW;
+            local_Mx_Linf = std::max(local_Mx_Linf, std::abs(Mx_err));
+            local_My_Linf = std::max(local_My_Linf, std::abs(My_err));
+
+            // M H1 seminorm: ∑_i ‖∇(M_i - M*_i)‖²
+            const auto grad_Mx_exact = exact_Mx.gradient(x_q);
+            const auto grad_My_exact = exact_My.gradient(x_q);
+            for (unsigned int d = 0; d < dim; ++d)
+            {
+                const double dMx = M_grads[q][0][d] - grad_Mx_exact[d];
+                local_M_H1_sq += dMx * dMx * JxW;
+                if constexpr (dim >= 2)
+                {
+                    const double dMy = M_grads[q][1][d] - grad_My_exact[d];
+                    local_M_H1_sq += dMy * dMy * JxW;
+                }
+            }
+
+            // ---- phi: gather mean diff + H1 (constant-shift-invariant) + L∞ ----
+            const double phi_exact_q = exact_phi.value(x_q);
+            const double phi_diff    = phi_values[q] - phi_exact_q;
+            local_volume         += JxW;
+            local_phi_mean_diff  += phi_diff * JxW;
+            local_phi_Linf        = std::max(local_phi_Linf, std::abs(phi_diff));
+
+            const auto grad_phi_exact = exact_phi.gradient(x_q);
+            const auto grad_phi_err   = phi_grads[q] - grad_phi_exact;
+            local_phi_H1_sq          += (grad_phi_err * grad_phi_err) * JxW;
+        }
+    }
+
+    // ---- Reductions ----
+    double g_Mx_L2_sq = 0.0, g_My_L2_sq = 0.0, g_M_H1_sq = 0.0;
+    double g_Mx_Linf = 0.0, g_My_Linf = 0.0;
+    MPI_Allreduce(&local_Mx_L2_sq, &g_Mx_L2_sq, 1, MPI_DOUBLE, MPI_SUM, comm);
+    MPI_Allreduce(&local_My_L2_sq, &g_My_L2_sq, 1, MPI_DOUBLE, MPI_SUM, comm);
+    MPI_Allreduce(&local_M_H1_sq,  &g_M_H1_sq,  1, MPI_DOUBLE, MPI_SUM, comm);
+    MPI_Allreduce(&local_Mx_Linf,  &g_Mx_Linf,  1, MPI_DOUBLE, MPI_MAX, comm);
+    MPI_Allreduce(&local_My_Linf,  &g_My_Linf,  1, MPI_DOUBLE, MPI_MAX, comm);
+
+    double g_volume = 0.0, g_phi_mean = 0.0, g_phi_H1_sq = 0.0;
+    MPI_Allreduce(&local_volume,        &g_volume,     1, MPI_DOUBLE, MPI_SUM, comm);
+    MPI_Allreduce(&local_phi_mean_diff, &g_phi_mean,   1, MPI_DOUBLE, MPI_SUM, comm);
+    MPI_Allreduce(&local_phi_H1_sq,     &g_phi_H1_sq,  1, MPI_DOUBLE, MPI_SUM, comm);
+
+    const double phi_shift = (g_volume > 0.0) ? (g_phi_mean / g_volume) : 0.0;
+
+    // ---- Second pass: phi L2 / L∞ with mean shift removed ----
+    double local_phi_L2_sq = 0.0;
+    double local_phi_Linf_shifted = 0.0;
+
+    for (const auto& cell : mag_dof_handler.active_cell_iterators())
+    {
+        if (!cell->is_locally_owned()) continue;
+
+        fe_values.reinit(cell);
+        fe_values[phi_extractor].get_function_values(mag_solution, phi_values);
+
+        for (unsigned int q = 0; q < n_q_points; ++q)
+        {
+            const double JxW = fe_values.JxW(q);
+            const auto& x_q  = fe_values.quadrature_point(q);
+
+            const double phi_exact_q = exact_phi.value(x_q);
+            const double phi_diff    = (phi_values[q] - phi_shift) - phi_exact_q;
+            local_phi_L2_sq         += phi_diff * phi_diff * JxW;
+            local_phi_Linf_shifted   = std::max(local_phi_Linf_shifted, std::abs(phi_diff));
+        }
+    }
+
+    double g_phi_L2_sq = 0.0, g_phi_Linf_shifted = 0.0;
+    MPI_Allreduce(&local_phi_L2_sq,        &g_phi_L2_sq,        1, MPI_DOUBLE, MPI_SUM, comm);
+    MPI_Allreduce(&local_phi_Linf_shifted, &g_phi_Linf_shifted, 1, MPI_DOUBLE, MPI_MAX, comm);
+
+    error.Mx_L2  = std::sqrt(g_Mx_L2_sq);
+    error.My_L2  = std::sqrt(g_My_L2_sq);
+    error.M_L2   = std::sqrt(g_Mx_L2_sq + g_My_L2_sq);
+    error.M_H1   = std::sqrt(g_M_H1_sq);
+    error.Mx_Linf = g_Mx_Linf;
+    error.My_Linf = g_My_Linf;
+    error.M_Linf  = std::max(g_Mx_Linf, g_My_Linf);
+    error.phi_L2   = std::sqrt(g_phi_L2_sq);
+    error.phi_H1   = std::sqrt(g_phi_H1_sq);
+    error.phi_Linf = g_phi_Linf_shifted;
+
+    return error;
 }
 
 #endif // MAGNETIZATION_MMS_H
