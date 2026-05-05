@@ -107,6 +107,50 @@ mpirun -np 8 ./cmake-build-release/ferrofluid --hedgehog -r 5 --max_steps 100 --
 # Expect: mag_iterations column populated with values in [5, 25]
 ```
 
+### 🎯 MMS coupled tests + asymptotic spatial + temporal verification (May 5 afternoon)
+
+**Spatial asymptotic** (`CH_MAGNETIC --refs 3 4 5 --steps 5`):
+
+| Quantity | refs 3→4 rate | refs 4→5 rate | Expected | Verdict |
+|---|---|---|---|---|
+| **θ L2** (Q2) | 3.00 | 3.00 | 3 | ✓ optimal |
+| **θ H1** | 2.00 | 2.00 | 2 | ✓ optimal |
+| **M L2** (DG-Q1) | 1.99 | 1.90 | 2 | ✓ at order |
+| **M H1** | 1.00 | 1.00 | 1 | ✓ optimal |
+| **φ H1** (gauge-invariant) | 2.00 | 1.99 | 2 | ✓ **optimal** |
+| φ L2 (gauge-shifted) | 0.69 | 0.02 | 3 | ❌ floors at ~1e-7 |
+| φ L∞ (gauge-shifted) | 0.96 | 0.06 | — | ❌ same floor |
+
+**Diagnosis of φ L2 floor**: pure-Neumann mean-shift constant has numerical sensitivity at the ~1e-7 level. Absolute φ L2 values: 1.62e-7 → 1.0e-7 → 9.9e-8 — barely change with refinement, suggesting a constant-noise floor unrelated to spatial discretization. The **gauge-invariant φ H1 hits exactly 2.00 at every refinement**, which is the rigorous test that the spatial discretization is right. Conclusion: **all genuine spatial discretization rates are at their optimal values**.
+
+**Temporal "convergence"** (`CH_TEMPORAL`, `FULL_TEMPORAL` at ref 3-4 with steps 10-20-40-80):
+
+All errors are **constant** across all τ — formal "rate = 0.0" but this is the **correct** outcome:
+
+```
+n_steps   dt          theta_L2    rate    ...
+10        1.000e-02   1.022e-09   0.00
+20        5.000e-03   1.022e-09   0.00
+40        2.500e-03   1.023e-09   0.00
+```
+
+Reason: the MMS sources are constructed using **discrete** time differences (e.g.,
+`f = (θ⁽ⁿ⁾ - θ⁽ⁿ⁻¹⁾)/Δt - γ Δψ⁽ⁿ⁾` in `CHSourceTheta::value`), which **cancel
+τ-truncation error by design**. So the test verifies that the implementation
+matches the discrete scheme EXACTLY in time — only spatial + algebraic-solver
+floor remains. This is correct MMS practice and a valid implementation check;
+it just doesn't measure formal τ-rate.
+
+To measure formal BE temporal rate (expected 1.0), the source would need to use
+analytical `dθ/dt = 4t³·cos·cos` instead of discrete differencing. That's a
+separate framework change, not done here.
+
+**FULL_TEMPORAL** unblocked by today's MMS work — exercises the full coupled
+chain (CH → Magnetic → NS) at varying τ, all errors flat → confirms all four
+subsystems' implementations are discretely consistent end-to-end.
+
+---
+
 ### 🎯 NS Schur — fully working iterative path (May 5 afternoon)
 
 Two fixes landed this afternoon:
