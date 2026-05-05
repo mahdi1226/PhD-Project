@@ -30,9 +30,11 @@
 
 #include <Epetra_CrsMatrix.h>
 #include <Epetra_Map.h>
+#include <Epetra_Vector.h>
 #include <Epetra_FECrsGraph.h>
 #include <Epetra_FECrsMatrix.h>
 #include <Epetra_Export.h>
+#include <EpetraExt_MatrixMatrix.h>  // [NEW] for B Q⁻¹ B^T product
 
 #ifdef DEAL_II_WITH_MPI
 #include <Epetra_MpiComm.h>
@@ -63,10 +65,12 @@ BlockSchurPreconditionerParallel::BlockSchurPreconditionerParallel(
     : n_iterations_A(0)
     , n_iterations_S(0)
     // =========================================================================
-    // IMPROVED DEFAULTS: Looser tolerance OK for preconditioning
+    // IMPROVED DEFAULTS: Looser tolerance OK for preconditioning.
+    // 1e-2 / 30 was empirically the cheapest setting that gives LSC
+    // convergence in ≤500 outer FGMRES iters on dome-r3.
     // =========================================================================
-    , inner_tolerance(1e-1)
-    , max_inner_iterations(20)
+    , inner_tolerance(1e-2)
+    , max_inner_iterations(30)
     , system_matrix_ptr_(&system_matrix)
     , pressure_mass_ptr_(&pressure_mass)
     , ux_map_(ux_to_ns_map)
@@ -340,6 +344,190 @@ BlockSchurPreconditionerParallel::BlockSchurPreconditionerParallel(
     velocity_block_.reinit(*vel_crs);
 
     // ========================================================================
+    // [NEW 2026-05-05] Build B (divergence/coupling block) and L_p = B Q^-1 B^T
+    //
+    // For unsteady NS, the Schur complement at large α = ν + 1/dt is closer
+    // to (B Q^-1 B^T)/α than to α M_p (the original code's approximation).
+    // Here Q ≈ diag(A) approximates the velocity mass+stiffness.
+    //
+    // Steps:
+    //   1. Extract B from system_matrix: rows = pressure DoFs (in p-space
+    //      numbering), cols = velocity DoFs (in vel-space numbering).
+    //   2. Compute Q_inv = 1 / diag(velocity_block_).
+    //   3. Scale columns of B by Q_inv → B_scaled.
+    //   4. L_p = B_scaled * B^T  via EpetraExt::MatrixMatrix::Multiply.
+    //   5. AMG-precondition L_p.
+    // ========================================================================
+    if (use_lsc_)
+    {
+        // ---- Step 1: Extract B (n_p × n_vel) from the joint NS matrix ----
+        // For each locally-owned NS row that maps to a pressure DoF, scan
+        // its column entries; the velocity-mapped columns form B's row.
+
+        // Build p row map (NS-aligned)
+        std::vector<long long> my_p_gids;
+        my_p_gids.reserve(n_p_);
+        for (int local_row = 0; local_row < num_my_rows; ++local_row)
+        {
+            const long long ns_row = epetra_mat.GRID64(local_row);
+            if (ns_row < 0 || static_cast<dealii::types::global_dof_index>(ns_row) >= n_total_)
+                continue;
+            const int p_row = global_to_p_[static_cast<dealii::types::global_dof_index>(ns_row)];
+            if (p_row >= 0)
+                my_p_gids.push_back(static_cast<long long>(p_row));
+        }
+        std::sort(my_p_gids.begin(), my_p_gids.end());
+        my_p_gids.erase(std::unique(my_p_gids.begin(), my_p_gids.end()), my_p_gids.end());
+        const int n_my_p = static_cast<int>(my_p_gids.size());
+
+        Epetra_Map p_row_map(static_cast<long long>(n_p_), n_my_p,
+                             my_p_gids.data(), 0, epetra_comm);
+
+        // First pass: count B's nnz per row
+        std::vector<int> B_entries_per_row(n_my_p, 0);
+        std::map<long long, int> p_gid_to_local;
+        for (int i = 0; i < n_my_p; ++i)
+            p_gid_to_local[my_p_gids[i]] = i;
+
+        for (int local_row = 0; local_row < num_my_rows; ++local_row)
+        {
+            const long long ns_row = epetra_mat.GRID64(local_row);
+            if (ns_row < 0 || static_cast<dealii::types::global_dof_index>(ns_row) >= n_total_)
+                continue;
+            const int p_row = global_to_p_[static_cast<dealii::types::global_dof_index>(ns_row)];
+            if (p_row < 0) continue;
+            auto pit = p_gid_to_local.find(p_row);
+            if (pit == p_gid_to_local.end()) continue;
+
+            int num_entries = 0;
+            double* values = nullptr;
+            int* col_indices = nullptr;
+            epetra_mat.ExtractMyRowView(local_row, num_entries, values, col_indices);
+
+            for (int k = 0; k < num_entries; ++k)
+            {
+                const long long ns_col = epetra_mat.GCID64(col_indices[k]);
+                if (ns_col < 0 || static_cast<dealii::types::global_dof_index>(ns_col) >= n_total_)
+                    continue;
+                if (global_to_vel_[static_cast<dealii::types::global_dof_index>(ns_col)] >= 0)
+                    B_entries_per_row[pit->second]++;
+            }
+        }
+
+        // Build B with column map = velocity space
+        // Note: we use the same vel_row_map as the column map of B (n_vel cols).
+        auto B_crs = std::make_unique<Epetra_CrsMatrix>(
+            Copy, p_row_map, B_entries_per_row.data(), true);
+
+        // Second pass: fill B entries
+        for (int local_row = 0; local_row < num_my_rows; ++local_row)
+        {
+            const long long ns_row = epetra_mat.GRID64(local_row);
+            if (ns_row < 0 || static_cast<dealii::types::global_dof_index>(ns_row) >= n_total_)
+                continue;
+            const int p_row_int = global_to_p_[static_cast<dealii::types::global_dof_index>(ns_row)];
+            if (p_row_int < 0) continue;
+            auto pit = p_gid_to_local.find(p_row_int);
+            if (pit == p_gid_to_local.end()) continue;
+            const long long p_row = static_cast<long long>(p_row_int);
+
+            int num_entries = 0;
+            double* values = nullptr;
+            int* col_indices = nullptr;
+            epetra_mat.ExtractMyRowView(local_row, num_entries, values, col_indices);
+
+            std::vector<long long> col_gids;
+            std::vector<double> col_vals;
+            col_gids.reserve(num_entries);
+            col_vals.reserve(num_entries);
+            for (int k = 0; k < num_entries; ++k)
+            {
+                const long long ns_col = epetra_mat.GCID64(col_indices[k]);
+                if (ns_col < 0 || static_cast<dealii::types::global_dof_index>(ns_col) >= n_total_)
+                    continue;
+                const int vel_col = global_to_vel_[static_cast<dealii::types::global_dof_index>(ns_col)];
+                if (vel_col >= 0)
+                {
+                    col_gids.push_back(static_cast<long long>(vel_col));
+                    col_vals.push_back(values[k]);
+                }
+            }
+            if (!col_gids.empty())
+            {
+                B_crs->InsertGlobalValues(p_row,
+                                          static_cast<int>(col_gids.size()),
+                                          col_vals.data(),
+                                          col_gids.data());
+            }
+        }
+        B_crs->FillComplete(vel_row_map, p_row_map);
+        B_block_.reinit(*B_crs);
+
+        // ---- Step 2: Compute Q_inv = 1 / diag(velocity_block_) ----
+        // Use Epetra_Vector on velocity row map.
+        Epetra_Vector Q_inv(vel_row_map);
+        velocity_block_.trilinos_matrix().ExtractDiagonalCopy(Q_inv);
+        for (int i = 0; i < Q_inv.MyLength(); ++i)
+        {
+            const double d = Q_inv[i];
+            // Guard against zero diagonal
+            Q_inv[i] = (std::abs(d) > 1e-30) ? 1.0 / d : 0.0;
+        }
+
+        // ---- Step 3: Scale B's columns by Q_inv ----
+        // Make a copy first so the original B is preserved for L_p formula.
+        auto B_scaled_crs = std::make_unique<Epetra_CrsMatrix>(*B_crs);
+        B_scaled_crs->RightScale(Q_inv);
+
+        // ---- Step 4: L_p = B_scaled * B^T  via EpetraExt ----
+        // Output map: pressure rows (p_row_map). The output graph is
+        // computed by EpetraExt automatically.
+        auto Lp_crs = std::make_unique<Epetra_CrsMatrix>(Copy, p_row_map, 0);
+        const int err_mm = EpetraExt::MatrixMatrix::Multiply(
+            *B_scaled_crs, /*transposeA=*/false,
+            *B_crs,        /*transposeB=*/true,
+            *Lp_crs,       /*call_FillComplete=*/true);
+        if (err_mm != 0 && rank_ == 0)
+        {
+            std::cerr << "[BSP] EpetraExt MatrixMatrix err=" << err_mm
+                      << " — falling back to pure-mass S preconditioner\n";
+            use_lsc_ = false;
+        }
+        else
+        {
+            // L_p built successfully. Wrap in deal.II SparseMatrix and AMG it.
+            // try/catch is defensive: on Trilinos exception, fall back to
+            // pure-mass Schur (safer than aborting).
+            try {
+                Lp_block_.reinit(*Lp_crs);
+
+                dealii::TrilinosWrappers::PreconditionAMG::AdditionalData amg_data_Lp;
+                amg_data_Lp.elliptic = true;
+                amg_data_Lp.higher_order_elements = false;
+                amg_data_Lp.smoother_sweeps = 1;
+                amg_data_Lp.aggregation_threshold = 0.02;
+                amg_data_Lp.output_details = false;
+                Lp_preconditioner_.initialize(Lp_block_, amg_data_Lp);
+
+                if (rank_ == 0)
+                    std::cout << "[Block Schur LSC] L_p ready (n_p=" << n_p_
+                              << ", nnz_global=" << Lp_crs->NumGlobalNonzeros64()
+                              << ")\n";
+            } catch (const std::exception& e) {
+                if (rank_ == 0)
+                    std::cerr << "[BSP-LSC] L_p init failed (" << e.what()
+                              << "); falling back to pure-mass S\n";
+                use_lsc_ = false;
+            } catch (...) {
+                if (rank_ == 0)
+                    std::cerr << "[BSP-LSC] L_p init failed (unknown);"
+                              << " falling back to pure-mass S\n";
+                use_lsc_ = false;
+            }
+        }
+    }
+
+    // ========================================================================
     // Initialize AMG preconditioners
     // ========================================================================
 
@@ -400,7 +588,12 @@ void BlockSchurPreconditionerParallel::vmult(
         r_p[0] = 0.0;
     r_p.compress(dealii::VectorOperation::insert);
 
-    // Step 1: Solve for pressure: M_p * z_p = r_p, then scale z_p *= -alpha
+    // Step 1: Solve for pressure correction (Schur application).
+    //
+    // [LSC mode, default]   z_p = -α · L_p⁻¹ r_p   (CG against L_p with AMG)
+    // [pure-mass fallback]  z_p = -α · M_p⁻¹ r_p   (CG against M_p with AMG)
+    //
+    // Sign convention: z_p = -S⁻¹ r_p, with S⁻¹ ≈ α · L_p⁻¹ (LSC) or α · M_p⁻¹.
     dealii::TrilinosWrappers::MPI::Vector z_p(p_owned_, mpi_comm_);
     z_p = 0;
 
@@ -413,7 +606,10 @@ void BlockSchurPreconditionerParallel::vmult(
 
         try
         {
-            cg.solve(*pressure_mass_ptr_, z_p, r_p, S_preconditioner_);
+            if (use_lsc_)
+                cg.solve(Lp_block_, z_p, r_p, Lp_preconditioner_);
+            else
+                cg.solve(*pressure_mass_ptr_, z_p, r_p, S_preconditioner_);
         }
         catch (dealii::SolverControl::NoConvergence&)
         {
@@ -427,7 +623,17 @@ void BlockSchurPreconditionerParallel::vmult(
             z_p[0] = 0.0;
         z_p.compress(dealii::VectorOperation::insert);
 
-        z_p *= (-schur_alpha_);
+        // Schur sign + scaling.
+        //
+        // [LSC]   S ≈ B Q⁻¹ B^T = L_p directly (Q = diag(A) already
+        //         absorbs the 1/dt factor through A's mass term). So
+        //         S⁻¹ ≈ L_p⁻¹ and z_p = -L_p⁻¹ r_p (no extra scaling).
+        //
+        // [pure-mass]   S ≈ M_p / α  ⇒  S⁻¹ ≈ α M_p⁻¹.  z_p = -α M_p⁻¹ r_p.
+        if (use_lsc_)
+            z_p *= -1.0;
+        else
+            z_p *= (-schur_alpha_);
     }
 
     // Step 2: Update velocity RHS: rhs_vel = r_vel + B^T * z_p

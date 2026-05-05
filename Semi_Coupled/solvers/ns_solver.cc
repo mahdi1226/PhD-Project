@@ -87,7 +87,10 @@ SolverInfo solve_ns_system_schur_parallel(
     const double rel_tol = 1e-8;
     const double tol = rel_tol * rhs_norm;
 
-    dealii::SolverControl solver_control(1500, tol, false, false);
+    // 3000 max outer iterations — with LSC and tight inner, should converge
+    // in O(50–200). Pre-existing 1500 was too low when fallback-to-direct
+    // was the only working path.
+    dealii::SolverControl solver_control(3000, tol, false, false);
 
     dealii::SolverFGMRES<dealii::TrilinosWrappers::MPI::Vector>::AdditionalData fgmres_data;
     fgmres_data.max_basis_size = 100;
@@ -109,7 +112,13 @@ SolverInfo solve_ns_system_schur_parallel(
         if (rank == 0)
         {
             std::cout << "[NS Schur] FGMRES did not converge in " << e.last_step
-                      << " iterations, res = " << e.last_residual << "\n";
+                      << " iterations, res = " << e.last_residual
+                      << "  [inner A=" << preconditioner.n_iterations_A
+                      << ", S=" << preconditioner.n_iterations_S
+                      << ",  per-vmult avg A="
+                      << (e.last_step > 0 ? preconditioner.n_iterations_A / e.last_step : 0)
+                      << ", S=" << (e.last_step > 0 ? preconditioner.n_iterations_S / e.last_step : 0)
+                      << "]\n";
         }
     }
 
@@ -125,14 +134,15 @@ SolverInfo solve_ns_system_schur_parallel(
     residual -= rhs;
     info.residual = residual.l2_norm() / rhs_norm;
 
-    if (verbose && rank == 0)
+    // Always print success summary (cheap, useful diagnostic).
+    if (info.converged && rank == 0)
     {
         std::cout << "[NS Schur] FGMRES: " << info.iterations << " iters"
                   << ", inner A: " << preconditioner.n_iterations_A
                   << ", inner S: " << preconditioner.n_iterations_S
                   << ", rel_res: " << std::scientific << std::setprecision(2) << info.residual
                   << ", time: " << std::fixed << std::setprecision(2) << info.solve_time << "s"
-                  << "\n";
+                  << std::defaultfloat << "\n";
     }
 
     return info;

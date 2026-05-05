@@ -139,10 +139,23 @@ private:
 
     // ------------------------------------------------------------------------
     // Velocity block and preconditioners
+    //
+    // Schur preconditioner upgrade (2026-05-05, "LSC-style"):
+    //   pure-mass S ≈ α M_p is wrong for unsteady NS at large α = 1/dt + ν.
+    //   The discrete saddle-point Schur complement is closer to a pressure
+    //   Laplacian: S ≈ (1/α) · B Q⁻¹ B^T = L_p / α, with Q = diag(A).
+    //   So S⁻¹ ≈ α · L_p⁻¹.  We assemble L_p via EpetraExt MatrixMatrix
+    //   (B Q⁻¹ B^T) and AMG it. M_p kept for the optional viscous term in
+    //   the Cahouet-Chabard combination S⁻¹ ≈ (1/dt) L_p⁻¹ + ν M_p⁻¹, but
+    //   for our regime the pure L_p path dominates.
     // ------------------------------------------------------------------------
     dealii::TrilinosWrappers::SparseMatrix velocity_block_;
+    dealii::TrilinosWrappers::SparseMatrix B_block_;          // [NEW] B (n_p × n_vel), the divergence block
+    dealii::TrilinosWrappers::SparseMatrix Lp_block_;         // [NEW] L_p = B Q⁻¹ B^T (n_p × n_p)
     dealii::TrilinosWrappers::PreconditionAMG A_preconditioner_;
     dealii::TrilinosWrappers::PreconditionAMG S_preconditioner_;
+    dealii::TrilinosWrappers::PreconditionAMG Lp_preconditioner_;  // [NEW] AMG on L_p
+    bool use_lsc_ = true;       // [NEW] toggle: LSC vs pure-mass Schur
 
     // ------------------------------------------------------------------------
     // Physical / scaling parameters

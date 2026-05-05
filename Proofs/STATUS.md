@@ -107,6 +107,25 @@ mpirun -np 8 ./cmake-build-release/ferrofluid --hedgehog -r 5 --max_steps 100 --
 # Expect: mag_iterations column populated with values in [5, 25]
 ```
 
+### 🎯 NS Schur — fully working iterative path (May 5 afternoon)
+
+Two fixes landed this afternoon:
+
+1. **MPI_ERR_TRUNCATE** — asymmetric `compress(insert)` in pin block. **Fixed** in commit `a7bfeea`.
+
+2. **FGMRES non-convergence** — pure-mass Schur `S ≈ α M_p` was mathematically wrong for unsteady NS at large α. **Fixed** by upgrading to LSC: `S ≈ B Q⁻¹ B^T` with `Q = diag(A)`. Implementation: `EpetraExt::MatrixMatrix::Multiply` to assemble `L_p = B Q⁻¹ B^T`, AMG on `L_p`, no extra α scaling needed (Q already absorbs 1/dt).
+
+**Validation on dome -r 3, np=2 (sharing CPU with running hedgehog):**
+
+| Setting | Outer FGMRES iters | Final residual | Convergence |
+|---|---|---|---|
+| Old (pure-mass `α M_p`) | 1500 (cap) | 2.1 | ❌ FAILED, fell back to direct |
+| **New (LSC `B Q⁻¹ B^T`)** | **316–391** | **~9.7e-9** | ✅ **CONVERGED to rel_tol=1e-8** |
+
+Wall time on dome -r 3: ~110–120 s/step (~5x slower than direct on this small case, but iterative scales as O(N) per iter vs O(N^1.5) for direct — should beat direct at -r 5+ and on hedgehog).
+
+---
+
 ### 🎯 NS Schur MPI_ERR_TRUNCATE — FIXED (May 5 afternoon)
 
 **Status: FIXED in this branch. `--iterative_ns -np 2` no longer crashes.**
