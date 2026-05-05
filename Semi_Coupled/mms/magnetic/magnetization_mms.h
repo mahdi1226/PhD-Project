@@ -2,8 +2,15 @@
 // mms/magnetization/magnetization_mms.h - Magnetization MMS (PARALLEL)
 //
 // EXACT SOLUTIONS (chosen so M*·n = 0 on all boundaries):
-//   Mx = t·sin(πx)·sin(πy/L_y)
-//   My = t·cos(πx)·sin(πy/L_y)   ← sin(πy/L_y) ensures My=0 at y=0,L_y
+//   Mx = t²·sin(πx)·sin(πy/L_y)
+//   My = t²·cos(πx)·sin(πy/L_y)   ← sin(πy/L_y) ensures My=0 at y=0,L_y
+//
+// The t² (quadratic-in-time) profile, updated 2026-05-05, replaces the
+// previous linear t profile so that the BE temporal-convergence test can
+// expose a real τ-error (BE is exact for linear-in-t functions). Now:
+//   dM/dt (analytical)  = 2t · spatial
+//   dM/dt (discrete BE) = (t_new² - t_old²)/dt · spatial
+// which differ by O(τ · d²M/dt²) — the formal BE truncation, ~O(τ).
 //
 // This ensures the boundary integral ∫_{∂Ω} (M*·n) χ ds = 0
 // which is required for the coupled Poisson-Magnetization MMS test.
@@ -34,7 +41,7 @@
 #endif
 
 // ============================================================================
-// Exact Mx = t·sin(πx)·sin(πy/L_y)
+// Exact Mx = t²·sin(πx)·sin(πy/L_y)
 //
 // Boundary values:
 //   x=0: Mx = 0
@@ -52,15 +59,16 @@ public:
     virtual double value(const dealii::Point<dim>& p,
                          const unsigned int = 0) const override
     {
-        return time_ * std::sin(M_PI * p[0]) * std::sin(M_PI * p[1] / L_y_);
+        return time_ * time_ * std::sin(M_PI * p[0]) * std::sin(M_PI * p[1] / L_y_);
     }
 
     virtual dealii::Tensor<1, dim> gradient(const dealii::Point<dim>& p,
                                             const unsigned int = 0) const override
     {
+        const double t2 = time_ * time_;
         dealii::Tensor<1, dim> grad;
-        grad[0] = time_ * M_PI * std::cos(M_PI * p[0]) * std::sin(M_PI * p[1] / L_y_);
-        grad[1] = time_ * (M_PI / L_y_) * std::sin(M_PI * p[0]) * std::cos(M_PI * p[1] / L_y_);
+        grad[0] = t2 * M_PI * std::cos(M_PI * p[0]) * std::sin(M_PI * p[1] / L_y_);
+        grad[1] = t2 * (M_PI / L_y_) * std::sin(M_PI * p[0]) * std::cos(M_PI * p[1] / L_y_);
         return grad;
     }
 
@@ -72,14 +80,14 @@ private:
 };
 
 // ============================================================================
-// Exact My = t·cos(πx)·sin(πy/L_y)
+// Exact My = t²·cos(πx)·sin(πy/L_y)
 //
 // CRITICAL: Using sin(πy/L_y) ensures My = 0 at y=0 and y=L_y
 // This makes M*·n = 0 on horizontal boundaries (required for coupled MMS)
 //
 // Boundary values:
-//   x=0: My = t·sin(πy/L_y)  (but n = (-1,0), so M·n = -Mx = 0)
-//   x=1: My = -t·sin(πy/L_y) (but n = (1,0), so M·n = Mx = 0)
+//   x=0: My = t²·sin(πy/L_y)  (but n = (-1,0), so M·n = -Mx = 0)
+//   x=1: My = -t²·sin(πy/L_y) (but n = (1,0), so M·n = Mx = 0)
 //   y=0: My = 0
 //   y=L_y: My = 0
 // ============================================================================
@@ -93,18 +101,18 @@ public:
     virtual double value(const dealii::Point<dim>& p,
                          const unsigned int = 0) const override
     {
-        // Changed from cos(πy/L_y) to sin(πy/L_y) for zero BC at y=0,L_y
-        return time_ * std::cos(M_PI * p[0]) * std::sin(M_PI * p[1] / L_y_);
+        return time_ * time_ * std::cos(M_PI * p[0]) * std::sin(M_PI * p[1] / L_y_);
     }
 
     virtual dealii::Tensor<1, dim> gradient(const dealii::Point<dim>& p,
                                             const unsigned int = 0) const override
     {
+        const double t2 = time_ * time_;
         dealii::Tensor<1, dim> grad;
-        // ∂My/∂x = -t·π·sin(πx)·sin(πy/L_y)
-        grad[0] = -time_ * M_PI * std::sin(M_PI * p[0]) * std::sin(M_PI * p[1] / L_y_);
-        // ∂My/∂y = t·(π/L_y)·cos(πx)·cos(πy/L_y)
-        grad[1] = time_ * (M_PI / L_y_) * std::cos(M_PI * p[0]) * std::cos(M_PI * p[1] / L_y_);
+        // ∂My/∂x = -t²·π·sin(πx)·sin(πy/L_y)
+        grad[0] = -t2 * M_PI * std::sin(M_PI * p[0]) * std::sin(M_PI * p[1] / L_y_);
+        // ∂My/∂y = t²·(π/L_y)·cos(πx)·cos(πy/L_y)
+        grad[1] = t2 * (M_PI / L_y_) * std::cos(M_PI * p[0]) * std::cos(M_PI * p[1] / L_y_);
         return grad;
     }
 
@@ -124,27 +132,28 @@ dealii::Tensor<1, dim> mag_mms_exact_M(
     double time,
     double L_y = 1.0)
 {
+    const double t2 = time * time;
     dealii::Tensor<1, dim> M;
-    M[0] = time * std::sin(M_PI * p[0]) * std::sin(M_PI * p[1] / L_y);
-    M[1] = time * std::cos(M_PI * p[0]) * std::sin(M_PI * p[1] / L_y);  // sin, not cos
+    M[0] = t2 * std::sin(M_PI * p[0]) * std::sin(M_PI * p[1] / L_y);
+    M[1] = t2 * std::cos(M_PI * p[0]) * std::sin(M_PI * p[1] / L_y);  // sin, not cos
     return M;
 }
 
 // ============================================================================
 // Analytical time derivative dM/dt (used when params.mms_analytical_dt = true).
-//   Mx = t · sin(πx) sin(πy/L_y)        → dMx/dt = sin(πx) sin(πy/L_y)
-//   My = t · cos(πx) sin(πy/L_y)        → dMy/dt = cos(πx) sin(πy/L_y)
-// (M is linear in t, so dM/dt = M/t for t≠0.)
+//   Mx = t² · sin(πx) sin(πy/L_y)       → dMx/dt = 2t · sin(πx) sin(πy/L_y)
+//   My = t² · cos(πx) sin(πy/L_y)       → dMy/dt = 2t · cos(πx) sin(πy/L_y)
 // ============================================================================
 template <int dim>
 dealii::Tensor<1, dim> mag_mms_exact_dMdt(
     const dealii::Point<dim>& p,
-    double /*time*/,
+    double time,
     double L_y = 1.0)
 {
+    const double two_t = 2.0 * time;
     dealii::Tensor<1, dim> dMdt;
-    dMdt[0] = std::sin(M_PI * p[0]) * std::sin(M_PI * p[1] / L_y);
-    dMdt[1] = std::cos(M_PI * p[0]) * std::sin(M_PI * p[1] / L_y);
+    dMdt[0] = two_t * std::sin(M_PI * p[0]) * std::sin(M_PI * p[1] / L_y);
+    dMdt[1] = two_t * std::cos(M_PI * p[0]) * std::sin(M_PI * p[1] / L_y);
     return dMdt;
 }
 
@@ -267,19 +276,20 @@ dealii::Tensor<1, dim> compute_mag_mms_source_with_transport(
         dMdt[1] = (M_new[1] - M_old[1]) / dt;
     }
 
-    // Gradient of exact M at new time
+    // Gradient of exact M at new time (M now scales as t², so ∇M scales as t² too)
     const double x = pt[0];
     const double y = pt[1];
+    const double t2_new = t_new * t_new;
 
-    // ∇Mx where Mx = t·sin(πx)·sin(πy/L_y)
+    // ∇Mx where Mx = t²·sin(πx)·sin(πy/L_y)
     dealii::Tensor<1, dim> grad_Mx;
-    grad_Mx[0] = t_new * M_PI * std::cos(M_PI * x) * std::sin(M_PI * y / L_y);
-    grad_Mx[1] = t_new * (M_PI / L_y) * std::sin(M_PI * x) * std::cos(M_PI * y / L_y);
+    grad_Mx[0] = t2_new * M_PI * std::cos(M_PI * x) * std::sin(M_PI * y / L_y);
+    grad_Mx[1] = t2_new * (M_PI / L_y) * std::sin(M_PI * x) * std::cos(M_PI * y / L_y);
 
-    // ∇My where My = t·cos(πx)·sin(πy/L_y)
+    // ∇My where My = t²·cos(πx)·sin(πy/L_y)
     dealii::Tensor<1, dim> grad_My;
-    grad_My[0] = -t_new * M_PI * std::sin(M_PI * x) * std::sin(M_PI * y / L_y);
-    grad_My[1] = t_new * (M_PI / L_y) * std::cos(M_PI * x) * std::cos(M_PI * y / L_y);
+    grad_My[0] = -t2_new * M_PI * std::sin(M_PI * x) * std::sin(M_PI * y / L_y);
+    grad_My[1] = t2_new * (M_PI / L_y) * std::cos(M_PI * x) * std::cos(M_PI * y / L_y);
 
     // Convection: (U·∇)M
     const double convect_Mx = U[0] * grad_Mx[0] + U[1] * grad_Mx[1];

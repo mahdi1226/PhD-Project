@@ -132,12 +132,15 @@ dealii::Tensor<1, dim> poisson_mms_exact_H(
 // Therefore:
 //   f_mms = -Δφ* - ∇·M*
 //
-// With:
-//   Mx* = t·sin(πx)·sin(πy/L_y)
-//   My* = t·cos(πx)·sin(πy/L_y)
+// With (M now scales as t² following the magnetization MMS update 2026-05-05):
+//   Mx* = t²·sin(πx)·sin(πy/L_y)
+//   My* = t²·cos(πx)·sin(πy/L_y)
+//   φ*  = t·cos(πx)·cos(πy/L_y)         (kept linear-in-t — no temporal
+//                                         derivative in the Poisson eq; does
+//                                         not affect BE rate testing)
 //
 // ∇·M* = ∂Mx*/∂x + ∂My*/∂y
-//      = t·π·cos(πx)·sin(πy/L_y) + t·(π/L_y)·cos(πx)·cos(πy/L_y)
+//      = t²·π·cos(πx)·sin(πy/L_y) + t²·(π/L_y)·cos(πx)·cos(πy/L_y)
 // ============================================================================
 template <int dim>
 double compute_poisson_mms_source_coupled(
@@ -152,11 +155,12 @@ double compute_poisson_mms_source_coupled(
     const double neg_laplacian_phi = time * M_PI * M_PI * (1.0 + 1.0/(L_y*L_y))
                                      * std::cos(M_PI * x) * std::cos(M_PI * y / L_y);
 
-    // ∇·M* with Mx* = t·sin(πx)·sin(πy/L_y), My* = t·cos(πx)·sin(πy/L_y)
-    // ∂Mx*/∂x = t·π·cos(πx)·sin(πy/L_y)
-    // ∂My*/∂y = t·(π/L_y)·cos(πx)·cos(πy/L_y)
-    const double dMx_dx = time * M_PI * std::cos(M_PI * x) * std::sin(M_PI * y / L_y);
-    const double dMy_dy = time * (M_PI / L_y) * std::cos(M_PI * x) * std::cos(M_PI * y / L_y);
+    // ∇·M* with Mx* = t²·sin(πx)·sin(πy/L_y), My* = t²·cos(πx)·sin(πy/L_y)
+    // ∂Mx*/∂x = t²·π·cos(πx)·sin(πy/L_y)
+    // ∂My*/∂y = t²·(π/L_y)·cos(πx)·cos(πy/L_y)
+    const double t2 = time * time;
+    const double dMx_dx = t2 * M_PI * std::cos(M_PI * x) * std::sin(M_PI * y / L_y);
+    const double dMy_dy = t2 * (M_PI / L_y) * std::cos(M_PI * x) * std::cos(M_PI * y / L_y);
     const double div_M = dMx_dx + dMy_dy;
 
     return neg_laplacian_phi - div_M;

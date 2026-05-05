@@ -523,19 +523,20 @@ public:
         // Velocity at CURRENT time t, gradient at OLD time t_old
         const auto grad_theta_old = CHMMS::theta_exact_grad<dim>(p, t_old, L_y_);
 
-        // NS MMS velocity model (L_y-scaled) at CURRENT time t:
-        //   ux = t*(π/L_y)*sin²(πx)*sin(2πy/L_y)
-        //   uy = -t*π*sin(2πx)*sin²(πy/L_y)
+        // NS MMS velocity model (L_y-scaled, U ∝ t² as of 2026-05-05) at CURRENT time t:
+        //   ux = t²·(π/L_y)·sin²(πx)·sin(2πy/L_y)
+        //   uy = -t²·π·sin(2πx)·sin²(πy/L_y)
         const double sin_px = std::sin(M_PI * x);
         const double sin_2px = std::sin(2.0 * M_PI * x);
         const double sin_pyl = std::sin(M_PI * y / L_y_);
         const double sin_2pyl = std::sin(2.0 * M_PI * y / L_y_);
 
-        // Use t_old for velocity: paper's Block-GS solves CH first with U^{n-1}
+        // Use t_old² for velocity: paper's Block-GS solves CH first with U^{n-1}
         // (the velocity from the previous time step). The full system test passes
         // ux_old/uy_old to assemble_ch_system, so the MMS source must match.
-        const double ux = t_old * (M_PI / L_y_) * (sin_px * sin_px) * sin_2pyl;
-        const double uy = -t_old * M_PI * sin_2px * (sin_pyl * sin_pyl);
+        const double t2_old = t_old * t_old;
+        const double ux = t2_old * (M_PI / L_y_) * (sin_px * sin_px) * sin_2pyl;
+        const double uy = -t2_old * M_PI * sin_2px * (sin_pyl * sin_pyl);
 
         const double convection = ux * grad_theta_old[0] + uy * grad_theta_old[1];
 
@@ -615,17 +616,18 @@ public:
         // This is the KEY difference from explicit: grad at t, not t_old
         const auto grad_theta_n = CHMMS::theta_exact_grad<dim>(p, t, L_y_);
 
-        // NS MMS velocity model (L_y-scaled) at OLD time t_old:
-        //   ux = t*(π/L_y)*sin²(πx)*sin(2πy/L_y)
-        //   uy = -t*π*sin(2πx)*sin²(πy/L_y)
+        // NS MMS velocity model (L_y-scaled, U ∝ t²) at OLD time t_old:
+        //   ux = t²·(π/L_y)·sin²(πx)·sin(2πy/L_y)
+        //   uy = -t²·π·sin(2πx)·sin²(πy/L_y)
         const double sin_px = std::sin(M_PI * x);
         const double sin_2px = std::sin(2.0 * M_PI * x);
         const double sin_pyl = std::sin(M_PI * y / L_y_);
         const double sin_2pyl = std::sin(2.0 * M_PI * y / L_y_);
 
-        // Velocity at t_old (Block-GS: CH solved first with U^{n-1})
-        const double ux = t_old * (M_PI / L_y_) * (sin_px * sin_px) * sin_2pyl;
-        const double uy = -t_old * M_PI * sin_2px * (sin_pyl * sin_pyl);
+        // Velocity at t_old² (Block-GS: CH solved first with U^{n-1})
+        const double t2_old = t_old * t_old;
+        const double ux = t2_old * (M_PI / L_y_) * (sin_px * sin_px) * sin_2pyl;
+        const double uy = -t2_old * M_PI * sin_2px * (sin_pyl * sin_pyl);
 
         const double convection = ux * grad_theta_n[0] + uy * grad_theta_n[1];
 
