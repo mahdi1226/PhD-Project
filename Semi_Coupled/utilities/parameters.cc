@@ -478,6 +478,17 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
         else if (std::strcmp(argv[i], "--iterative_ns") == 0)
         {
             params.solvers.ns.use_iterative = true;
+            std::cerr << "NOTE: --iterative_ns is functional (no crash) but slow.\n"
+                      << "  MPI_ERR_TRUNCATE bug fixed (2026-05-05): the cause was\n"
+                      << "  an asymmetric compress(insert) in the pressure-pinning\n"
+                      << "  block of vmult, NOT a partition mismatch as previously\n"
+                      << "  documented. See solvers/ns_block_preconditioner.cc\n"
+                      << "  '[FIXED]' note for the full story.\n"
+                      << "  However, the Schur preconditioner (S ~ alpha * M_p)\n"
+                      << "  converges poorly at large alpha (= nu + 1/dt), so FGMRES\n"
+                      << "  often hits the 1500-iter cap and falls back to direct.\n"
+                      << "  Net wall time ~ same as --direct. Convergence tuning\n"
+                      << "  (e.g., PCD preconditioner) is a separate task.\n";
         }
         else if (std::strcmp(argv[i], "--iterative_mag") == 0)
         {

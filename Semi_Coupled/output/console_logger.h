@@ -258,7 +258,7 @@ public:
 
 private:
     const Parameters& params_;
-    MPI_Comm comm_;
+    [[maybe_unused]] MPI_Comm comm_;  // kept for future MPI-aware logging
     bool is_root_;
     int np_;
     double initial_interface_y_;

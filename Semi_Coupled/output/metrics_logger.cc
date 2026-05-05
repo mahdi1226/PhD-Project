@@ -54,7 +54,7 @@ void MetricsLogger::log_step(const StepData& data)
         << data.ch_iterations << ","
         << data.ch_residual << ","
         << data.ch_time << ","
-        // Poisson
+        // Magnetic (Poisson + Magnetization combined into one monolithic solve)
         << data.phi_min << ","
         << data.phi_max << ","
         << data.H_max << ","
@@ -62,6 +62,8 @@ void MetricsLogger::log_step(const StepData& data)
         << data.E_mag << ","
         << data.mu_min << ","
         << data.mu_max << ","
+        << data.mag_iterations << ","      // NEW: GMRES iters from MagneticSolver
+        << data.mag_residual << ","        // NEW: relative residual
         << data.poisson_iterations << ","
         << data.poisson_residual << ","
         << data.poisson_time << ","
@@ -241,6 +243,7 @@ void MetricsLogger::write_headers()
         << "theta_min,theta_max,mass,E_CH,dE_CH_dt,"
         << "ch_iterations,ch_residual,ch_time,"
         << "phi_min,phi_max,H_max,M_max,E_mag,mu_min,mu_max,"
+        << "mag_iterations,mag_residual,"
         << "poisson_iterations,poisson_residual,poisson_time,"
         << "ux_min,ux_max,uy_min,uy_max,U_max,E_kin,"
         << "divU_L2,divU_Linf,CFL,p_min,p_max,"

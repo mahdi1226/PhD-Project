@@ -166,7 +166,7 @@ public:
 
 private:
     std::string output_dir_;
-    MPI_Comm comm_;
+    [[maybe_unused]] MPI_Comm comm_;  // kept for future MPI-aware logging
     bool is_root_;
     std::ofstream file_;
 

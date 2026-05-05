@@ -204,6 +204,25 @@ private:
     std::unique_ptr<MagneticAssembler<dim>> magnetic_assembler_;
     std::unique_ptr<MagneticSolver<dim>> magnetic_solver_;
 
+    // ------------------------------------------------------------------------
+    // Preconditioner rebuild policy (Plan A — cross-AMR caching with
+    // adaptive staleness trigger).
+    //
+    // - needs_mag_preconditioner_rebuild_  : explicit flag passed to
+    //   magnetic_solver_->solve(). Set true on initial setup and after
+    //   refine_mesh(); cleared after each successful solve.
+    // - mag_iter_rebuild_threshold_        : if a solve takes > threshold
+    //   GMRES iterations, force a rebuild on the next call (cached ILU/AMG
+    //   has gone stale because matrix values have drifted).
+    //
+    // The implicit fallback — setup_magnetic_system() recreating
+    // magnetic_solver_ on AMR — still drops the cache via destructor; the
+    // flag adds (a) explicit intent and (b) adaptive rebuild for non-AMR
+    // staleness.
+    // ------------------------------------------------------------------------
+    bool needs_mag_preconditioner_rebuild_ = true;
+    unsigned int mag_iter_rebuild_threshold_ = 50;
+
     // ========================================================================
     // Navier-Stokes system (ux, uy, p)
     // ========================================================================

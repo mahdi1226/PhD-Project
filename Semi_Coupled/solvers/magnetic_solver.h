@@ -62,7 +62,8 @@ public:
         const dealii::TrilinosWrappers::MPI::Vector& rhs);
 
     unsigned int last_n_iterations() const { return last_n_iterations_; }
-    bool last_used_direct() const { return last_used_direct_; }
+    double       last_residual()     const { return last_residual_; }
+    bool         last_used_direct()  const { return last_used_direct_; }
 
     /// Drop the cached preconditioner (forces rebuild on next iterative solve).
     void invalidate_preconditioner() { cached_block_prec_.reset(); }
@@ -84,7 +85,8 @@ private:
     dealii::IndexSet locally_owned_;
     MPI_Comm mpi_communicator_;
     unsigned int last_n_iterations_;
-    bool last_used_direct_;
+    double       last_residual_     = 0.0;
+    bool         last_used_direct_;
 
     std::unique_ptr<MagneticBlockPreconditioner> cached_block_prec_;
 };

@@ -793,6 +793,11 @@ void PhaseFieldProblem<dim>::solve_magnetics(double dt)
     for (unsigned int d = 0; d < dim; ++d)
         n_M_dofs += dofs_per_component[d];
 
+    // Plan A: explicit cache-rebuild policy with adaptive staleness trigger.
+    // Rebuild on AMR (flag set in refine_mesh) or when last iter count
+    // exceeded the staleness threshold. Otherwise reuse cached ILU/AMG.
+    const bool rebuild_mag_prec = needs_mag_preconditioner_rebuild_;
+
     t_solve.start();
     magnetic_solver_->solve(
         mag_matrix_,
@@ -800,7 +805,7 @@ void PhaseFieldProblem<dim>::solve_magnetics(double dt)
         mag_rhs_,
         params_.solvers.magnetic,
         n_M_dofs,
-        /*rebuild_preconditioner=*/false);
+        rebuild_mag_prec);
     t_solve.stop();
 
     // Apply constraints
@@ -810,8 +815,27 @@ void PhaseFieldProblem<dim>::solve_magnetics(double dt)
     last_mag_assemble_time_ = t_assemble.last();
     last_mag_solve_time_ = t_solve.last();
     last_mag_info_.iterations = magnetic_solver_->last_n_iterations();
-    last_mag_info_.residual = 0.0;
-    last_mag_info_.converged = true;
+    last_mag_info_.residual   = magnetic_solver_->last_residual();
+    last_mag_info_.converged  = true;
+
+    // Plan A — adaptive rebuild policy.
+    // After a successful solve, the cache is fresh (whether we just rebuilt
+    // it or reused). Default: don't rebuild next call. Override if iter
+    // count exceeded the staleness threshold (cached preconditioner is
+    // drifting from matrix values), or if direct fallback fired (cache
+    // got reset inside the solver).
+    if (params_.solvers.magnetic.use_iterative
+        && !magnetic_solver_->last_used_direct())
+    {
+        needs_mag_preconditioner_rebuild_ =
+            (magnetic_solver_->last_n_iterations() > mag_iter_rebuild_threshold_);
+    }
+    else
+    {
+        // Direct path: no cached preconditioner state to track; ensure the
+        // first iterative call after a switch still rebuilds.
+        needs_mag_preconditioner_rebuild_ = true;
+    }
 
     // Save current solution as M_old for next time step (Eq 42c δM^k/τ)
     mag_solution_old_ = mag_solution_;

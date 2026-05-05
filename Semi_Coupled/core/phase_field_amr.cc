@@ -473,6 +473,14 @@ void PhaseFieldProblem<dim>::refine_mesh()
         }
         pcout_ << ")\n";
     }
+
+    // Plan A: matrix sparsity pattern + values changed → cached
+    // ILU/AMG preconditioner is invalid. Force rebuild on next solve.
+    // (Implicit safety: setup_magnetic_system() above already recreated
+    //  magnetic_solver_, dropping the cached preconditioner via destructor.
+    //  Setting the flag makes the intent explicit and is robust to refactors.)
+    needs_mag_preconditioner_rebuild_ = true;
+
     pcout_ << "[AMR] Mesh refinement complete.\n";
 }
 

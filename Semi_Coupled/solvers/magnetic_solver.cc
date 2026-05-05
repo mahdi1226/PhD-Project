@@ -125,17 +125,19 @@ bool MagneticSolver<dim>::solve_iterative(
     {
         solver.solve(system_matrix, solution, rhs, *cached_block_prec_);
         last_n_iterations_ = solver_control.last_step();
-        last_used_direct_ = false;
+        last_residual_     = solver_control.last_value();
+        last_used_direct_  = false;
         if (params.verbose && rank == 0)
         {
             std::cout << "[Magnetic GMRES+Block] " << last_n_iterations_
-                      << " iters, res = " << solver_control.last_value() << "\n";
+                      << " iters, res = " << last_residual_ << "\n";
         }
         return true;
     }
     catch (const dealii::SolverControl::NoConvergence& e)
     {
         last_n_iterations_ = e.last_step;
+        last_residual_     = e.last_residual;
         if (rank == 0)
         {
             std::cerr << "[Magnetic GMRES+Block] did NOT converge: "

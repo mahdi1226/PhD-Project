@@ -134,6 +134,48 @@ BlockSchurPreconditionerParallel::BlockSchurPreconditionerParallel(
     my_vel_gids.erase(std::unique(my_vel_gids.begin(), my_vel_gids.end()), my_vel_gids.end());
 
     // ========================================================================
+    // [FIXED] vmult MPI_ERR_TRUNCATE — root cause + fix (2026-05-05)
+    //
+    // Status: FIXED. The bug was an *asymmetric collective* in vmult, not a
+    // partition mismatch and not a Trilinos AMG issue.
+    //
+    // ROOT CAUSE (was hidden under several wrong hypotheses):
+    //   The pressure pinning block in vmult called compress(insert) only
+    //   on ranks where pinned_p_local_ >= 0 (i.e., the owner of pressure
+    //   DoF 0 — typically rank 0 only). Other ranks skipped the entire
+    //   block, including the compress. compress() is a COLLECTIVE
+    //   operation — every rank in the communicator must call it. Skipping
+    //   it on some ranks leaves a stray send/recv that the next collective
+    //   mis-matches → MPI_ERR_TRUNCATE.
+    //
+    //   Symptoms that misled earlier diagnosis:
+    //     • Error fires after [Block Schur] Initialized → looked like
+    //       Trilinos-internal AMG setup issue.
+    //     • Adding MPI_Barriers around each op rearranged the collision
+    //       point → looked like a Trilinos race condition.
+    //     • Both led to the (incorrect) "Trilinos 12.x ML bug" hypothesis.
+    //
+    // WRONG hypotheses we ruled out (do not re-investigate):
+    //   ✗ p_owned partition mismatch — Epetra map probes proved partitions
+    //     agree exactly (all maps 34560 global, 17280 per rank).
+    //   ✗ deal.II 64-bit indices Allreduce mismatch — local builds use
+    //     32-bit; the existing MPI_UNSIGNED Allreduce is correct.
+    //   ✗ AMG ML internal MPI race — replacing AMG with Jacobi or ILU
+    //     for the Schur preconditioner did NOT change the failure mode.
+    //   ✗ alternating IndexSets in Vector ctor — the bug fires regardless
+    //     of which/how-many vectors are constructed.
+    //
+    // FIX: Move compress(insert) outside the pinning if-block so every
+    // rank calls it — see vmult below.
+    //
+    // OPEN ISSUE (separate from this MPI bug): FGMRES convergence is
+    // slow at default tolerances (often hits 1500-iteration cap and
+    // falls back to direct). That is a preconditioner-tuning problem,
+    // pre-existing and not introduced by this fix; it just wasn't
+    // visible before because the MPI crash hid it.
+    // ========================================================================
+
+    // ========================================================================
     // Precompute pressure indices needed for apply_BT
     // ========================================================================
     pressure_indices_for_BT_.set_size(n_p_);
@@ -348,12 +390,15 @@ void BlockSchurPreconditionerParallel::vmult(
     extract_velocity(src, r_vel);
     extract_pressure(src, r_p);
 
-    // Enforce pinned pressure mode consistency (p-space DoF 0)
+    // Enforce pinned pressure mode consistency (p-space DoF 0).
+    //
+    // BUGFIX (2026-05-05): compress(insert) is COLLECTIVE — every rank
+    // must call it. Previously only the owning rank entered the `if`,
+    // leaving other ranks out of the collective → MPI_ERR_TRUNCATE.
+    // The write itself is rank-local; the compress is symmetric.
     if (pinned_p_local_ >= 0)
-    {
         r_p[0] = 0.0;
-        r_p.compress(dealii::VectorOperation::insert);
-    }
+    r_p.compress(dealii::VectorOperation::insert);
 
     // Step 1: Solve for pressure: M_p * z_p = r_p, then scale z_p *= -alpha
     dealii::TrilinosWrappers::MPI::Vector z_p(p_owned_, mpi_comm_);
@@ -377,11 +422,10 @@ void BlockSchurPreconditionerParallel::vmult(
 
         n_iterations_S += solver_control.last_step();
 
+        // BUGFIX (2026-05-05): compress is collective — see vmult above.
         if (pinned_p_local_ >= 0)
-        {
             z_p[0] = 0.0;
-            z_p.compress(dealii::VectorOperation::insert);
-        }
+        z_p.compress(dealii::VectorOperation::insert);
 
         z_p *= (-schur_alpha_);
     }
