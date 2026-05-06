@@ -316,3 +316,77 @@ commits.
 *Last updated 2026-05-05 night. Total: 5 audit-related commits on
 `rosensweig-working`. Tree is clean for current scope; deferred list
 above guides the next cleanup pass.*
+
+---
+
+## Day-2 follow-up (2026-05-06)
+
+After hedgehog L5 finished cleanly (real wall time 50.7 h, not the
+calendar 5.23 days; cf. timing.csv suspend-bias) the audit deferred
+items were progressed:
+
+### Shipped — Option B (benchmark, commit `f5468cb` precursor)
+3 runs at dome -r 5, 200 steps, np=8:
+
+| mode | s/step | CH | Mag | NS |
+|---|---|---|---|---|
+| `--direct` | 3.01 | 0.56 | 1.82 | 0.62 |
+| `--iterative_mag` | **1.32** | 0.56 | **0.13** | 0.62 |
+| `--iterative_mag --iterative` | 6.47 | **5.70** | 0.13 | 0.64 |
+
+Confirmed Plan A magnetic block precond gives **2.3× over direct**.
+CH iterative path was 10× SLOWER than direct (AMG rebuilt every step)
+— motivated Option C ordering: do CH cache first.
+
+### Shipped — Option C (commit `f5468cb`)
+Cross-AMR caching for CH AMG and NS Schur preconditioner.
+- `cached_ch_amg_` and `cached_ns_schur_prec_` in `PhaseFieldProblem`.
+- Reset on `refine_mesh()`; adaptive rebuild on iter > 50 (CH) or > 200 (NS).
+- Backward-compat overloads kept for MMS test code.
+
+Cache effect IS measurable when AMR cadence is slower. At
+`--amr_interval 20` the full-iter step time drops from 7.0 → 1.4
+s/step (4.9× speedup). At production `amr_interval=5` the rebuild-on-
+AMR overhead masks the savings, so the cache is "infrastructure
+for later" — pays off at:
+- hedgehog L6+ (larger AMG setup amortizes over more steps)
+- longer AMR intervals (saturated regimes)
+- Picard inner loops in SCHEME_II (same matrix solved multiple times
+  per step)
+
+### Shipped — Option A (re-validation, no separate commit)
+Short hedgehog -r 4, 500 steps, `--iterative_mag` on the rebuilt binary.
+The CSV `rosensweig_validation.csv` now reports `density=0.1` (= r = Δρ)
+and `lambda_theory=0.018` — confirming the A6-15 fix (was
+`density=1.1=1+r`, `lambda_theory=0.005` on the old binary). All other
+outputs nominal: clean run, no NaN, mass conserved, AMR not breaking
+caches.
+
+### Two new minor cosmetic findings (added to deferred list)
+
+- **A6-25 cosmetic** `diagnostics/validation_diagnostics.cc:31`: console
+  `print_summary` displays `Surface tension (lambda): 0.0` while the CSV
+  reports `0.025`. Output-stream precision pollution from upstream
+  formatter. Fix: explicitly `<< std::defaultfloat << std::setprecision(6)`
+  at top of print_summary, or pin via `out.copyfmt(std::ios(nullptr))`.
+- **A6-26 cosmetic** `diagnostics/validation_diagnostics.cc:32`: print
+  label still reads `Density (1+r):` but the value is now Δρ = r (the
+  A6-15 math fix). Update label to `Density contrast (Δρ):` for
+  consistency with the corrected math.
+
+### Status at end of 2026-05-06 session
+
+`rosensweig-working` is now **6 commits ahead** of origin:
+1. `9c7a253` VTK output cadence + manifest + audit fixes
+2. `2ed5ae1` Audit Round 1 — 6 Tier-1 correctness fixes
+3. `e7b45b3` Audit Round 2 — diagnostics + macOS memory + CFL
+4. `b32fcec` Audit Round 3 — small perf wins
+5. `674e2b2` Audit Round 4 — tree hygiene
+6. `69da28c` Audit deferred-items doc
+7. `f5468cb` Option C — CH AMG and NS Schur preconditioner caches
+   (plus the option-B benchmark data captured in this doc)
+
+**Ready for D (Scheme I) in a separate session.** Hand-off briefing for
+Scheme II already exists at `SCHEME_II_HANDOFF.md`; for Scheme I, the
+next session should read `Proofs/scheme_I_standalone.pdf` and produce
+`SCHEME_I_HANDOFF.md` before opening the new branch.
