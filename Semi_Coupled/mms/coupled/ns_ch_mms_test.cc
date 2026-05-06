@@ -350,7 +350,8 @@ static CoupledMMSResult run_ns_ch_single(
                                          true, // enable_mms
                                          current_time, // mms_time
                                          current_time - dt, // mms_time_old
-                                         L_y); // mms_L_y
+                                         L_y, // mms_L_y
+                                         params.mms_analytical_dt);  // analytical d/dt opt-in
 
         ns_solution = 0;
         solve_ns_system_direct_parallel(ns_matrix, ns_rhs, ns_solution, ns_constraints,

@@ -1582,7 +1582,8 @@ void assemble_ns_system_parallel(
     bool enable_mms,
     double mms_time,
     double mms_time_old,
-    double mms_L_y)
+    double mms_L_y,
+    bool mms_analytical_dt)
 {
     assemble_ns_system_unified<dim>(
         ux_dof_handler, uy_dof_handler, p_dof_handler,
@@ -1591,7 +1592,8 @@ void assemble_ns_system_parallel(
         ux_to_ns_map, uy_to_ns_map, p_to_ns_map,
         ns_constraints, ns_matrix, ns_rhs,
         NSForceData<dim>{},  // no forces
-        enable_mms, mms_time, mms_time_old, mms_L_y);
+        enable_mms, mms_time, mms_time_old, mms_L_y,
+        mms_analytical_dt);
 }
 
 // ============================================================================
@@ -1621,7 +1623,8 @@ void assemble_ns_system_with_body_force_parallel(
     bool enable_mms,
     double mms_time,
     double mms_time_old,
-    double mms_L_y)
+    double mms_L_y,
+    bool mms_analytical_dt)
 {
     NSForceData<dim> forces;
     forces.set_body_force(&body_force, current_time);
@@ -1633,7 +1636,8 @@ void assemble_ns_system_with_body_force_parallel(
         ux_to_ns_map, uy_to_ns_map, p_to_ns_map,
         ns_constraints, ns_matrix, ns_rhs,
         forces,
-        enable_mms, mms_time, mms_time_old, mms_L_y);
+        enable_mms, mms_time, mms_time_old, mms_L_y,
+        mms_analytical_dt);
 }
 
 // ============================================================================
@@ -1808,7 +1812,7 @@ template void assemble_ns_system_parallel<2>(
     const std::vector<dealii::types::global_dof_index>&,
     const dealii::IndexSet&, const dealii::AffineConstraints<double>&,
     dealii::TrilinosWrappers::SparseMatrix&, dealii::TrilinosWrappers::MPI::Vector&,
-    MPI_Comm, bool, double, double, double);
+    MPI_Comm, bool, double, double, double, bool);
 
 template void assemble_ns_system_with_body_force_parallel<2>(
     const dealii::DoFHandler<2>&, const dealii::DoFHandler<2>&, const dealii::DoFHandler<2>&,
@@ -1821,7 +1825,7 @@ template void assemble_ns_system_with_body_force_parallel<2>(
     dealii::TrilinosWrappers::SparseMatrix&, dealii::TrilinosWrappers::MPI::Vector&,
     MPI_Comm,
     const std::function<dealii::Tensor<1, 2>(const dealii::Point<2>&, double)>&, double,
-    bool, double, double, double);
+    bool, double, double, double, bool);
 
 template void assemble_ns_system_with_kelvin_force_parallel<2>(
     const dealii::DoFHandler<2>&, const dealii::DoFHandler<2>&, const dealii::DoFHandler<2>&,

@@ -239,7 +239,8 @@ void assemble_ns_system_parallel(
     bool enable_mms = false,
     double mms_time = 0.0,
     double mms_time_old = 0.0,
-    double mms_L_y = 1.0);
+    double mms_L_y = 1.0,
+    bool mms_analytical_dt = false);
 
 // ============================================================================
 // Legacy wrapper: NS assembly with body force
@@ -268,7 +269,8 @@ void assemble_ns_system_with_body_force_parallel(
     bool enable_mms = false,
     double mms_time = 0.0,
     double mms_time_old = 0.0,
-    double mms_L_y = 1.0);
+    double mms_L_y = 1.0,
+    bool mms_analytical_dt = false);
 
 // ============================================================================
 // Legacy wrapper: NS assembly with Kelvin force only (used by MMS tests)

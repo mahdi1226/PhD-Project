@@ -487,17 +487,32 @@ BlockSchurPreconditionerParallel::BlockSchurPreconditionerParallel(
             *B_scaled_crs, /*transposeA=*/false,
             *B_crs,        /*transposeB=*/true,
             *Lp_crs,       /*call_FillComplete=*/true);
-        if (err_mm != 0 && rank_ == 0)
+        // BUGFIX (audit 2026-05-05): use_lsc_ MUST be set symmetrically across
+        // all ranks. Previously the EpetraExt-failure branch (line below) only
+        // ran on rank 0; if MatrixMatrix failed only on a subset of ranks (or
+        // if the AMG initialize threw on a subset), ranks would diverge —
+        // half the communicator running CG against L_p, half against M_p,
+        // next FGMRES vmult deadlocks or produces MPI_ERR_TRUNCATE.
+        //
+        // Fix: every rank tracks its own *local* failure flag, then we
+        // MPI_Allreduce(MPI_LOR) so any single failure disables LSC on all
+        // ranks. Same pattern used twice (EpetraExt and AMG init).
+        bool local_lsc_failed = false;
+
+        if (err_mm != 0)
         {
-            std::cerr << "[BSP] EpetraExt MatrixMatrix err=" << err_mm
-                      << " — falling back to pure-mass S preconditioner\n";
-            use_lsc_ = false;
+            local_lsc_failed = true;
+            if (rank_ == 0)
+                std::cerr << "[BSP] EpetraExt MatrixMatrix err=" << err_mm
+                          << " — falling back to pure-mass S preconditioner\n";
         }
         else
         {
             // L_p built successfully. Wrap in deal.II SparseMatrix and AMG it.
             // try/catch is defensive: on Trilinos exception, fall back to
-            // pure-mass Schur (safer than aborting).
+            // pure-mass Schur (safer than aborting). Each rank tracks its
+            // own failure independently; the global-OR below makes the
+            // fallback decision symmetric across the communicator.
             try {
                 Lp_block_.reinit(*Lp_crs);
 
@@ -508,23 +523,30 @@ BlockSchurPreconditionerParallel::BlockSchurPreconditionerParallel(
                 amg_data_Lp.aggregation_threshold = 0.02;
                 amg_data_Lp.output_details = false;
                 Lp_preconditioner_.initialize(Lp_block_, amg_data_Lp);
-
-                if (rank_ == 0)
-                    std::cout << "[Block Schur LSC] L_p ready (n_p=" << n_p_
-                              << ", nnz_global=" << Lp_crs->NumGlobalNonzeros64()
-                              << ")\n";
             } catch (const std::exception& e) {
-                if (rank_ == 0)
-                    std::cerr << "[BSP-LSC] L_p init failed (" << e.what()
-                              << "); falling back to pure-mass S\n";
-                use_lsc_ = false;
+                local_lsc_failed = true;
+                std::cerr << "[BSP-LSC] rank " << rank_
+                          << " L_p init failed (" << e.what()
+                          << "); voting for pure-mass S fallback\n";
             } catch (...) {
-                if (rank_ == 0)
-                    std::cerr << "[BSP-LSC] L_p init failed (unknown);"
-                              << " falling back to pure-mass S\n";
-                use_lsc_ = false;
+                local_lsc_failed = true;
+                std::cerr << "[BSP-LSC] rank " << rank_
+                          << " L_p init failed (unknown);"
+                          << " voting for pure-mass S fallback\n";
             }
         }
+
+        // Collective vote: if ANY rank failed, ALL ranks fall back.
+        int local_int = local_lsc_failed ? 1 : 0;
+        int global_any_failed = 0;
+        MPI_Allreduce(&local_int, &global_any_failed, 1, MPI_INT, MPI_LOR, mpi_comm_);
+        if (global_any_failed)
+            use_lsc_ = false;
+
+        if (use_lsc_ && rank_ == 0)
+            std::cout << "[Block Schur LSC] L_p ready (n_p=" << n_p_
+                      << ", nnz_global=" << Lp_crs->NumGlobalNonzeros64()
+                      << ")\n";
     }
 
     // ========================================================================

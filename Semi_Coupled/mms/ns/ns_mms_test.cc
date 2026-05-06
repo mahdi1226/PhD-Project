@@ -610,7 +610,8 @@ static NSMMSConvergenceResult run_phase_internal(
                 true,           // enable_mms = true
                 current_time,   // mms_time
                 t_old,          // mms_time_old
-                L_y);           // mms_L_y
+                L_y,            // mms_L_y
+                params.mms_analytical_dt);  // analytical d/dt opt-in
 
             auto assembly_end = std::chrono::high_resolution_clock::now();
             total_assembly_time += std::chrono::duration<double>(assembly_end - assembly_start).count();

@@ -431,7 +431,13 @@ int run_phase_test(
                 true,           // enable_mms
                 current_time,   // mms_time
                 t_old,          // mms_time_old
-                L_y);           // mms_L_y
+                L_y,            // mms_L_y
+                false);         // mms_analytical_dt: this phase test
+                                //  always uses the discrete-aligned MMS source
+                                //  (matches the discrete BE scheme exactly,
+                                //  τ-error = 0 by construction). Only the
+                                //  coupled & temporal-rate tests need the
+                                //  analytical-d/dt path.
 
             // Debug: check matrix and RHS before solve (ALL ranks must call these)
             {

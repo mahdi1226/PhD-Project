@@ -9,8 +9,14 @@
 //   Eq 42b: (ψ^k, Υ) - ε(∇θ^k, ∇Υ) - (1/ε)(f(θ^{k-1}), Υ) - (1/η)(δθ^k, Υ) = 0
 //
 // Convection: EXPLICIT per paper Eq. 42a — θ^{k-1} on RHS with U^{k-1} (CFL-limited).
-// Paper has -γ(∇Ψ,∇Λ); code has +γ(∇ψ,∇Λ) because ψ_code = -Ψ_paper.
-// Paper Eq. 1: Ψ = εΔθ - (1/ε)f(θ); code: ψ = -εΔθ + (1/ε)f(θ).
+//
+// Sign convention for ψ: the code uses the standard chemical-potential sign
+//   ψ = -εΔθ + (1/ε)f(θ),  i.e. opposite sign to the symbol Ψ in paper Eq. 1
+// (which has Ψ = εΔθ - (1/ε)f). With this convention the diffusion term in
+// Eq. 42a is +γ(∇ψ, ∇Λ) — matching the code — because  +γ(∇ψ_code, ∇Λ)
+// is the same operator as paper's +γ(∇Ψ_paper, ∇Λ) once the sign of the
+// chemical potential is flipped. (An earlier comment here read the opposite,
+// in error; the math is correct.)
 //
 // where η = ε (stabilization parameter)
 //
