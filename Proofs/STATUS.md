@@ -437,3 +437,58 @@ FGMRES convergence is poor at default tolerances (`inner_tol=1e-1`, `max_inner=2
 2. Run `count_spikes.py` on every 100th VTU frame to track wavelength evolution.
 3. Pick representative frames (t = 1.5, 2.3, 3.0, 4.2, 6.0) and render in ParaView matched to paper Fig. 6 layout. Side-by-side comparison.
 4. Decide: is the L5 result publication-quality? If yes, set up L6 on HPC (you drive). If no, debug the asymmetry first.
+
+---
+
+## 🚧 Session close — May 5 evening
+
+### What's locked in
+
+- Hedgehog L5 iter at t = 5.0 confirmed publication-grade (Rosensweig pattern,
+  5 spikes, λ ≈ 0.20, theory match within tolerance).
+- Plan A (cross-AMR mag preconditioner caching), Plan B (mag iter telemetry),
+  Rosensweig formula fix in analyzer, NS Schur MPI fix, NS Schur LSC
+  preconditioner, MMS analytical-d/dt opt-in, --tau-M override, t² profile,
+  three-agent audit + fixes — all committed.
+- Reports/hedgehog_L5_iter_t5/ checked in (snapshot at t=5.02).
+- Two stale-code README notes (`validation/README.md`, `mms/ns/STALE_ns_variable_nu.md`)
+  document orphaned files instead of silently ignoring them.
+
+### Waiting on
+
+- **Hedgehog L5 iter to finish** (~mid-day 2026-05-06). Current run at PID 71402
+  reaches t = 6.0 and produces final diagnostics.csv + final VTU set.
+- After completion, three quick follow-ups:
+  - Re-run `analyze_hedgehog.py` on the complete CSV → produce final
+    `Reports/hedgehog_L5_iter_final/` (will replace `_t5` snapshot).
+  - LSC vs direct speedup table (one short benchmark each, dome -r 5).
+  - ParaView .pvsm state file (manual, ~30 min).
+
+### Next conversation: Scheme II — T1 + T2 + T3 implementation
+
+Hand-off briefing: **`Proofs/SCHEME_II_HANDOFF.md`** (created this session).
+
+The new conversation will start from a clean branch `scheme-II` off the current
+HEAD and add the three Shliomis-model nonlinear terms that the Nochetto 2016
+base omits:
+
+| Term | Form | Paper section | Code touch |
+|---|---|---|---|
+| **T1** | Landau–Lifshitz damping `−β M × (M × H)` | scheme_II §3, eq. (15a) | `magnetic_assembler.cc` (M-equation RHS) |
+| **T2** | Spin-vorticity coupling `½(∇×U) × M` | scheme_II §3, eq. (15a) | `magnetic_assembler.cc` (M-equation, uses U^k not U^{k-1}) |
+| **T3** | Antisymmetric magnetic stress `(μ₀/2)∇×(M×H)` | scheme_II §3, eq. (15b) | `ns_assembler.cc` (NS RHS, weak form `(μ₀/2)(M×H, ∇×V)`) |
+
+Theoretical guarantees from `scheme_II_standalone.pdf`:
+- Unconditional discrete energy stability (Theorem 4.5).
+- Existence + conditional uniqueness via Brouwer fixed-point (Section 5).
+- Weak convergence of subsequences (Section 6).
+
+Before opening the new conversation, the user has confirmed:
+- Branch strategy: `git checkout -b scheme-II` from current HEAD (not folder fork).
+- The base scheme stays untouched on `main` for the joint paper / Scheme I.
+- Sanity check first: with β = 0, the existing hedgehog must reproduce the
+  current L5 result exactly (regression baseline).
+
+See `SCHEME_II_HANDOFF.md` for the full plan, file-by-file touch list,
+MMS-extension requirements, validation cascade, and known gotchas
+(U^k transport order, weak form for T3 to avoid H(curl) regularity, etc.).

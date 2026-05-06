@@ -272,6 +272,13 @@ private:
     double time_;
     unsigned int timestep_number_;
 
+    // ========================================================================
+    // VTK output bookkeeping (time-based mode; see Parameters::Output::dt_output)
+    // ========================================================================
+    double next_output_time_   = 0.0;  // next sim-time threshold to write a VTU
+    double last_output_time_   = 0.0;  // physics time of most recent VTU write
+    unsigned int output_frame_idx_ = 0;  // monotonic frame counter (0 = IC)
+
     // Solver diagnostics
     SolverInfo last_ch_info_;
     SolverInfo last_mag_info_;

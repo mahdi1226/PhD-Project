@@ -46,6 +46,7 @@
 #include <fstream>
 #include <iomanip>
 #include <cmath>
+#include <limits>
 
 // ============================================================================
 // run() - Main time-stepping loop with integrated logging
@@ -201,6 +202,143 @@ void PhaseFieldProblem<dim>::run()
     const unsigned int output_frequency = params_.output.frequency;
 
     // ========================================================================
+    // VTK OUTPUT CADENCE
+    //
+    // Two modes (see Parameters::Output for full doc):
+    //   - Time-based (default): write when current_time crosses k*dt_output.
+    //     File count = round(t_final/dt_output), independent of solver dt.
+    //   - Step-based (legacy):  write every output_frequency steps.
+    //
+    // Mode is selected by params_.output.dt_output > 0.
+    // ========================================================================
+
+    // Validate dt_output. Negative values are foot-guns (silent fall-through
+    // to step-based mode). Reject loudly. Zero is the documented "step mode"
+    // sentinel and is allowed.
+    if (params_.output.dt_output < 0.0)
+    {
+        if (MPIUtils::is_root(mpi_communicator_))
+            std::cerr << "[Output] ERROR: --output_dt is negative ("
+                      << params_.output.dt_output
+                      << "). Use 0 to opt into step-based mode, or a positive"
+                      << " physics-time interval. Aborting.\n";
+        std::exit(1);
+    }
+
+    const bool   time_based_output = (params_.output.dt_output > 0.0);
+    const double dt_output         = params_.output.dt_output;
+
+    if (time_based_output && dt_output < dt)
+    {
+        if (MPIUtils::is_root(mpi_communicator_))
+            std::cerr << "[Output] WARNING: dt_output (" << dt_output
+                      << ") < solver dt (" << dt << "). Falling back to "
+                      << "every-step VTU output.\n";
+    }
+
+    // Echo selected mode at startup (visibility for the user — bug 3 follow-up).
+    if (MPIUtils::is_root(mpi_communicator_))
+    {
+        if (time_based_output)
+            std::cout << "[Output] VTK cadence: time-based, dt_output = "
+                      << dt_output << " (~"
+                      << (static_cast<int>(std::round(t_final / dt_output)) + 1)
+                      << " frames over t_final = " << t_final
+                      << ", including IC)\n";
+        else
+            std::cout << "[Output] VTK cadence: step-based, every "
+                      << output_frequency << " steps\n";
+    }
+
+    // Reset bookkeeping (run() may be called multiple times in MMS)
+    next_output_time_  = 0.0;
+    output_frame_idx_  = 0;
+    last_output_time_  = -std::numeric_limits<double>::infinity();
+
+    // Step-relative epsilon for time comparisons. 1e-9 * dt scales correctly
+    // across any choice of physics units; an absolute 1e-12 would break for
+    // very small or very large dt_output.
+    const double t_eps = 1e-9 * dt;
+
+    // Manifest CSV: maps frame index → (step, simulation time, n_cells).
+    // Lets analysis scripts read t directly without recomputing step*dt
+    // (which is brittle under adaptive dt or restart).
+    std::ofstream manifest;
+    if (MPIUtils::is_root(mpi_communicator_))
+    {
+        manifest.open(output_dir + "/output_manifest.csv");
+        manifest << "frame_idx,step,time,n_active_cells\n";
+        manifest << std::scientific << std::setprecision(10);
+    }
+
+    // Decide whether to write a VTU at the *current* state (time_, timestep_number_).
+    // Updates next_output_time_ on a fire. Returns true iff a VTU should be written.
+    auto should_output_now = [&](bool force) -> bool {
+        bool write = force;
+        if (!write)
+        {
+            if (time_based_output)
+            {
+                // Cross-threshold test, robust to non-uniform dt and float noise.
+                // Trigger when time_ has reached or passed the next scheduled
+                // multiple of dt_output (within half a step's tolerance).
+                write = (time_ + 0.5 * dt >= next_output_time_ - t_eps);
+            }
+            else
+            {
+                write = (timestep_number_ % output_frequency == 0);
+            }
+        }
+        if (write && time_based_output)
+        {
+            // Advance schedule past the *current* time so we don't re-fire on
+            // the same step if multiple thresholds were skipped (large dt).
+            // The `<=` (not `<`) is LOAD-BEARING: at IC time_=0 with
+            // next_output_time_=0, we want the schedule to advance to dt_output
+            // (otherwise the first regular step at t=dt would re-fire threshold 0).
+            while (next_output_time_ <= time_ + 0.5 * dt)
+                next_output_time_ += dt_output;
+        }
+        return write;
+    };
+
+    // Performs a VTU output, then logs to the manifest (rank 0 only) and
+    // updates last_output_time_ (used by the final-frame guard).
+    //
+    // MPI invariant: output_frame_idx_ is incremented unconditionally on every
+    // rank — must stay in lockstep so that every rank's view of "next frame
+    // index" agrees. Do NOT add rank-conditional early returns to this lambda.
+    auto do_output = [&](double t_now, unsigned int step_now) {
+        output_results(output_dir);
+        if (MPIUtils::is_root(mpi_communicator_))
+        {
+            manifest << output_frame_idx_ << ',' << step_now << ',' << t_now
+                     << ',' << triangulation_.n_global_active_cells() << '\n';
+            manifest.flush();
+        }
+        last_output_time_ = t_now;
+        ++output_frame_idx_;  // MUST run on all ranks; see invariant above.
+    };
+
+#ifdef DEBUG
+    // MPI sync check (debug only): verify output_frame_idx_ stays identical
+    // across ranks. A divergence means someone added a rank-conditional path
+    // inside do_output, breaking the invariant documented above.
+    auto assert_frame_idx_synced = [&]() {
+        unsigned int local = output_frame_idx_;
+        unsigned int min_v = local, max_v = local;
+        MPI_Allreduce(&local, &min_v, 1, MPI_UNSIGNED, MPI_MIN, mpi_communicator_);
+        MPI_Allreduce(&local, &max_v, 1, MPI_UNSIGNED, MPI_MAX, mpi_communicator_);
+        AssertThrow(min_v == max_v,
+            dealii::ExcMessage(
+                "output_frame_idx_ diverged across ranks — "
+                "do_output lambda was likely modified to skip increment on some rank."));
+    };
+#else
+    auto assert_frame_idx_synced = [](){};
+#endif
+
+    // ========================================================================
     // INITIAL OUTPUT (step 0)
     // ========================================================================
     {
@@ -246,8 +384,9 @@ void PhaseFieldProblem<dim>::run()
         if (params_.enable_magnetic)
             mag_logger.write(compute_field_distribution(params_, time_, 0));
 
-        // Output VTK
-        output_results(output_dir);
+        // Output VTK at t=0 (always — IC frame, frame_idx = 0)
+        (void)should_output_now(/*force=*/true);
+        do_output(time_, timestep_number_);
 
         prev_data = data;
     }
@@ -654,7 +793,13 @@ void PhaseFieldProblem<dim>::run()
             pcout_ << "[Sparsity Export] NS matrix done.\n";
         }
 
-        // Console output (every N steps, only if diagnostics were computed)
+        // Console + magnetic-distribution log: INTENTIONALLY step-cadenced
+        // (every output_frequency steps), independent of VTK cadence.
+        //
+        // Rationale: VTK files are megabytes; console lines are bytes. Users
+        // want frequent stdout heartbeat (e.g. every 10 steps) but sparse VTU
+        // dumps (e.g. every 0.01 physics-time = 100 steps at dt=1e-4).
+        // These two channels serve different purposes — see Parameters::Output.
         if (run_diagnostics && timestep_number_ % output_frequency == 0)
         {
             console.print_step(data);
@@ -671,12 +816,12 @@ void PhaseFieldProblem<dim>::run()
             console.print_notes(data);
         }
 
-        // VTK output (every N steps)
-        if (timestep_number_ % output_frequency == 0)
+        // VTK output (time-based or step-based — see should_output_now lambda)
+        if (should_output_now(/*force=*/false))
         {
             CumulativeTimer t;
             t.start();
-            output_results(output_dir);
+            do_output(time_, timestep_number_);
             t.stop();
             step_timing.output_time = t.last();
         }
@@ -712,10 +857,31 @@ void PhaseFieldProblem<dim>::run()
     }
 
     // ========================================================================
-    // FINAL OUTPUT (only if last step wasn't already output)
+    // FINAL OUTPUT (always emit a final frame at t=t_final, unless we just did)
     // ========================================================================
-    if ((timestep_number_ - 1) % output_frequency != 0)
-        output_results(output_dir);
+    {
+        // "Already wrote final" iff the most recent VTU is within half a step
+        // of the current physics time. This is mode-agnostic and correct for
+        // all alignments of t_final vs dt_output (e.g., t_final=0.055,
+        // dt_output=0.01 → last in-loop frame was at t=0.05, last_output_time_
+        // = 0.05, |0.055 - 0.05| = 0.005 > 0.5*0.001 → fire final at 0.055).
+        const bool already_wrote_final =
+            std::abs(time_ - last_output_time_) < 0.5 * dt;
+
+        if (!already_wrote_final)
+        {
+            (void)should_output_now(/*force=*/true);
+            do_output(time_, timestep_number_);
+        }
+        assert_frame_idx_synced();
+    }
+
+    if (MPIUtils::is_root(mpi_communicator_))
+    {
+        manifest.close();
+        std::cout << "[Output] Wrote " << output_frame_idx_
+                  << " VTU frames to " << output_dir << "\n";
+    }
 
     // ========================================================================
     // FINAL ROSENSWEIG VALIDATION SUMMARY (printed ONCE at end)

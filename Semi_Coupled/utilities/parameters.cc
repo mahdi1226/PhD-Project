@@ -427,8 +427,16 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
         }
         else if (std::strcmp(argv[i], "--vtk_interval") == 0)
         {
+            // Forces step-based mode by zeroing dt_output (legacy behaviour).
             if (++i >= argc) { std::cerr << "--vtk_interval requires a value\n"; std::exit(1); }
             params.output.frequency = std::stoul(argv[i]);
+            params.output.dt_output = 0.0;
+        }
+        else if (std::strcmp(argv[i], "--output_dt") == 0)
+        {
+            // Time-based VTU output: write when sim time crosses k*dt_output.
+            if (++i >= argc) { std::cerr << "--output_dt requires a value\n"; std::exit(1); }
+            params.output.dt_output = std::stod(argv[i]);
         }
 
         // AMR
@@ -584,7 +592,9 @@ Parameters Parameters::parse_command_line(int argc, char* argv[])
             std::cout << "  --dt DT         Time step size\n";
             std::cout << "  --t_final T     Final simulation time\n";
             std::cout << "  --max_steps N   Maximum number of steps\n";
-            std::cout << "  --vtk_interval N  VTK output every N steps\n\n";
+            std::cout << "  --output_dt T     VTK output every T units of simulation time (default: 0.01)\n";
+            std::cout << "                    File count = round(t_final/T), independent of dt.\n";
+            std::cout << "  --vtk_interval N  Legacy: VTK output every N steps. Disables --output_dt.\n\n";
 
             std::cout << "AMR:\n";
             std::cout << "  --amr / --no_amr      Enable/disable AMR\n";

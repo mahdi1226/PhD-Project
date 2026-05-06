@@ -142,7 +142,21 @@ struct Parameters
     {
         std::string folder = "./Results";
         std::string run_name = "";   // Auto-generated if empty: preset-rN[-amr]
-        unsigned int frequency = 10;
+
+        // VTK output cadence — TWO modes, in order of precedence:
+        //
+        //  1) Time-based (NEW DEFAULT). If dt_output > 0, write a VTU when
+        //     simulation time crosses an integer multiple of dt_output.
+        //     File count = round(t_final / dt_output) — independent of dt.
+        //     Recommended for production runs and cross-dt comparisons.
+        //
+        //  2) Step-based (LEGACY). If dt_output <= 0, write every
+        //     `frequency` steps. Kept for backward compat with --vtk_interval.
+        //
+        // The CLI flag --vtk_interval N forces mode (2) by setting dt_output = 0.
+        // The CLI flag --output_dt T forces mode (1) by setting dt_output = T.
+        double dt_output = 0.01;     // physics-time spacing; <=0 disables time mode
+        unsigned int frequency = 10; // step-based fallback (mode 2)
         bool verbose = false;
     } output;
 
