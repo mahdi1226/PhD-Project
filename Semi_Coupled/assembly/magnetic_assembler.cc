@@ -210,8 +210,23 @@ void MagneticAssembler<dim>::assemble(
             {
                 f_mms_phi = compute_poisson_mms_source_coupled<dim>(
                     x_q, current_time, L_y);
-                f_mms_M = compute_mag_mms_source_equilibrium<dim>(
-                    x_q, current_time, tau_M_val, chi_theta, L_y);
+
+                // Use the FULL transport source (time derivative + convection
+                // + skew + relaxation) instead of the equilibrium-only one.
+                // The equilibrium source omitted (M_n - M_old)/dt and the
+                // convection/skew terms, which made the magnetic temporal-
+                // convergence test silent (rate 0) regardless of mode.
+                //
+                // H = ∇φ* (analytical) — matches the χ(∇φ_n,Z)/τ_M coupling
+                // term on the LHS evaluated at the exact φ*.
+                const double t_old = current_time - dt;
+                dealii::Tensor<1, dim> H_exact =
+                    poisson_mms_exact_H<dim>(x_q, current_time, L_y);
+
+                f_mms_M = compute_mag_mms_source_with_transport<dim>(
+                    x_q, current_time, t_old, tau_M_val, chi_theta,
+                    H_exact, U_q, div_U, L_y,
+                    params_.mms_analytical_dt);
             }
 
             // ================================================================
