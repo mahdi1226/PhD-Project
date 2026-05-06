@@ -64,6 +64,10 @@ public:
     unsigned int last_n_iterations() const { return last_n_iterations_; }
     double       last_residual()     const { return last_residual_; }
     bool         last_used_direct()  const { return last_used_direct_; }
+    /// True iff the most recent solve produced a converged solution.
+    /// false means *both* iterative and direct fallbacks failed — caller
+    /// should treat the simulation state as suspect.
+    bool         last_converged()    const { return last_converged_; }
 
     /// Drop the cached preconditioner (forces rebuild on next iterative solve).
     void invalidate_preconditioner() { cached_block_prec_.reset(); }
@@ -84,9 +88,10 @@ private:
 
     dealii::IndexSet locally_owned_;
     MPI_Comm mpi_communicator_;
-    unsigned int last_n_iterations_;
+    unsigned int last_n_iterations_ = 0;
     double       last_residual_     = 0.0;
-    bool         last_used_direct_;
+    bool         last_used_direct_  = false;
+    bool         last_converged_    = false;
 
     std::unique_ptr<MagneticBlockPreconditioner> cached_block_prec_;
 };

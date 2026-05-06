@@ -169,12 +169,17 @@ void MagneticSolver<dim>::solve(
     const unsigned int rank =
         dealii::Utilities::MPI::this_mpi_process(mpi_communicator_);
 
+    // Reset bookkeeping for this solve
+    last_converged_ = false;
+
     const double rhs_norm = rhs.l2_norm();
     if (rhs_norm < 1e-14)
     {
         solution = 0;
         last_n_iterations_ = 0;
-        last_used_direct_ = !params.use_iterative;
+        last_residual_     = 0.0;
+        last_used_direct_  = !params.use_iterative;
+        last_converged_    = true;  // trivially: 0 = 0
         return;
     }
 
@@ -182,7 +187,10 @@ void MagneticSolver<dim>::solve(
     {
         if (solve_iterative(system_matrix, solution, rhs, params,
                             n_M_dofs, rebuild_preconditioner))
+        {
+            last_converged_ = true;
             return;
+        }
 
         if (params.fallback_to_direct)
         {
@@ -190,23 +198,32 @@ void MagneticSolver<dim>::solve(
                 std::cerr << "[Magnetic] Iterative failed; falling back to direct\n";
             cached_block_prec_.reset();
             if (solve_direct(system_matrix, solution, rhs))
+            {
+                last_converged_ = true;
                 return;
+            }
         }
         if (rank == 0)
             std::cerr << "[Magnetic] All solvers failed!\n";
+        // last_converged_ stays false
         return;
     }
 
-    if (!solve_direct(system_matrix, solution, rhs))
+    if (solve_direct(system_matrix, solution, rhs))
     {
-        if (rank == 0)
-            std::cerr << "[Magnetic] All direct solvers failed; trying iterative\n";
-        LinearSolverParams fb = params;
-        fb.use_iterative = true;
-        fb.max_iterations = 2000;
-        solve_iterative(system_matrix, solution, rhs, fb,
-                        n_M_dofs, /*rebuild=*/true);
+        last_converged_ = true;
+        return;
     }
+
+    if (rank == 0)
+        std::cerr << "[Magnetic] All direct solvers failed; trying iterative\n";
+    LinearSolverParams fb = params;
+    fb.use_iterative = true;
+    fb.max_iterations = 2000;
+    if (solve_iterative(system_matrix, solution, rhs, fb,
+                        n_M_dofs, /*rebuild=*/true))
+        last_converged_ = true;
+    // else: last_converged_ stays false; caller should check.
 }
 
 // ============================================================================

@@ -982,7 +982,18 @@ void PhaseFieldProblem<dim>::solve_magnetics(double dt)
     last_mag_solve_time_ = t_solve.last();
     last_mag_info_.iterations = magnetic_solver_->last_n_iterations();
     last_mag_info_.residual   = magnetic_solver_->last_residual();
-    last_mag_info_.converged  = true;
+    last_mag_info_.converged  = magnetic_solver_->last_converged();
+
+    if (!last_mag_info_.converged)
+    {
+        // Loud failure — magnetic solve is on the critical path; silent
+        // non-convergence corrupts subsequent CH/NS via stale H, M.
+        if (MPIUtils::is_root(mpi_communicator_))
+            std::cerr << "[Magnetic] *** SOLVER DID NOT CONVERGE *** "
+                      << "iters=" << last_mag_info_.iterations
+                      << " res=" << last_mag_info_.residual
+                      << " — physics state is suspect from this step onward.\n";
+    }
 
     // Plan A — adaptive rebuild policy.
     // After a successful solve, the cache is fresh (whether we just rebuilt

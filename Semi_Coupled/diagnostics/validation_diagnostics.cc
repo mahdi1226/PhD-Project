@@ -351,7 +351,12 @@ RosensweigValidation validate_rosensweig(
 
     // Extract physical parameters
     result.surface_tension = params.physics.lambda;
-    result.density = 1.0 + params.physics.r;
+    // Cowley-Rosensweig theory needs the density CONTRAST Δρ across the
+    // interface, not the ferrofluid's absolute density ρ_ferro = 1+r.
+    // Project nondim convention: ρ_water = 1, ρ_ferro = 1+r → Δρ = r.
+    // Previously this used (1+r), which biased λ_c by ~factor √(1+1/r)
+    // for r≈0.1 — substantial. Same fix applied to analyze_hedgehog.py.
+    result.density = params.physics.r;
     result.gravity = params.physics.gravity;
 
     // Compute theory predictions

@@ -640,17 +640,22 @@ SolverInfo solve_ns_system(
             matrix, rhs, solution, constraints,
             p_to_ns_map, ns_owned, mpi_comm, verbose);
 
-        if (!info.converged && !force_direct)
+        // NOTE: We deliberately do NOT fall back from direct → iterative on
+        // failure. The direct path mutates the input matrix in-place via
+        // `pin_pressure_dof` (see ns_solver.cc:211-265: ExtractMyRowView +
+        // const_cast write of 1.0/0.0 on the pinned p-row). The iterative
+        // path's LSC preconditioner builds `B Q⁻¹ B^T` from that same
+        // matrix; a pinned p-row corrupts the LSC operator and produces a
+        // wrong (or non-converging) outer solve.
+        //
+        // If direct fails the simulation is already in serious trouble —
+        // surface the failure cleanly rather than silently producing garbage.
+        if (!info.converged && rank == 0)
         {
-            if (rank == 0)
-                std::cout << "[NS] Direct solver failed, falling back to iterative\n";
-
-            info = solve_ns_system_schur_parallel(
-                matrix, rhs, solution, constraints,
-                pressure_mass,
-                ux_to_ns_map, uy_to_ns_map, p_to_ns_map,
-                ns_owned, vel_owned, p_owned,
-                mpi_comm, viscosity, dt, verbose);
+            std::cerr << "[NS] *** DIRECT SOLVER FAILED *** "
+                      << "Not falling back to iterative (matrix has been "
+                      << "mutated by pressure pin and would corrupt LSC). "
+                      << "Re-run with --iterative_ns to use iterative directly.\n";
         }
     }
     else
@@ -662,6 +667,8 @@ SolverInfo solve_ns_system(
             ns_owned, vel_owned, p_owned,
             mpi_comm, viscosity, dt, verbose);
 
+        // Iterative → direct fallback is SAFE: matrix has not yet been pinned.
+        // The pin happens inside solve_ns_system_direct_parallel itself.
         if (!info.converged && !force_iterative && n_dofs < 2 * direct_threshold)
         {
             if (rank == 0)

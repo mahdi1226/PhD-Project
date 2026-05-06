@@ -22,6 +22,7 @@
 #include "diagnostics/magnetic_diagnostics.h"
 #include "diagnostics/interface_tracking.h"
 #include "diagnostics/force_diagnostics.h"
+#include "diagnostics/validation_diagnostics.h"  // analyze_interface for true spike count
 #include "utilities/parameters.h"
 #include "utilities/mpi_tools.h"
 
@@ -125,19 +126,27 @@ StepData compute_system_diagnostics(
     data.interface_y_max = iface.y_max;
     data.interface_y_mean = iface.y_mean;
 
-    // Store initial interface position on first step
+    // Store initial interface position on first step. Use the MEAN y
+    // across x (not y_max) — for a flat IC the mean is the pool baseline,
+    // for any non-trivial IC the mean is still a meaningful reference,
+    // whereas y_max picks up the highest spike from the start and biases
+    // every later "drift" measurement.
     if (step == 0)
     {
-        data.interface_y_initial = iface.y_max;
+        data.interface_y_initial = iface.y_mean;
     }
     else
     {
         data.interface_y_initial = prev_data.interface_y_initial;
     }
 
-    // Estimate spike count (rough)
-    double domain_width = params.domain.x_max - params.domain.x_min;
-    data.spike_count = estimate_spike_count(iface, domain_width);
+    // Spike count: previously used `estimate_spike_count` which returned
+    // domain_width / 0.2 (a literal constant) for any non-flat profile —
+    // always wrong for multi-spike patterns. The InterfaceProfile from
+    // analyze_interface returns a true peak count (n_peaks). Wire that in.
+    InterfaceProfile profile = analyze_interface<dim>(
+        theta_dof_handler, theta_solution, params, comm);
+    data.spike_count = profile.n_peaks;
 
     // ========================================================================
     // Compute derived quantities

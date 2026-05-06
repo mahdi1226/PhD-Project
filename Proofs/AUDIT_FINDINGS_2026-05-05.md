@@ -130,4 +130,106 @@ Most consequential:
 ---
 
 *Captured 2026-05-05. Source: five parallel audit agents (general-purpose).*
-*Session paused on bigger-audit fixes; current focus is VTK-only bugs.*
+
+---
+
+## ✅ Verification of Tier-1 Tier-1 BUGs (read directly from source)
+
+| Bug | Status | Notes |
+|---|---|---|
+| **A2-9** mag converged hardcoded true | **VERIFIED** | `core/phase_field.cc:985` literal `last_mag_info_.converged = true;` regardless of solver outcome. |
+| **A2-16** NS pin-leak into iterative fallback | **VERIFIED** | `solvers/ns_solver.cc:226-253` `pin_pressure_dof` does in-place `const_cast` writes; the unified solver at lines 639-654 calls iterative on the post-pin matrix. Real bug. |
+| **A1-9** Kelvin gradient form vs paper's skew form | **DOWNGRADED** | `assembly/ns_assembler.cc:430-583` uses gradient identity form. Code comment (lines 444-446) explicitly justifies the choice (better-resolved ∇θ vs poorly-resolved Hess(φ) for Q2 elements). Engineering trade-off, documented. Leave as-is. |
+| **A2-1** CH constraints.distribute on owned-only | **DOWNGRADED** | `solvers/ch_solver.cc:112` constructs owned-only vector; line 235 distributes. MMS rates at optimum (θ_L2=3.00) on AMR-refined meshes suggests deal.II's distribute() handles this. Defensive cleanup possible but not urgent. |
+
+## ⏩ Pillar A6 — Diagnostics correctness
+
+**Net**: 25 findings; six real correctness bugs.
+
+- **[A6-2 BUG]** `diagnostics/ch_diagnostics.h:91-94`: CH energy uses
+  coefficients `ε/2` (gradient) and `1/ε` (double-well). Paper Eq 13 says
+  `λ/2` and `λ/ε²`. The surface-tension parameter `λ` is dropped. Energy
+  drift in CSV is therefore in wrong units; absolute energy values useless.
+- **[A6-15 BUG]** `diagnostics/validation_diagnostics.cc:354`: Rosensweig
+  λ_c uses `density = 1.0 + r` (= ρ_ferro). Cowley-Rosensweig formula needs
+  the contrast Δρ = r. λ_c is therefore biased. Same fix already applied to
+  the Python analyzer; in-binary version still wrong.
+- **[A6-9 BUG]** `diagnostics/system_diagnostics.h:131`: `interface_y_initial`
+  baseline taken from `iface.y_max` (the maximum across x). For a flat IC,
+  y_max = pool_baseline only by accident; for any real IC, drift metric is
+  biased. Use `iface.y_mean` or `params.ic.pool_depth`.
+- **[A6-24 BUG]** `diagnostics/system_diagnostics.h:140`: `spike_count`
+  in CSV uses the broken `estimate_spike_count` (`domain_width / 0.2`,
+  literal constant!). The proper FFT-style detector exists in
+  `validation_diagnostics::count_peaks` but isn't wired in. Always-wrong
+  CSV column.
+- **[A6-10 BUG]** `diagnostics/ns_diagnostics.h:90`: `U_max` sampled at
+  Gauss quadrature points only. For Q2 velocity, true L∞ is at vertices/extrema
+  between Gauss points → systematic underestimate → CFL underestimate.
+- **[A6-4 BUG]** `diagnostics/magnetic_diagnostics.h:142`: `M_max` reported
+  in CSV is computed as `χ·H` (equilibrium estimate from φ + θ), NOT from
+  the actual solved DG-Q1 M field. Misleading column name.
+- Several SMELLs and 3 verified-clean.
+
+## ⏩ Pillar A7 — Output / utilities / build hygiene
+
+**Net**: 20 findings; mostly cleanup.
+
+- **[A7-3 SMELL]** `parallel_diagnostics.csv` is a strict superset of
+  `timing.csv` — redundant per-step I/O.
+- **[A7-4 BUG]** `output/timing_logger.h:107`: `get_memory_usage_mb()` is
+  `__linux__`-only — silently 0 on macOS. ParallelDiagnosticsLogger has
+  Apple+Linux dual implementation; reuse it.
+- **[A7-7 SMELL]** `convergence.csv` opened for every run, not just MMS.
+  Empty file in every Results/ dir clutters downstream globs.
+- **[A7-8 SMELL]** `utilities/tools.h:27-32`: `TEST_ID` / `TEST_H_FORMULA`
+  preprocessor macros pinned to "A". Dead config flag; pollutes global
+  macro namespace.
+- **[A7-9 BUG]** `utilities/tools.cc:114-115`: `ensure_directory` shells
+  out via `system("mkdir -p ...")`. Path-injection footgun on shared HPC.
+  Replace with `std::filesystem::create_directories`.
+- **[A7-10 SMELL]** `utilities/parameters.h:33`: `Parameters::current_time`
+  field — set/read nowhere. Dead.
+- **[A7-11 SMELL]** `utilities/parameters.h:76-77`: `ic.perturbation` and
+  `ic.perturbation_modes` — no consumer. Project rule explicitly forbids
+  initial perturbations (see MEMORY.md). Delete.
+- **[A7-15 SMELL]** `mms/ns/ns_variable_nu_mms_test.cc` not in build, also
+  not in the documented STALE list. Either add to STALE or delete.
+- **[A7-16 BUG]** Top-level `CMakeLists.txt`: no `enable_testing()`, no
+  `add_test()`. `ctest` does nothing. CI cannot run regressions.
+
+## Updated triage priority
+
+**Round 1 — verified Tier-1 correctness** (this session):
+- A2-9 (mag converged) → trivial fix
+- A2-16 (NS pin-leak) → drop direct→iterative fallback
+- A6-2 (CH energy coefficients) → use λ instead of ε
+- A6-15 (Rosensweig Δρ) → density contrast
+- A6-9 (interface_y_initial baseline) → use y_mean
+- A6-24 (spike_count) → wire in real detector
+
+**Round 2 — diagnostic clarity** (this session):
+- A6-4 (M_max rename to M_eq_max)
+- A6-10 (U_max via support_points for true L∞)
+- A6-22/23 (drop dead StepData fields: poisson_iterations, ns_inner_iterations)
+- A7-4 (TimingLogger memory_mb on macOS)
+
+**Round 3 — perf wins** (this session, static patches):
+- A4-1 (NS Schur preconditioner cross-AMR cache)
+- A4-2 (ns_diagnostics shape_value loops → get_function_values)
+
+**Round 4 — hygiene** (this session):
+- A5-1 (delete stray PNG)
+- A7-8 (drop TEST_ID macros)
+- A7-9 (filesystem::create_directories)
+- A7-10 (drop Parameters::current_time)
+- A7-11 (drop ic.perturbation*)
+- A7-7 (gate convergence.csv on enable_mms)
+- A7-15 (mark or delete ns_variable_nu_mms_test.cc)
+
+**Round 5 — defer** (needs hedgehog to finish):
+- Run benchmarks to confirm A4 perf estimates
+- Verify A2-1 (CH distribute) with a targeted test on AMR-hanging-node case
+- A2-19 (zero-RHS handling) and A2-3 (CH AMG cache) deferred
+
+*Verified and consolidated 2026-05-05 evening. Plan: implement Rounds 1-4 in this session; commit per-tier.*

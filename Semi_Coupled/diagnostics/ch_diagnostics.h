@@ -33,7 +33,8 @@ struct CHDiagnostics
     double theta_min = 0.0;
     double theta_max = 0.0;
     double mass = 0.0;           // ∫θ dΩ
-    double energy = 0.0;         // E_CH = ∫[ε/2|∇θ|² + (1/ε)W(θ)] dΩ
+    double energy = 0.0;         // E_CH = ∫[(λ/2)|∇θ|² + (λ/ε²) W(θ)] dΩ
+                                 // (Nochetto CMAME 2016, Eq 13)
     bool bounds_violated = false;
 };
 
@@ -48,6 +49,7 @@ CHDiagnostics compute_ch_diagnostics(
     MPI_Comm comm = MPI_COMM_WORLD)
 {
     const double epsilon = params.physics.epsilon;
+    const double lambda  = params.physics.lambda;     // Nochetto Eq 13 prefactor
 
     const auto& fe = theta_dof_handler.get_fe();
     dealii::QGauss<dim> quadrature(fe.degree + 1);
@@ -88,9 +90,12 @@ CHDiagnostics compute_ch_diagnostics(
             const double theta_sq = theta * theta;
             const double W_theta = 0.25 * (theta_sq - 1.0) * (theta_sq - 1.0);
 
-            // E_CH = ε/2 |∇θ|² + (1/ε) W(θ)
-            const double E_grad = 0.5 * epsilon * grad_theta_sq;
-            const double E_bulk = (1.0 / epsilon) * W_theta;
+            // E_CH = (λ/2)|∇θ|² + (λ/ε²) W(θ)   (Nochetto CMAME 2016, Eq 13)
+            // The capillary parameter λ controls the surface tension scale;
+            // the previous code used ε/2 and 1/ε (no λ), which dimensionally
+            // mis-scaled the reported energy.
+            const double E_grad = 0.5 * lambda * grad_theta_sq;
+            const double E_bulk = (lambda / (epsilon * epsilon)) * W_theta;
             local_energy += (E_grad + E_bulk) * JxW;
 
             // Track bounds
