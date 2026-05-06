@@ -169,6 +169,9 @@ void print_usage(const char* program_name)
         << "  --mms-analytical      Use analytical d/dt in MMS sources (default: discrete\n"
         << "                        differences, which cancel BE truncation by construction).\n"
         << "                        Pass --mms-analytical to expose the BE temporal rate ~1.0.\n"
+        << "  --tau-M <value>       Override params.physics.tau_M (default 1e-6 = stiff\n"
+        << "                        equilibrium, masks M's BE rate). Set to ~0.01 to give\n"
+        << "                        M its own dynamics and expose its temporal rate.\n"
         << "  --temporal-steps <n1> <n2> ...  Time step counts for temporal tests\n"
         << "                        (default: 10 20 40 80 160)\n"
         << "  --help                Show this help\n"
@@ -202,6 +205,14 @@ int main(int argc, char* argv[])
     bool mms_analytical_dt = false;  // --mms-analytical: use analytical d/dt
                                      // in MMS sources (vs discrete differences).
                                      // Required to measure formal BE temporal rate.
+    double tau_M_override = -1.0;    // --tau-M VAL: override params.physics.tau_M.
+                                     // Default tau_M = 1e-6 puts M in stiff
+                                     // equilibrium (M_n = chi*H_n forced at every
+                                     // step) which masks any BE truncation error
+                                     // in M. Use --tau-M >= 1e-2 to give M its own
+                                     // dynamics and expose the formal rate ~1.0
+                                     // in the temporal-convergence test. Negative
+                                     // value (default) means no override.
     std::vector<unsigned int> temporal_steps = {10, 20, 40, 80, 160};
 
     for (int i = 1; i < argc; ++i)
@@ -284,6 +295,10 @@ int main(int argc, char* argv[])
         {
             mms_analytical_dt = true;
         }
+        else if (arg == "--tau-M" && i + 1 < argc)
+        {
+            tau_M_override = std::stod(argv[++i]);
+        }
         else if (arg == "--help" || arg == "-h")
         {
             if (this_rank == 0)
@@ -295,12 +310,17 @@ int main(int argc, char* argv[])
     // Production parameters from parameters.h - no overrides
     Parameters params;
     params.mms_analytical_dt = mms_analytical_dt;
+    if (tau_M_override > 0.0)
+        params.physics.tau_M = tau_M_override;
 
     if (this_rank == 0)
     {
         std::cout << "\n=== Parallel MMS Test ===\n";
         std::cout << "MPI ranks: " << n_ranks << "\n";
         std::cout << "Level: " << test_type_to_string(test_type) << "\n";
+        if (tau_M_override > 0.0)
+            std::cout << "tau_M:    " << params.physics.tau_M
+                      << " (overridden via --tau-M)\n";
         std::cout << "MMS d/dt: "
                   << (mms_analytical_dt ? "ANALYTICAL (exposes BE rate)"
                                         : "discrete (matches discrete scheme exactly)")
