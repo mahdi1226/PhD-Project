@@ -519,7 +519,9 @@ int main(int argc, char* argv[])
                     result.print_summary();
                     result.write_csv(csv_name);
                 }
-                passed = !result.is_exponential_growth;
+                // Stub runners set not_implemented=true; force a fail so CI
+                // can't mistake an empty snapshot list for a passing run.
+                passed = !result.is_exponential_growth && !result.not_implemented;
                 break;
             }
         }

@@ -92,6 +92,11 @@ struct LongDurationResult
     double theta_L2_final_ratio = 0.0;    // e(t_end) / e(t_start)
     bool is_exponential_growth = false;   // true if growth faster than linear
 
+    // Set true by stub runners that did not actually exercise the system.
+    // The dispatcher returns failure (non-zero exit) when this is set,
+    // so a CI invocation cannot mistake an empty result for "test passed".
+    bool not_implemented = false;
+
     void analyze_growth();
     void print_summary() const;
     void write_csv(const std::string& filename) const;

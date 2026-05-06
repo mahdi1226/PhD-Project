@@ -1,7 +1,13 @@
 // ============================================================================
 // mms/magnetic/magnetic_mms_test.h - Magnetic Standalone MMS Test (STUB)
 //
-// TODO: Implement standalone magnetic MMS convergence test
+// STATUS: NOT IMPLEMENTED. The runners below return zero-initialized
+// results and `passes()` always returns false. Any test driver invoking
+// MAGNETIC_STANDALONE or MAG_TEMPORAL will be reported as FAILED by
+// design — they cannot succeed until this file is fleshed out.
+//
+// Use ch_magnetic_mms_test or full_system_mms_test for end-to-end
+// magnetic-coupled MMS coverage instead.
 // ============================================================================
 #ifndef MAGNETIC_MMS_TEST_H
 #define MAGNETIC_MMS_TEST_H
@@ -31,7 +37,14 @@ struct MagneticMMSConvergenceResult
 
     void print_summary(std::ostream& out) const
     {
-        out << "  [STUB] Magnetic standalone MMS not yet implemented.\n";
+        out << "\n"
+            << "  ============================================================\n"
+            << "  *** MAGNETIC STANDALONE MMS — NOT IMPLEMENTED ***\n"
+            << "  ============================================================\n"
+            << "  This test cannot pass; passes() returns false unconditionally.\n"
+            << "  Use --level CH_MAGNETIC or FULL_SYSTEM for magnetic coverage.\n"
+            << "  See mms/magnetic/magnetic_mms_test.h for status.\n"
+            << "  ============================================================\n\n";
     }
 
     void print() const
@@ -48,7 +61,7 @@ struct MagneticMMSConvergenceResult
     bool passes() const { return false; }
 };
 
-// Standalone magnetic MMS convergence test
+// Standalone magnetic MMS convergence test (STUB — see file header).
 inline MagneticMMSConvergenceResult run_magnetic_mms_standalone(
     const std::vector<unsigned int>& /*refinements*/,
     const Parameters& /*params*/,
@@ -58,17 +71,25 @@ inline MagneticMMSConvergenceResult run_magnetic_mms_standalone(
     int rank;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     if (rank == 0)
-        std::cout << "\n  [STUB] Magnetic standalone MMS test not yet implemented.\n";
+    {
+        std::cerr << "\n  *** MAGNETIC_STANDALONE: not implemented (stub). ***\n"
+                  << "  This call will produce a result struct with passes()==false.\n"
+                  << "  See mms/magnetic/magnetic_mms_test.h header for context.\n\n";
+    }
     return MagneticMMSConvergenceResult{};
 }
 
-// Single-level magnetic MMS (used by temporal convergence)
+// Single-level magnetic MMS for temporal convergence (STUB — see file header).
 inline MagneticMMSResult run_magnetic_mms_single(
     unsigned int /*refinement*/,
     const Parameters& /*params*/,
     unsigned int /*n_time_steps*/,
     MPI_Comm /*comm*/)
 {
+    int rank;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    if (rank == 0)
+        std::cerr << "  [MAG_TEMPORAL] WARNING: stub — returning zero-error result.\n";
     return MagneticMMSResult{};
 }
 

@@ -697,9 +697,15 @@ LongDurationResult run_ch_ns_long_duration_mms(
     result.level = LongDurationLevel::CH_NS_LONG;
     result.refinement = refinement;
     result.n_steps = n_time_steps;
+    result.not_implemented = true;  // dispatcher will surface this as failure
 
     if (this_rank == 0)
-        std::cout << "[CH_NS_LONG] Not yet implemented - use CH_LONG first to isolate CH issues\n";
+    {
+        std::cerr << "\n  *** CH_NS_LONG: NOT IMPLEMENTED (stub) ***\n"
+                  << "  This call returns an empty result with not_implemented=true.\n"
+                  << "  Use --level CH_LONG to isolate CH alone, or use the\n"
+                  << "  proper --level CH_NS spatial test instead.\n\n";
+    }
 
     return result;
 }
@@ -727,9 +733,14 @@ LongDurationResult run_full_long_duration_mms(
     result.level = LongDurationLevel::FULL_LONG;
     result.refinement = refinement;
     result.n_steps = n_time_steps;
+    result.not_implemented = true;  // dispatcher will surface this as failure
 
     if (this_rank == 0)
-        std::cout << "[FULL_LONG] Not yet implemented - use CH_LONG first to isolate CH issues\n";
+    {
+        std::cerr << "\n  *** FULL_LONG: NOT IMPLEMENTED (stub) ***\n"
+                  << "  This call returns an empty result with not_implemented=true.\n"
+                  << "  Use --level FULL_SYSTEM (spatial) instead.\n\n";
+    }
 
     return result;
 }

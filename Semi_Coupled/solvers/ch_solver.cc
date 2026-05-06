@@ -116,10 +116,38 @@ SolverInfo solve_ch_system(
 
     const double rhs_norm = rhs.l2_norm();
 
+    // Zero-RHS short-circuit: solution = 0 already; both relative and
+    // absolute residuals are 0 trivially. Skipping the solve avoids a
+    // pathological tol = rel * 0 → spurious NoConvergence (audit A2-19).
+    if (rhs_norm < 1e-14)
+    {
+        constraints.distribute(coupled_solution);
+        info.iterations = 0;
+        info.residual = 0.0;
+        info.converged = true;
+        info.used_direct = !params.use_iterative;
+
+        dealii::TrilinosWrappers::MPI::Vector coupled_solution_relevant(
+            ch_locally_owned, ch_locally_relevant, mpi_comm);
+        coupled_solution_relevant = coupled_solution;
+        for (auto idx = theta_locally_owned.begin(); idx != theta_locally_owned.end(); ++idx)
+            theta_solution[*idx] = coupled_solution_relevant[theta_to_ch_map[*idx]];
+        for (auto idx = psi_locally_owned.begin(); idx != psi_locally_owned.end(); ++idx)
+            psi_solution[*idx] = coupled_solution_relevant[psi_to_ch_map[*idx]];
+        theta_solution.compress(dealii::VectorOperation::insert);
+        psi_solution.compress(dealii::VectorOperation::insert);
+
+        auto end = std::chrono::high_resolution_clock::now();
+        info.solve_time = std::chrono::duration<double>(end - start).count();
+        return info;
+    }
+
     // Setup solver control (relative tolerance based on ||rhs||)
+    // Use max(rel * ||rhs||, abs_tol) so we never get a zero target tolerance.
+    const double abs_tol = 1e-14;
     dealii::SolverControl solver_control(
         params.max_iterations,
-        params.rel_tolerance * rhs_norm,
+        std::max(params.rel_tolerance * rhs_norm, abs_tol),
         /*log_history=*/false,
         /*log_result=*/false);
 
@@ -246,8 +274,20 @@ SolverInfo solve_ch_system(
         }
     }
 
-    // Always distribute constraints after solve (also correct for MMS/Dirichlet)
-    constraints.distribute(coupled_solution);
+    // Apply constraints (audit A2-1: defensive — calling distribute on a
+    // non-ghosted Trilinos vector can silently miss hanging-node masters
+    // owned by other ranks). Hand it a fully-distributed (ghosted)
+    // intermediate, distribute there where master values are accessible,
+    // then copy back to the owned-only solver vector.
+    {
+        dealii::TrilinosWrappers::MPI::Vector tmp(
+            ch_locally_owned, ch_locally_relevant, mpi_comm);
+        tmp = coupled_solution;          // imports ghost values
+        constraints.distribute(tmp);     // resolves all hanging-node masters
+        coupled_solution = tmp;          // owned-only writeback (distribute()
+                                         // writes constrained slaves; masters
+                                         // unchanged so this is a no-op there).
+    }
 
     // ------------------------------------------------------------------------
     // MPI-correct extraction:

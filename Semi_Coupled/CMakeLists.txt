@@ -153,6 +153,35 @@ target_compile_options(parallel_test_ns_phases PRIVATE
 )
 
 # =============================================================================
+# CTest registration
+#
+# Run all tests:   cd build && ctest --output-on-failure
+# Run one:         ctest -R "mms_ch_standalone" --output-on-failure
+#
+# Each test exits non-zero on failure (the test driver returns 1 from main
+# when the underlying convergence check fails or a stub runner is invoked).
+# =============================================================================
+enable_testing()
+
+# Spatial MMS — short refinement sweep, single rank for speed.
+add_test(NAME mms_ch_standalone
+        COMMAND $<TARGET_FILE:parallel_test_mms>
+                --level CH_STANDALONE --refs 3 4 --steps 5)
+add_test(NAME mms_ns_standalone
+        COMMAND $<TARGET_FILE:parallel_test_mms>
+                --level NS_STANDALONE --refs 3 4 --steps 5)
+add_test(NAME mms_ns_ch
+        COMMAND $<TARGET_FILE:parallel_test_mms>
+                --level NS_CH --refs 3 4 --steps 5)
+add_test(NAME mms_ch_magnetic
+        COMMAND $<TARGET_FILE:parallel_test_mms>
+                --level CH_MAGNETIC --refs 3 4 --steps 5)
+
+# Test timeouts (in seconds). MMS at refs 3-4 should complete well under these.
+set_tests_properties(mms_ch_standalone mms_ns_standalone mms_ns_ch mms_ch_magnetic
+        PROPERTIES TIMEOUT 600)
+
+# =============================================================================
 # Usage instructions
 # =============================================================================
 message(STATUS "")

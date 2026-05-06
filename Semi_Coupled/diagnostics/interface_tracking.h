@@ -67,12 +67,12 @@ InterfacePosition compute_interface_position(
         {
             vertex_points[v] = cell->vertex(v);
             const unsigned int vertex_dof = cell->vertex_dof_index(v, 0);
-
-            // Handle distributed vector access
-            if (theta_solution.locally_owned_elements().is_element(vertex_dof))
-                vertex_theta[v] = theta_solution[vertex_dof];
-            else
-                vertex_theta[v] = theta_solution[vertex_dof];  // Ghost value
+            // theta_solution is required to be a ghosted (locally_relevant)
+            // Trilinos vector — operator[] handles owned + ghost identically.
+            // The caller (compute_system_diagnostics) passes theta_relevant_;
+            // a non-ghosted vector here would throw inside Trilinos at the
+            // first non-owned vertex.
+            vertex_theta[v] = theta_solution[vertex_dof];
         }
 
         // Check each EDGE (not diagonal) for sign change

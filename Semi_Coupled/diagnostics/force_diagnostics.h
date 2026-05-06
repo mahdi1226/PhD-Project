@@ -114,7 +114,19 @@ ForceDiagnostics compute_force_diagnostics(
             local_F_cap_max = std::max(local_F_cap_max, F_cap_mag);
 
             // ================================================================
-            // Kelvin force diagnostic: (μ₀/2)|H|²χ'∇θ (interface term)
+            // Kelvin force INTERFACE DIAGNOSTIC: (μ₀/2)|H|²χ'(θ)∇θ
+            //
+            // NOTE — this is only the *interface contribution* of the Kelvin
+            // body force, not the full F_Kelvin = μ₀(M·∇)H = (μ₀/2)∇(χ|H|²).
+            // Expanding the divergence: ∇(χ|H|²/2) = ½|H|²∇χ + χ∇(|H|²/2)
+            //                                      = ½|H|²χ'∇θ + χ Hess(φ)·H
+            // We only report the FIRST piece (interface localization).
+            // The bulk Hess(φ)·H piece is omitted because:
+            //   - it dominates in the ferrofluid bulk where ∇θ ≈ 0
+            //   - including both with mixed dimensions is misleading in a
+            //     single "F_mag_max" CSV column
+            // The full Kelvin force IS assembled in ns_assembler.cc:430-583
+            // (gradient form) — this diagnostic is a lower-bound proxy.
             //
             // H source depends on the magnetic mode:
             //   - h_a-only mode: H = h_a (∇φ is identically zero here)

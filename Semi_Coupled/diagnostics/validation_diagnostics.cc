@@ -22,15 +22,23 @@
 
 void RosensweigValidation::print_summary(std::ostream& out) const
 {
+    // Reset stream formatting — the caller may have left precision/flags
+    // polluted from earlier output (the prior bug was a stray setprecision(1)
+    // in an upstream printer that made lambda=0.025 round to "0.0").
+    auto saved_flags = out.flags();
+    auto saved_prec  = out.precision();
+    out.copyfmt(std::ios(nullptr));
+    out << std::defaultfloat << std::setprecision(6);
+
     out << "\n"
         << "============================================================\n"
         << "ROSENSWEIG INSTABILITY VALIDATION\n"
         << "============================================================\n"
         << "\n"
         << "Physical Parameters:\n"
-        << "  Surface tension (lambda): " << surface_tension << "\n"
-        << "  Density (1+r):            " << density << "\n"
-        << "  Gravity (g):              " << gravity << "\n"
+        << "  Surface tension (lambda):  " << surface_tension << "\n"
+        << "  Density contrast (Delta-rho): " << density << "\n"
+        << "  Gravity (g):               " << gravity << "\n"
         << "\n"
         << "Theoretical Predictions:\n"
         << "  Capillary length:    " << capillary_length << "\n"
@@ -47,6 +55,10 @@ void RosensweigValidation::print_summary(std::ostream& out) const
         << "  Wavelength OK:       " << (wavelength_ok ? "YES" : "NO") << "\n"
         << "  OVERALL:             " << (passed ? "PASSED" : "FAILED") << "\n"
         << "============================================================\n";
+
+    // Restore caller's stream formatting.
+    out.flags(saved_flags);
+    out.precision(saved_prec);
 }
 
 void RosensweigValidation::write_csv(const std::string& filename) const
@@ -128,6 +140,9 @@ InterfaceProfile extract_interface_profile(
         {
             vertex_points[v] = cell->vertex(v);
             const unsigned int vertex_dof = cell->vertex_dof_index(v, 0);
+            // theta_solution must be ghosted (locally_relevant). Vertices on
+            // partition boundaries are owned by neighbouring ranks; reading
+            // them from a non-ghosted vector throws inside Trilinos.
             vertex_theta[v] = theta_solution[vertex_dof];
         }
 
