@@ -498,6 +498,16 @@ void PhaseFieldProblem<dim>::refine_mesh()
     //  Setting the flag makes the intent explicit and is robust to refactors.)
     needs_mag_preconditioner_rebuild_ = true;
 
+    // Drop CH AMG cache: same reasoning. Sparsity changed, so the AMG
+    // aggregation built from the old matrix would point at invalid rows.
+    cached_ch_amg_.reset();
+    needs_ch_preconditioner_rebuild_ = true;
+
+    // Drop NS Schur preconditioner cache: LSC L_p = B Q^-1 B^T was built
+    // from the old matrix layout; sparsity has changed.
+    cached_ns_schur_prec_.reset();
+    needs_ns_preconditioner_rebuild_ = true;
+
     pcout_ << "[AMR] Mesh refinement complete.\n";
 }
 

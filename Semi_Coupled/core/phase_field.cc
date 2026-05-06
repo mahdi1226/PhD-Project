@@ -1059,7 +1059,9 @@ void PhaseFieldProblem<dim>::solve_ch(double dt)
         ch_rhs_);
     t_assemble.stop();
 
-    // Solve and extract θ, ψ
+    // Solve and extract θ, ψ. Pass through cross-AMR AMG cache (mirrors
+    // the magnetic-side caching). The flag is reset to true on AMR by
+    // refine_mesh; cleared after each successful solve.
     t_solve.start();
     last_ch_info_ = solve_ch_system(
         ch_matrix_,
@@ -1074,9 +1076,19 @@ void PhaseFieldProblem<dim>::solve_ch(double dt)
         theta_solution_,
         psi_solution_,
         params_.solvers.ch,
+        cached_ch_amg_,
+        needs_ch_preconditioner_rebuild_,
         mpi_communicator_,
         params_.output.verbose);
     t_solve.stop();
+
+    needs_ch_preconditioner_rebuild_ = false;
+    // Adaptive staleness trigger: if iter count climbed past threshold,
+    // force rebuild on next call (matches the magnetic-side policy).
+    if (params_.solvers.ch.use_iterative
+        && last_ch_info_.converged
+        && last_ch_info_.iterations > 50)
+        needs_ch_preconditioner_rebuild_ = true;
 
     // Record assembly/solve split for parallel diagnostics
     last_ch_assemble_time_ = t_assemble.last();
@@ -1209,7 +1221,9 @@ void PhaseFieldProblem<dim>::solve_ns(double dt)
     }
     else
     {
-        // Iterative Block Schur solver
+        // Iterative Block Schur solver — with cross-AMR preconditioner cache.
+        // Cache reset by refine_mesh(); flag cleared after each successful
+        // solve. Adaptive rebuild trigger if iter count climbs past threshold.
         last_ns_info_ = solve_ns_system_schur_parallel(
             ns_matrix_,
             ns_rhs_,
@@ -1225,7 +1239,13 @@ void PhaseFieldProblem<dim>::solve_ns(double dt)
             mpi_communicator_,
             nu,
             dt,
-            params_.output.verbose);
+            params_.output.verbose,
+            cached_ns_schur_prec_,
+            needs_ns_preconditioner_rebuild_);
+
+        needs_ns_preconditioner_rebuild_ = false;
+        if (last_ns_info_.converged && last_ns_info_.iterations > 200)
+            needs_ns_preconditioner_rebuild_ = true;  // adaptive staleness
     }
 
     // Extract individual solutions

@@ -96,6 +96,8 @@ SolverInfo solve_ch_system(
     dealii::TrilinosWrappers::MPI::Vector& theta_solution,
     dealii::TrilinosWrappers::MPI::Vector& psi_solution,
     const LinearSolverParams& params,
+    std::unique_ptr<dealii::TrilinosWrappers::PreconditionAMG>& cached_amg,
+    bool rebuild_preconditioner,
     MPI_Comm mpi_comm,
     bool verbose)
 {
@@ -159,7 +161,14 @@ SolverInfo solve_ch_system(
     }
 
     // ========================================================================
-    // Iterative solver (GMRES + AMG)
+    // Iterative solver (GMRES + AMG, with cross-AMR preconditioner caching)
+    //
+    // The AMG `setup` (aggregation + smoother factorization) is the
+    // dominant cost — typically 5-20× a single vmult. Sparsity is fixed
+    // between AMR events, so reusing the cached preconditioner across
+    // non-AMR steps is safe (matrix values change, but ML/AMG aggregation
+    // is robust to that — at most a few extra GMRES iterations).
+    // Caller (PhaseFieldProblem) resets `cached_amg` after refine_mesh().
     // ========================================================================
     if (!converged && params.use_iterative)
     {
@@ -169,18 +178,20 @@ SolverInfo solve_ch_system(
 
         dealii::SolverGMRES<dealii::TrilinosWrappers::MPI::Vector> solver(solver_control, gmres_data);
 
-        dealii::TrilinosWrappers::PreconditionAMG preconditioner;
-        dealii::TrilinosWrappers::PreconditionAMG::AdditionalData amg_data;
-        amg_data.smoother_sweeps = 2;
-        amg_data.aggregation_threshold = 1e-4;
-        amg_data.elliptic = false;
-        amg_data.higher_order_elements = true;
-
         try
         {
-            preconditioner.initialize(matrix, amg_data);
+            if (rebuild_preconditioner || !cached_amg)
+            {
+                cached_amg = std::make_unique<dealii::TrilinosWrappers::PreconditionAMG>();
+                dealii::TrilinosWrappers::PreconditionAMG::AdditionalData amg_data;
+                amg_data.smoother_sweeps = 2;
+                amg_data.aggregation_threshold = 1e-4;
+                amg_data.elliptic = false;
+                amg_data.higher_order_elements = true;
+                cached_amg->initialize(matrix, amg_data);
+            }
 
-            solver.solve(matrix, coupled_solution, rhs, preconditioner);
+            solver.solve(matrix, coupled_solution, rhs, *cached_amg);
 
             info.iterations = solver_control.last_step();
             info.residual = solver_control.last_value();
@@ -192,6 +203,9 @@ SolverInfo solve_ch_system(
             info.iterations = solver_control.last_step();
             info.residual = solver_control.last_value();
             info.converged = false;
+            // Drop cache — the matrix may have shifted enough that the
+            // current AMG aggregation is stale. Next solve will rebuild.
+            cached_amg.reset();
 
             if (verbose && rank == 0)
             {
@@ -204,6 +218,7 @@ SolverInfo solve_ch_system(
             if (verbose && rank == 0)
                 std::cerr << "[CH] Exception: " << e.what() << "\n";
             info.converged = false;
+            cached_amg.reset();
         }
     }
 

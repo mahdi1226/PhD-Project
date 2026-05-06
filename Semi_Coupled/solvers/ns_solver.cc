@@ -32,6 +32,7 @@
 //          For unsteady problems: schur_alpha = nu + 1/dt
 //          For steady problems (dt <= 0): schur_alpha = nu
 // ============================================================================
+// Cached overload (production path).
 SolverInfo solve_ns_system_schur_parallel(
     const dealii::TrilinosWrappers::SparseMatrix& matrix,
     const dealii::TrilinosWrappers::MPI::Vector& rhs,
@@ -47,7 +48,9 @@ SolverInfo solve_ns_system_schur_parallel(
     MPI_Comm mpi_comm,
     double viscosity,
     double dt,
-    bool verbose)
+    bool verbose,
+    std::unique_ptr<BlockSchurPreconditionerParallel>& cached_prec,
+    bool rebuild_preconditioner)
 {
     SolverInfo info;
     info.solver_name = "NS-FGMRES-Schur";
@@ -70,14 +73,22 @@ SolverInfo solve_ns_system_schur_parallel(
 
     auto start = std::chrono::high_resolution_clock::now();
 
-    // Create block Schur preconditioner with dt for proper scaling
-    // Uses improved defaults from constructor: inner_tolerance=1e-1, max_inner_iterations=20
-    // Schur scaling: alpha = nu + 1/dt (unsteady) or alpha = nu (steady, dt <= 0)
-    BlockSchurPreconditionerParallel preconditioner(
-        matrix, pressure_mass,
-        ux_to_ns_map, uy_to_ns_map, p_to_ns_map,
-        ns_owned, vel_owned, p_owned,
-        mpi_comm, viscosity, dt);
+    // Cross-AMR preconditioner cache. The full preconditioner — including
+    // the LSC L_p = B Q^-1 B^T matrix-matrix product and its AMG hierarchy,
+    // plus the velocity-block AMG — is the expensive part to (re)build.
+    // Sparsity is fixed between AMR events, so reusing across non-AMR
+    // steps is correctness-safe (matrix values may have drifted, but ML/AMG
+    // aggregation is robust to that; LSC L_p is approximate by design).
+    // Caller (PhaseFieldProblem) calls cached_prec.reset() inside refine_mesh().
+    if (rebuild_preconditioner || !cached_prec)
+    {
+        cached_prec = std::make_unique<BlockSchurPreconditionerParallel>(
+            matrix, pressure_mass,
+            ux_to_ns_map, uy_to_ns_map, p_to_ns_map,
+            ns_owned, vel_owned, p_owned,
+            mpi_comm, viscosity, dt);
+    }
+    BlockSchurPreconditionerParallel& preconditioner = *cached_prec;
 
     // DO NOT override defaults - they are already optimized in the constructor!
     // OLD (slow): preconditioner.inner_tolerance = 1e-3;
@@ -120,6 +131,8 @@ SolverInfo solve_ns_system_schur_parallel(
                       << ", S=" << (e.last_step > 0 ? preconditioner.n_iterations_S / e.last_step : 0)
                       << "]\n";
         }
+        // Drop the cached preconditioner — likely went stale. Next call rebuilds.
+        cached_prec.reset();
     }
 
     auto end = std::chrono::high_resolution_clock::now();
@@ -146,6 +159,37 @@ SolverInfo solve_ns_system_schur_parallel(
     }
 
     return info;
+}
+
+// ============================================================================
+// Backward-compat overload (no caching; each call builds fresh preconditioner).
+// MMS tests / ad-hoc callers can use this; production should use the cached
+// overload via PhaseFieldProblem.
+// ============================================================================
+SolverInfo solve_ns_system_schur_parallel(
+    const dealii::TrilinosWrappers::SparseMatrix& matrix,
+    const dealii::TrilinosWrappers::MPI::Vector& rhs,
+    dealii::TrilinosWrappers::MPI::Vector& solution,
+    const dealii::AffineConstraints<double>& constraints,
+    const dealii::TrilinosWrappers::SparseMatrix& pressure_mass,
+    const std::vector<dealii::types::global_dof_index>& ux_to_ns_map,
+    const std::vector<dealii::types::global_dof_index>& uy_to_ns_map,
+    const std::vector<dealii::types::global_dof_index>& p_to_ns_map,
+    const dealii::IndexSet& ns_owned,
+    const dealii::IndexSet& vel_owned,
+    const dealii::IndexSet& p_owned,
+    MPI_Comm mpi_comm,
+    double viscosity,
+    double dt,
+    bool verbose)
+{
+    std::unique_ptr<BlockSchurPreconditionerParallel> local_prec;
+    return solve_ns_system_schur_parallel(
+        matrix, rhs, solution, constraints, pressure_mass,
+        ux_to_ns_map, uy_to_ns_map, p_to_ns_map,
+        ns_owned, vel_owned, p_owned,
+        mpi_comm, viscosity, dt, verbose,
+        local_prec, /*rebuild_preconditioner=*/true);
 }
 
 // ============================================================================
@@ -594,7 +638,9 @@ SolverInfo solve_ns_system(
     bool verbose,
     bool force_direct,
     bool force_iterative,
-    unsigned int direct_threshold)
+    unsigned int direct_threshold,
+    std::unique_ptr<BlockSchurPreconditionerParallel>* cached_prec,
+    bool rebuild_preconditioner)
 {
     const unsigned int n_dofs = matrix.m();
 
@@ -660,12 +706,27 @@ SolverInfo solve_ns_system(
     }
     else
     {
-        info = solve_ns_system_schur_parallel(
-            matrix, rhs, solution, constraints,
-            pressure_mass,
-            ux_to_ns_map, uy_to_ns_map, p_to_ns_map,
-            ns_owned, vel_owned, p_owned,
-            mpi_comm, viscosity, dt, verbose);
+        // Use the cached overload if caller provided a cache pointer; else
+        // fall back to the no-cache overload (rebuilds every call).
+        if (cached_prec != nullptr)
+        {
+            info = solve_ns_system_schur_parallel(
+                matrix, rhs, solution, constraints,
+                pressure_mass,
+                ux_to_ns_map, uy_to_ns_map, p_to_ns_map,
+                ns_owned, vel_owned, p_owned,
+                mpi_comm, viscosity, dt, verbose,
+                *cached_prec, rebuild_preconditioner);
+        }
+        else
+        {
+            info = solve_ns_system_schur_parallel(
+                matrix, rhs, solution, constraints,
+                pressure_mass,
+                ux_to_ns_map, uy_to_ns_map, p_to_ns_map,
+                ns_owned, vel_owned, p_owned,
+                mpi_comm, viscosity, dt, verbose);
+        }
 
         // Iterative → direct fallback is SAFE: matrix has not yet been pinned.
         // The pin happens inside solve_ns_system_direct_parallel itself.

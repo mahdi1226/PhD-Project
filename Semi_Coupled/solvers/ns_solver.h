@@ -8,12 +8,14 @@
 #define NS_SOLVER_H
 
 #include "solvers/solver_info.h"  // SolverInfo, LinearSolverParams
+#include "solvers/ns_block_preconditioner.h"  // BlockSchurPreconditionerParallel
 
 #include <deal.II/lac/trilinos_sparse_matrix.h>
 #include <deal.II/lac/trilinos_vector.h>
 #include <deal.II/lac/affine_constraints.h>
 #include <deal.II/dofs/dof_handler.h>
 
+#include <memory>
 #include <mpi.h>
 #include <vector>
 
@@ -24,6 +26,17 @@
 //   dt > 0:  Unsteady problem, Schur scaling alpha = nu + 1/dt
 //   dt <= 0: Steady problem, Schur scaling alpha = nu
 // ============================================================================
+/**
+ * @brief Schur-preconditioned FGMRES NS solve with optional cross-AMR caching.
+ *
+ * @param cached_prec            in/out — caller-owned preconditioner handle.
+ *                               If null or rebuild_preconditioner==true,
+ *                               BlockSchurPreconditionerParallel is freshly
+ *                               constructed (rebuilds AMG hierarchies and
+ *                               LSC L_p = B Q^-1 B^T). Otherwise reused.
+ *                               Caller must reset() after AMR.
+ * @param rebuild_preconditioner Force a rebuild even if cache exists.
+ */
 SolverInfo solve_ns_system_schur_parallel(
     const dealii::TrilinosWrappers::SparseMatrix& matrix,
     const dealii::TrilinosWrappers::MPI::Vector& rhs,
@@ -38,7 +51,28 @@ SolverInfo solve_ns_system_schur_parallel(
     const dealii::IndexSet& p_owned,
     MPI_Comm mpi_comm,
     double viscosity,
-    double dt = -1.0,      // NEW: time step for Schur scaling (negative = steady)
+    double dt,
+    bool verbose,
+    std::unique_ptr<BlockSchurPreconditionerParallel>& cached_prec,
+    bool rebuild_preconditioner);
+
+/// Backward-compat overload (no caching). Each call builds a fresh
+/// preconditioner. Use the cached overload from production callers.
+SolverInfo solve_ns_system_schur_parallel(
+    const dealii::TrilinosWrappers::SparseMatrix& matrix,
+    const dealii::TrilinosWrappers::MPI::Vector& rhs,
+    dealii::TrilinosWrappers::MPI::Vector& solution,
+    const dealii::AffineConstraints<double>& constraints,
+    const dealii::TrilinosWrappers::SparseMatrix& pressure_mass,
+    const std::vector<dealii::types::global_dof_index>& ux_to_ns_map,
+    const std::vector<dealii::types::global_dof_index>& uy_to_ns_map,
+    const std::vector<dealii::types::global_dof_index>& p_to_ns_map,
+    const dealii::IndexSet& ns_owned,
+    const dealii::IndexSet& vel_owned,
+    const dealii::IndexSet& p_owned,
+    MPI_Comm mpi_comm,
+    double viscosity,
+    double dt = -1.0,
     bool verbose = true);
 
 // ============================================================================
@@ -124,6 +158,8 @@ SolverInfo solve_ns_system(
     bool verbose = true,
     bool force_direct = false,
     bool force_iterative = false,
-    unsigned int direct_threshold = 50000);
+    unsigned int direct_threshold = 50000,
+    std::unique_ptr<BlockSchurPreconditionerParallel>* cached_prec = nullptr,
+    bool rebuild_preconditioner = true);
 
 #endif // NS_SOLVER_H

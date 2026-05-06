@@ -38,6 +38,7 @@
 
 #include "utilities/parameters.h"
 #include "solvers/solver_info.h"
+#include "solvers/ns_block_preconditioner.h"  // forward of BlockSchurPreconditionerParallel
 #include "assembly/magnetic_assembler.h"
 #include "solvers/magnetic_solver.h"
 
@@ -222,6 +223,17 @@ private:
     // ------------------------------------------------------------------------
     bool needs_mag_preconditioner_rebuild_ = true;
     unsigned int mag_iter_rebuild_threshold_ = 50;
+
+    // CH AMG cache (mirrors the magnetic-side caching). Owned here so it
+    // survives across non-AMR steps; reset on AMR via refine_mesh().
+    std::unique_ptr<dealii::TrilinosWrappers::PreconditionAMG> cached_ch_amg_;
+    bool needs_ch_preconditioner_rebuild_ = true;
+
+    // NS Schur block preconditioner cache (LSC + AMG hierarchies). Same
+    // pattern as CH/magnetic. Reset on AMR; adaptive trigger if FGMRES
+    // iter count climbs past threshold.
+    std::unique_ptr<BlockSchurPreconditionerParallel> cached_ns_schur_prec_;
+    bool needs_ns_preconditioner_rebuild_ = true;
 
     // ========================================================================
     // Navier-Stokes system (ux, uy, p)
