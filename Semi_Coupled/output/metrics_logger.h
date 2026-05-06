@@ -81,12 +81,13 @@ private:
     std::string output_dir_;
     MPI_Comm comm_;
     bool is_root_;
+    bool mms_mode_;        // gate convergence.csv on this
 
     std::ofstream diagnostics_file_;
     std::ofstream energy_file_;
     std::ofstream validation_file_;
     std::ofstream warnings_file_;
-    std::ofstream convergence_file_;
+    std::ofstream convergence_file_;  // only opened when mms_mode_ is true
 
     unsigned int step_count_;
     double E_internal_prev_;

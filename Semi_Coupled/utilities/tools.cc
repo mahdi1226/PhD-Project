@@ -15,6 +15,7 @@
 #include <sstream>
 #include <iomanip>
 #include <iostream>
+#include <filesystem>
 #include <sys/stat.h>
 
 
@@ -104,15 +105,17 @@ std::string timestamped_folder(const std::string& base,
 
 bool ensure_directory(const std::string& path)
 {
-    struct stat st;
-    if (stat(path.c_str(), &st) == 0)
-    {
-        return S_ISDIR(st.st_mode);
-    }
-
-    // Create directory with parents
-    std::string cmd = "mkdir -p " + path;
-    return system(cmd.c_str()) == 0;
+    // Use std::filesystem instead of shelling out via `system("mkdir -p ...")`.
+    // The shell version was a path-injection footgun on shared HPC (a quote
+    // or backtick in a custom run_name would let the user execute arbitrary
+    // commands). std::filesystem::create_directories is C++17 standard,
+    // does the right thing under MPI when called per-rank with the same
+    // path (idempotent), and reports failure via exception we convert to bool.
+    std::error_code ec;
+    if (std::filesystem::exists(path, ec))
+        return std::filesystem::is_directory(path, ec);
+    std::filesystem::create_directories(path, ec);
+    return !ec;
 }
 
 
@@ -290,10 +293,6 @@ void write_run_info(const std::string& output_dir,
     file << get_csv_header_stamp(params) << "\n";
     file << "============================================================\n";
 
-    // Test configuration
-    file << "TEST CONFIGURATION:\n";
-    file << "  TEST_ID             = " << TEST_ID << "\n";
-    file << "  H formula           = " << TEST_H_FORMULA << "\n";
     file << "\n";
     file.close();
     std::cout << "[Info] Run configuration saved to: " << output_dir << "/run_info.txt\n";

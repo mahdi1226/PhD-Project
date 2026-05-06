@@ -15,6 +15,7 @@ MetricsLogger::MetricsLogger(const std::string& output_dir,
     : output_dir_(output_dir)
     , comm_(comm)
     , is_root_(MPIUtils::is_root(comm))
+    , mms_mode_(params.enable_mms)
     , step_count_(0)
     , E_internal_prev_(0.0)
 {
@@ -181,6 +182,7 @@ void MetricsLogger::log_warning(unsigned int step, double time,
 void MetricsLogger::log_convergence(const ConvergenceData& data)
 {
     if (!is_root_) return;
+    if (!convergence_file_.is_open()) return;  // non-MMS run: silently no-op
 
     convergence_file_
         << data.refinement << ","
@@ -226,7 +228,13 @@ void MetricsLogger::open_files()
     energy_file_.open(output_dir_ + "/energy.csv");
     validation_file_.open(output_dir_ + "/validation_metrics.csv");
     warnings_file_.open(output_dir_ + "/warnings.csv");
-    convergence_file_.open(output_dir_ + "/convergence.csv");
+
+    // convergence.csv is only meaningful for MMS runs (per-refinement
+    // L2/H1 errors and rates). For production runs, leaving it open
+    // produced an empty file in every Results/ dir that broke downstream
+    // glob patterns and confused users.
+    if (mms_mode_)
+        convergence_file_.open(output_dir_ + "/convergence.csv");
 
     if (!diagnostics_file_.is_open())
     {
@@ -270,13 +278,16 @@ void MetricsLogger::write_headers()
         << "step,time,message"
         << "\n";
 
-    // Convergence header
-    convergence_file_
-        << "refinement,h,"
-        << "theta_L2,theta_H1,psi_L2,"
-        << "phi_L2,phi_H1,"
-        << "ux_L2,ux_H1,uy_L2,uy_H1,p_L2,divU_L2"
-        << "\n";
+    // Convergence header — only emitted in MMS mode (file is closed otherwise).
+    if (convergence_file_.is_open())
+    {
+        convergence_file_
+            << "refinement,h,"
+            << "theta_L2,theta_H1,psi_L2,"
+            << "phi_L2,phi_H1,"
+            << "ux_L2,ux_H1,uy_L2,uy_H1,p_L2,divU_L2"
+            << "\n";
+    }
 }
 
 

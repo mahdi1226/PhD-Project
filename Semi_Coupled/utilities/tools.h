@@ -22,17 +22,6 @@
 
 
 // ============================================================================
-// TEST CONFIGURATION - Change this before each test run!
-// ============================================================================
-#define TEST_ID "A"
-#define TEST_H_FORMULA ": A: H = grad_phi (both assemblers)"
-// Options:
-//   A: H = grad_phi (both assemblers)
-//   B: H = h_a - grad_phi (NS), grad_phi (Mag)
-//   C: H = h_a + grad_phi (NS), grad_phi (Mag)
-
-
-// ============================================================================
 // Timestamped Folder Generation
 // ============================================================================
 
