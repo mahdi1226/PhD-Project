@@ -152,25 +152,18 @@ MagneticDiagnostics compute_magnetic_diagnostics(
         }
     }
 
-    // φ bounds from solution vector
-    for (const auto& cell : phi_dof_handler.active_cell_iterators())
+    // φ bounds from locally-owned DoFs.
+    // Previously this was a second cell-iterator loop that re-visited every
+    // CG-shared DoF once per touching cell, allocating a fresh
+    // std::vector<global_dof_index> per cell. Replaced with a direct walk
+    // over the locally-owned IndexSet (same pattern used in ns_diagnostics
+    // for pressure bounds). Each DoF visited exactly once, no allocation.
+    const dealii::IndexSet& phi_owned = phi_solution.locally_owned_elements();
+    for (auto it = phi_owned.begin(); it != phi_owned.end(); ++it)
     {
-        if (!cell->is_locally_owned())
-            continue;
-
-        std::vector<dealii::types::global_dof_index> local_dof_indices(
-            phi_dof_handler.get_fe().dofs_per_cell);
-        cell->get_dof_indices(local_dof_indices);
-
-        for (const auto& idx : local_dof_indices)
-        {
-            if (phi_solution.locally_owned_elements().is_element(idx))
-            {
-                const double phi_val = phi_solution[idx];
-                local_phi_min = std::min(local_phi_min, phi_val);
-                local_phi_max = std::max(local_phi_max, phi_val);
-            }
-        }
+        const double phi_val = phi_solution[*it];
+        local_phi_min = std::min(local_phi_min, phi_val);
+        local_phi_max = std::max(local_phi_max, phi_val);
     }
 
     MagneticDiagnostics result;

@@ -1333,6 +1333,12 @@ void PhaseFieldProblem<dim>::output_results(const std::string& output_dir)
     {
         const dealii::QMidpoint<dim> q_mid;
 
+        // Scratch vectors hoisted out of the cell loops (A4-3): each had
+        // `std::vector<double>(1)` allocated per cell which is hot when
+        // n_cells reaches ~25k on hedgehog L5. Reuse one scratch per field.
+        std::vector<double>                  scratch_scalar(1);
+        std::vector<dealii::Tensor<1, dim>>  scratch_grad(1);
+
         if (params_.enable_ns)
         {
             dealii::FEValues<dim> fe_vel(ux_dof_handler_.get_fe(),
@@ -1343,11 +1349,12 @@ void PhaseFieldProblem<dim>::output_results(const std::string& output_dir)
                 if (cell->is_locally_owned())
                 {
                     fe_vel.reinit(cell);
-                    std::vector<double> ux_val(1), uy_val(1);
-                    fe_vel.get_function_values(ux_out, ux_val);
-                    fe_vel.get_function_values(uy_out, uy_val);
+                    fe_vel.get_function_values(ux_out, scratch_scalar);
+                    const double ux_val = scratch_scalar[0];
+                    fe_vel.get_function_values(uy_out, scratch_scalar);
+                    const double uy_val = scratch_scalar[0];
                     U_mag_cell[idx] = static_cast<float>(
-                        std::sqrt(ux_val[0]*ux_val[0] + uy_val[0]*uy_val[0]));
+                        std::sqrt(ux_val * ux_val + uy_val * uy_val));
                 }
                 ++idx;
             }
@@ -1365,39 +1372,36 @@ void PhaseFieldProblem<dim>::output_results(const std::string& output_dir)
                 if (cell->is_locally_owned())
                 {
                     fe_mag.reinit(cell);
-                    std::vector<double> mx_val(1), my_val(1);
-                    fe_mag.get_function_values(Mx_out, mx_val);
-                    fe_mag.get_function_values(My_out, my_val);
+                    fe_mag.get_function_values(Mx_out, scratch_scalar);
+                    const double mx_val = scratch_scalar[0];
+                    fe_mag.get_function_values(My_out, scratch_scalar);
+                    const double my_val = scratch_scalar[0];
                     M_mag_cell[idx] = static_cast<float>(
-                        std::sqrt(mx_val[0]*mx_val[0] + my_val[0]*my_val[0]));
+                        std::sqrt(mx_val * mx_val + my_val * my_val));
                 }
                 ++idx;
             }
             data_out.add_data_vector(M_mag_cell, "M_mag",
                                      dealii::DataOut<dim>::type_cell_data);
-        }
 
-        if (params_.enable_magnetic)
-        {
             dealii::FEValues<dim> fe_phi(phi_dof_handler_.get_fe(),
                                           q_mid, dealii::update_gradients);
-            unsigned int idx = 0;
+            idx = 0;
             for (const auto& cell : phi_dof_handler_.active_cell_iterators())
             {
                 if (cell->is_locally_owned())
                 {
                     fe_phi.reinit(cell);
-                    std::vector<dealii::Tensor<1, dim>> grad_phi(1);
-                    fe_phi.get_function_gradients(phi_out, grad_phi);
-                    H_x_cell[idx] = static_cast<float>(grad_phi[0][0]);
-                    H_y_cell[idx] = static_cast<float>(grad_phi[0][1]);
-                    H_mag_cell[idx] = static_cast<float>(grad_phi[0].norm());
+                    fe_phi.get_function_gradients(phi_out, scratch_grad);
+                    H_x_cell[idx]   = static_cast<float>(scratch_grad[0][0]);
+                    H_y_cell[idx]   = static_cast<float>(scratch_grad[0][1]);
+                    H_mag_cell[idx] = static_cast<float>(scratch_grad[0].norm());
                 }
                 ++idx;
             }
-            data_out.add_data_vector(H_x_cell, "H_x",
+            data_out.add_data_vector(H_x_cell,   "H_x",
                                      dealii::DataOut<dim>::type_cell_data);
-            data_out.add_data_vector(H_y_cell, "H_y",
+            data_out.add_data_vector(H_y_cell,   "H_y",
                                      dealii::DataOut<dim>::type_cell_data);
             data_out.add_data_vector(H_mag_cell, "H_mag",
                                      dealii::DataOut<dim>::type_cell_data);

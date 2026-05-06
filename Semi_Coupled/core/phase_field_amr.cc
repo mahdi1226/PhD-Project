@@ -285,6 +285,23 @@ void PhaseFieldProblem<dim>::refine_mesh()
     // =========================================================================
     triangulation_.execute_coarsening_and_refinement();
 
+    // Release the temporary ghosted velocity copies (A4-6). They were only
+    // needed as inputs to prepare_for_coarsening_and_refinement above; the
+    // SolutionTransfer machinery has now packed their data into the p4est
+    // internal buffer, and the input pointers are no longer dereferenced.
+    // Holding them alive across setup_*_system below would double NS-vector
+    // memory at the AMR peak (matters on L6+ runs where it can OOM).
+    //
+    // Trilinos MPI::Vector has no public clear()/free(); assigning a default-
+    // constructed instance frees the underlying Epetra storage. Magnetic
+    // mag_old_relevant_ is a long-lived ghosted member (used outside AMR),
+    // so we don't touch it here.
+    {
+        dealii::TrilinosWrappers::MPI::Vector empty;
+        ux_old_ghost = empty;
+        uy_old_ghost = empty;
+    }
+
     // =========================================================================
     // Step 8: Re-setup all systems on new mesh
     //
