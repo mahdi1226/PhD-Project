@@ -80,12 +80,20 @@ struct StepData
     // ========================================================================
     double phi_min = 0.0;
     double phi_max = 0.0;
-    double H_max = 0.0;             // max|∇φ|
-    double M_max = 0.0;             // max|M|
+    double H_max = 0.0;             // max|∇φ| (or |h_a| in use_h_a_only mode)
+    double M_max = 0.0;             // EQUILIBRIUM estimate max|χ(θ)·H|, NOT
+                                    // the solved DG-Q1 M field. Computed
+                                    // from φ + θ in compute_magnetic_diagnostics.
+                                    // Useful as a sanity check; for the true
+                                    // |M|_∞ from the M solution, use ParaView.
     double E_mag = 0.0;             // Magnetic energy (μ₀/2)∫μ_θ|H|²
     double mu_min = 1.0;
     double mu_max = 1.0;
 
+    // LEGACY: monolithic Mφ block solves (M, φ) jointly. These per-Poisson
+    // counts are always 0 in the current scheme; kept for CSV compatibility
+    // with downstream Python analysis. The actual magnetic-block iteration
+    // count goes to mag_iterations / mag_residual below.
     unsigned int poisson_iterations = 0;
     double poisson_residual = 0.0;
     double poisson_time = 0.0;

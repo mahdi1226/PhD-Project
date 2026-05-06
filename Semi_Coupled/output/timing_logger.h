@@ -20,8 +20,12 @@
 #include <iomanip>
 #include <sstream>
 
+// Memory probe: Linux uses getrusage; macOS needs Mach task_info.
 #ifdef __linux__
-#include <sys/resource.h>
+  #include <sys/resource.h>
+#elif defined(__APPLE__)
+  #include <mach/mach.h>
+  #include <mach/task_info.h>
 #endif
 
 /**
@@ -226,17 +230,28 @@ private:
     }
 
     /**
-     * @brief Get current memory usage in MB (Linux only)
+     * @brief Get current memory usage in MB.
+     *
+     * Linux: getrusage(RUSAGE_SELF).ru_maxrss (in KB).
+     * macOS: Mach task_info MACH_TASK_BASIC_INFO.resident_size (in bytes).
+     * Other:  returns 0.0.
+     *
+     * Mirrors ParallelDiagnosticsLogger::get_memory_usage_mb (kept inline
+     * here to keep TimingLogger header-only). Previously this was Linux-only
+     * → macOS dev builds silently reported memory_mb = 0 in timing.csv.
      */
     double get_memory_usage_mb() const
     {
 #ifdef __linux__
         struct rusage usage;
         if (getrusage(RUSAGE_SELF, &usage) == 0)
-        {
-            // ru_maxrss is in KB on Linux
-            return static_cast<double>(usage.ru_maxrss) / 1024.0;
-        }
+            return static_cast<double>(usage.ru_maxrss) / 1024.0;  // KB → MB
+#elif defined(__APPLE__)
+        struct mach_task_basic_info info;
+        mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
+        if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO,
+                      reinterpret_cast<task_info_t>(&info), &count) == KERN_SUCCESS)
+            return static_cast<double>(info.resident_size) / (1024.0 * 1024.0);  // B → MB
 #endif
         return 0.0;
     }

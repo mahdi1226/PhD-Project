@@ -84,21 +84,36 @@ NSDiagnostics compute_ns_diagnostics(
     const auto& ux_fe = ux_dof_handler.get_fe();
     const auto& uy_fe = uy_dof_handler.get_fe();
 
-    const unsigned int dofs_per_cell_ux = ux_fe.dofs_per_cell;
-    const unsigned int dofs_per_cell_uy = uy_fe.dofs_per_cell;
+    // Two quadratures, sharing the same FEValues call sites:
+    //   - QGauss for L2-norm-style integrals (correct quadrature accuracy).
+    //   - QGaussLobatto for max-norm sampling. Lobatto includes the cell
+    //     endpoints/vertices, so for Q2 velocities the sample points span
+    //     the support points where the polynomial maximum is most likely.
+    //     Plain QGauss systematically underestimated U_max → CFL underestimate
+    //     (A6-10 finding).
+    dealii::QGauss<dim>        q_integ(ux_fe.degree + 2);
+    dealii::QGaussLobatto<dim> q_max  (ux_fe.degree + 2);
 
-    dealii::QGauss<dim> quadrature(ux_fe.degree + 2);
-
-    dealii::FEValues<dim> ux_fe_values(
-        ux_fe, quadrature,
+    dealii::FEValues<dim> ux_int(
+        ux_fe, q_integ,
         dealii::update_values | dealii::update_gradients | dealii::update_JxW_values);
-
-    dealii::FEValues<dim> uy_fe_values(
-        uy_fe, quadrature,
+    dealii::FEValues<dim> uy_int(
+        uy_fe, q_integ,
         dealii::update_values | dealii::update_gradients);
 
-    std::vector<dealii::types::global_dof_index> ux_local_dof_indices(dofs_per_cell_ux);
-    std::vector<dealii::types::global_dof_index> uy_local_dof_indices(dofs_per_cell_uy);
+    dealii::FEValues<dim> ux_max(
+        ux_fe, q_max,
+        dealii::update_values | dealii::update_gradients);
+    dealii::FEValues<dim> uy_max(
+        uy_fe, q_max,
+        dealii::update_values | dealii::update_gradients);
+
+    // Function-value scratch (A4-2: replaces O(dofs_per_cell × n_q) manual
+    // shape_value loops with deal.II's vectorized get_function_values).
+    std::vector<double> ux_int_vals(q_integ.size()), uy_int_vals(q_integ.size());
+    std::vector<dealii::Tensor<1,dim>> ux_int_grads(q_integ.size()), uy_int_grads(q_integ.size());
+    std::vector<double> ux_max_vals(q_max.size()), uy_max_vals(q_max.size());
+    std::vector<dealii::Tensor<1,dim>> ux_max_grads(q_max.size()), uy_max_grads(q_max.size());
 
     double local_U_L2_sq        = 0.0;
     double local_kinetic_energy = 0.0;
@@ -125,47 +140,40 @@ NSDiagnostics compute_ns_diagnostics(
                 ux_cell->index(),
                 &uy_dof_handler);
 
-        ux_fe_values.reinit(ux_cell);
-        uy_fe_values.reinit(uy_cell);
+        // ---- L2 / kinetic / div integrals at Gauss points ----
+        ux_int.reinit(ux_cell);
+        uy_int.reinit(uy_cell);
+        ux_int.get_function_values   (ux_solution, ux_int_vals);
+        ux_int.get_function_gradients(ux_solution, ux_int_grads);
+        uy_int.get_function_values   (uy_solution, uy_int_vals);
+        uy_int.get_function_gradients(uy_solution, uy_int_grads);
 
-        ux_cell->get_dof_indices(ux_local_dof_indices);
-        uy_cell->get_dof_indices(uy_local_dof_indices);
-
-        for (unsigned int q = 0; q < quadrature.size(); ++q)
+        for (unsigned int q = 0; q < q_integ.size(); ++q)
         {
-            const double JxW = ux_fe_values.JxW(q);
-
-            double ux_q = 0.0;
-            dealii::Tensor<1, dim> ux_grad_q;
-            for (unsigned int i = 0; i < dofs_per_cell_ux; ++i)
-            {
-                const auto dof   = ux_local_dof_indices[i];
-                const double a_i = ux_solution[dof];
-                ux_q      += a_i * ux_fe_values.shape_value(i, q);
-                ux_grad_q += a_i * ux_fe_values.shape_grad(i, q);
-            }
-
-            double uy_q = 0.0;
-            dealii::Tensor<1, dim> uy_grad_q;
-            for (unsigned int i = 0; i < dofs_per_cell_uy; ++i)
-            {
-                const auto dof   = uy_local_dof_indices[i];
-                const double a_i = uy_solution[dof];
-                uy_q      += a_i * uy_fe_values.shape_value(i, q);
-                uy_grad_q += a_i * uy_fe_values.shape_grad(i, q);
-            }
-
-            const double U_sq   = ux_q * ux_q + uy_q * uy_q;
-            const double U_norm = std::sqrt(U_sq);
-            const double div_U  = ux_grad_q[0] + uy_grad_q[1];
+            const double JxW = ux_int.JxW(q);
+            const double ux_q = ux_int_vals[q];
+            const double uy_q = uy_int_vals[q];
+            const double U_sq = ux_q * ux_q + uy_q * uy_q;
+            const double div_U = ux_int_grads[q][0] + uy_int_grads[q][1];
 
             local_U_L2_sq        += U_sq * JxW;
             local_kinetic_energy += 0.5 * U_sq * JxW;
             local_div_U_L2_sq    += div_U * div_U * JxW;
-
-            local_U_max     = std::max(local_U_max, U_norm);
             local_div_U_max = std::max(local_div_U_max, std::abs(div_U));
+        }
 
+        // ---- max-norm sampling at Gauss-Lobatto (vertex-inclusive) points ----
+        ux_max.reinit(ux_cell);
+        uy_max.reinit(uy_cell);
+        ux_max.get_function_values   (ux_solution, ux_max_vals);
+        uy_max.get_function_values   (uy_solution, uy_max_vals);
+
+        for (unsigned int q = 0; q < q_max.size(); ++q)
+        {
+            const double ux_q = ux_max_vals[q];
+            const double uy_q = uy_max_vals[q];
+            const double U_norm = std::sqrt(ux_q * ux_q + uy_q * uy_q);
+            local_U_max  = std::max(local_U_max,  U_norm);
             local_ux_min = std::min(local_ux_min, ux_q);
             local_ux_max = std::max(local_ux_max, ux_q);
             local_uy_min = std::min(local_uy_min, uy_q);
