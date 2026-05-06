@@ -1,0 +1,500 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm,bm}
+\usepackage{stmaryrd}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\hypersetup{colorlinks=true, linkcolor=blue!60!black, urlcolor=blue!60!black}
+
+\newcommand{\bM}{\mathbf{M}}
+\newcommand{\bH}{\mathbf{H}}
+\newcommand{\bU}{\mathbf{U}}
+\newcommand{\bV}{\mathbf{V}}
+\newcommand{\bZ}{\mathbf{Z}}
+\newcommand{\bW}{\mathbf{W}}
+\newcommand{\bha}{\mathbf{h}_a}
+\newcommand{\bn}{\mathbf{n}}
+\newcommand{\Bhm}{B_h^{m}}
+\newcommand{\dt}{\tau}
+\newcommand{\Lnorm}[1]{\|#1\|_{L^2(\Omega)}}
+\newcommand{\ip}[2]{\bigl(#1,\,#2\bigr)}
+\newcommand{\PhiField}{\Phi}
+\newcommand{\ddt}{\tau}
+\newcommand{\Ctilde}{\widetilde{C}}
+
+\title{Review Notes on \emph{ferrofluid\_proofs\_v19.pdf}\\
+       \large Proposed corrections, prioritized}
+\author{}
+\date{2026-05-01}
+
+\begin{document}
+\maketitle
+
+\section*{Executive summary}
+
+Read against \texttt{ferrofluid\_proofs\_v19.pdf} (21 pp.) and the
+LaTeX source (\texttt{full.zip}, 8 files) plus the Scheme-II summary
+(\texttt{separate.zip}, \texttt{scheme\_II.pdf}).
+
+The paper's central result --- that Scheme~II (T1+T2+T3 with
+$\bU^k$ in the magnetization transport and weak-form T3) is
+\emph{unconditionally} energy-stable, has at least one solution per
+step, and converges (subsequence) to a weak solution of the continuous
+system --- is correct.  The big idea (T2--T3 cross-cancellation by
+$L^2$-symmetry of the inner product) is genuinely new relative to
+Nochetto et al.\ and Zhang et al., and the discrete energy proof
+(Section~4) executes it correctly via Lemmas~4.1, 4.2, and~4.4.
+
+That said, four items need attention before submission:
+
+\renewcommand{\arraystretch}{1.2}
+\noindent
+\begin{tabular}{@{}p{0.22\linewidth}p{0.13\linewidth}p{0.32\linewidth}p{0.27\linewidth}@{}}
+\toprule
+\textbf{Item} & \textbf{Severity} & \textbf{Where} & \textbf{Fix difficulty} \\
+\midrule
+1.\ Continuous identity typo &
+typo &
+p.\,3 of v19; \texttt{continuous\_model.tex:163} &
+trivial: 1-letter change \\
+2.\ Step 5$'$ Lemma~4.2 invocation &
+presentation &
+p.\,11 of v19; \texttt{stability.tex:559--563} &
+trivial: rephrase paragraph \\
+3.\ Self-mapping CFL formula &
+\textbf{real flaw} &
+p.\,14 of v19; \texttt{existence.tex:164,237--243} &
+moderate: re-derive $\dt_*$, update Thm.~5.4 \& Rem.~5.6 \\
+4.\ Time-derivative bound &
+needs tightening &
+p.\,17 of v19; Lemma~6.2 &
+moderate: careful Aubin--Lions or extra hypothesis \\
+\bottomrule
+\end{tabular}
+\medskip
+
+\textbf{Recommendation:} fix all four before resubmission.  Items 1
+and~2 are five-minute edits.  Item~3 is the only mathematically
+substantive change; the corrected $\dt_*$ is tighter (cubic in $h$ in
+2D) but does not threaten the convergence theorem (Theorem~6.6) since
+that theorem just operates under whatever existence-CFL holds.
+Item~4 is technical but routine.
+
+\section{Issue~1 --- continuous identity is the wrong test slot}
+
+\textbf{Where.}  \texttt{continuous\_model.tex} lines 162--164,
+rendered on p.\,3 of v19:
+
+\begin{quote}
+\dots and the identity
+$\bigl(\bM\times(\bM\times\bH),\bM\bigr)=-\|\bM\times\bH\|^2$ [Zhang--He--Yang, 2021].
+\end{quote}
+
+\textbf{Why it's wrong (pointwise).}  By BAC--CAB,
+\(
+\bM\times(\bM\times\bH) = \bM\,(\bM\!\cdot\!\bH)\;-\;\bH\,|\bM|^{2}.
+\)
+Dotting with $\bM$:
+\[
+\bigl[\bM\times(\bM\times\bH)\bigr]\!\cdot\!\bM
+= (\bM\!\cdot\!\bH)\,|\bM|^{2}\;-\;|\bM|^{2}\,(\bM\!\cdot\!\bH)\;=\;0.
+\]
+So the $L^2$ pairing $\bigl(\bM\times(\bM\times\bH),\bM\bigr)$ is
+identically zero, not $-\|\bM\times\bH\|^2$.
+
+\textbf{What's actually true.}  Dotting with $\bH$ instead:
+\[
+\bigl[\bM\times(\bM\times\bH)\bigr]\!\cdot\!\bH
+= (\bM\!\cdot\!\bH)^{2}\;-\;|\bM|^{2}|\bH|^{2}
+= -\bigl(|\bM|^{2}|\bH|^{2}-(\bM\!\cdot\!\bH)^{2}\bigr)
+= -\,|\bM\times\bH|^{2},
+\]
+using the Lagrange identity $|\bm{a}\times\bm{b}|^{2}+(\bm{a}\!\cdot\!\bm{b})^{2}
+= |\bm{a}|^{2}|\bm{b}|^{2}$.  This is exactly the content of
+Lemma~4.4(24) on p.\,8.
+
+\textbf{Impact.}  None on the discrete proof.  Step 3b of
+Theorem~4.5 (Eq.~(35), p.\,10) tests T1 with $\bH^{k}$ --- not $\bM^{k}$
+--- and correctly invokes Lemma~4.4(24) to produce
+$+\,2\mu_{0}\dt\beta\,\|\bM^{k-1}\times\bH^{k}\|^{2}$ on the LHS of the
+energy inequality.  The discrete dissipation calculation is fine.
+
+\textbf{Proposed fix.}  Replace the offending line
+(\texttt{continuous\_model.tex:162--164}) with:
+
+\begin{quote}
+\dots and the identity
+$\bigl(\bM\times(\bM\times\bH),\,\bH\bigr)=-\|\bM\times\bH\|^{2}$,
+which follows from $\bigl(\bm{a}\times(\bm{a}\times\bm{b})\bigr)\!\cdot\!\bm{b}
+= -|\bm{a}\times\bm{b}|^{2}$ (Lemma~4.4(24)).
+\end{quote}
+
+\section{Issue~2 --- Step 5$'$ uses Lemma 4.2 unnecessarily}
+
+\textbf{Where.}  \texttt{stability.tex} lines 549--567 (Step 5$'$ in
+the proof of Theorem~4.7), rendered on p.\,11 of v19.
+
+\textbf{What the text says.}  After listing the two contributions,
+\[
++\,2\dt\mu_{0}\Bhm(\bU^{k},\bH^{k},\bM^{k})\quad\text{(NS Kelvin)},
+\qquad
+-\,2\dt\mu_{0}\Bhm(\bU^{k},\bH^{k},\bM^{k})\quad\text{(Mag.\ transport)},
+\]
+the proof writes
+\begin{quote}
+``By skew-antisymmetry (Lemma~4.2):
+$\Bhm(\bU^k,\bH^k,\bM^k)+\Bhm(\bU^k,\bM^k,\bH^k)=0$, so these two
+contributions cancel exactly.''
+\end{quote}
+
+\textbf{Why this is confused.}  The two contributions share the
+\emph{same} argument order $(\bU^k,\bH^k,\bM^k)$; they cancel
+\emph{by sign}, not by skew-antisymmetry.  Lemma~4.2 governs
+swapping the second and third arguments
+($\Bhm(\bU,\bV,\bW)+\Bhm(\bU,\bW,\bV)=0$), which isn't what's
+happening here.
+
+The summary version (\texttt{scheme\_II.pdf}, p.\,3) is already
+correct on this point: it just shows the two terms cancel directly
+``by sign''.
+
+\textbf{Impact.}  None on the math.  Cosmetic only.
+
+\textbf{Proposed fix.}  Replace lines 559--563 of
+\texttt{stability.tex} with:
+
+\begin{quote}
+\noindent These two contributions have the same argument order
+$(\bU^k,\bH^k,\bM^k)$ and equal magnitude with opposite signs;
+they cancel exactly without any further identity.  In contrast to
+Scheme~I (Theorem~4.5 of v19), no remainder of the form
+$2\dt\mu_{0}\Bhm(\delta\bU^{k},\bH^{k},\bM^{k})$ appears, because
+both NS and the magnetization transport are tested at the same
+velocity time level $\bU^{k}$.  This is the principal reason
+Scheme~II has no $\mathcal{R}_{T2}^{k}$ remainder while Scheme~I
+does.
+\end{quote}
+
+(Lemma~4.2 is still used elsewhere in the proof --- specifically to
+get $\Bhm(\bU,\bV,\bV)=0$ in Lemma~4.1 --- so it stays in the
+paper.)
+
+\section{Issue~3 --- self-mapping CFL formula is too generous}
+
+This is the only mathematically substantive issue.
+
+\subsection*{The bound the proof actually establishes}
+
+\texttt{existence.tex:220--228} (Eq.~(58) of v19) gives
+\[
+\frac{\dt\,\mu_{0}^{2}}{4\alpha}
+  \|\nabla\!\times\!\widetilde{\bU}\|_{L^{\infty}}^{2}\,\Lnorm{\widetilde{\bM}}^{2}
+\;\le\;
+\frac{C_{\mathrm{inv}}^{2}\,\mu_{0}^{2}}{4\alpha\,\nu_{w}\,h^{d}}
+\,\dt\,R^{4}
+\;\equiv\;\Ctilde^{2}\,h^{-d}\,R^{4}\,\dt,
+\]
+which combined with $C_{0}\le R^{2}/2$ yields
+\begin{equation}\label{eq:bound}
+\bigl\|(\bU^{k},\bM^{k})\bigr\|_{*}^{2}
+\;\le\;
+\tfrac{1}{2}R^{2}\;+\;\Ctilde^{2}\,h^{-d}\,R^{4}\,\dt.
+\end{equation}
+
+\subsection*{What self-mapping requires}
+
+We need $\|(\bU^{k},\bM^{k})\|_{*}^{2}\le R^{2}$, i.e.,
+$\Ctilde^{2}h^{-d}R^{4}\dt\le R^{2}/2$, which gives
+\begin{equation}\label{eq:correct_tau}
+\boxed{\;\dt\;\le\;\frac{1}{2\Ctilde^{2}}\,h^{d}\,R^{-2}.\;}
+\end{equation}
+
+\subsection*{What the proof writes}
+
+\texttt{existence.tex:164}:
+\[
+\dt_{*}(h,R)\;:=\;\Ctilde^{-1}\,h^{d/2}\,R^{-1}.
+\]
+This is the \emph{square root} of the correct value~\eqref{eq:correct_tau},
+not the value itself.
+
+\subsection*{Where the proof's argument breaks}
+
+Lines 237--240 of \texttt{existence.tex} say
+\begin{quote}
+``Choosing $\dt\le\dt_{*}(h,R)=\Ctilde^{-1}h^{d/2}R^{-1}$ gives
+$\Ctilde^{2}h^{-d}R^{4}\dt\le \Ctilde\,h^{-d/2}\,R^{3}\le R^{2}/2$
+for $R\le \Ctilde^{-1}h^{d/2}$ (which holds for any fixed $h$ by
+choosing $R$ accordingly)\dots''
+\end{quote}
+
+The arithmetic of substituting $\dt=\dt_{*}$ into
+$\Ctilde^{2}h^{-d}R^{4}\dt$ is correct ($=\Ctilde\,h^{-d/2}R^{3}$).
+But the next step,
+\(
+\Ctilde\,h^{-d/2}R^{3}\le R^{2}/2,
+\)
+is \emph{equivalent to}
+\[
+R\;\le\;\frac{h^{d/2}}{2\Ctilde},
+\]
+which is a side condition the proof needs to enforce.
+
+The parenthetical claim that this ``holds for any fixed $h$ by
+choosing $R$ accordingly'' is incorrect.  $R$ is data-determined by
+\texttt{existence.tex:90}: $R^{2}=2(\mathcal{E}^{k-1}+\mathcal{F}^{*}+1)\ge 2$.
+Hence $R\ge\sqrt{2}$, independent of $h$.  As $h\to 0$, the side
+condition $R\le h^{d/2}/(2\Ctilde)$ \emph{fails} for any data with
+$\mathcal{E}^{k-1}>0$.
+
+\subsection*{Numerical illustration}
+
+Take $d=2$, $\Ctilde=1$, $R=2$, $h=10^{-2}$.
+
+\begin{itemize}
+\item Stated $\dt_{*}=h^{d/2}/(\Ctilde R)=10^{-2}/2=5\times 10^{-3}$.
+\item Required $\dt_{*}=h^{d}/(2\Ctilde^{2}R^{2})=10^{-4}/8=1.25\times 10^{-5}$.
+\item Plug stated $\dt_{*}$ into~\eqref{eq:bound}:
+\(
+\Ctilde^{2}h^{-d}R^{4}\,\dt_{*} = 1\cdot 10^{4}\cdot 16\cdot 5\!\times\!10^{-3}=800.
+\)
+This must be $\le R^{2}/2=2$.  \textbf{Off by a factor of 400.}
+\end{itemize}
+
+\subsection*{Impact}
+
+Lemma~5.2, as stated, is \emph{wrong}.  Theorem~5.4 (existence) and
+Remark~5.6 inherit the error.  However, replacing the formula with
+\eqref{eq:correct_tau} repairs the lemma without other side effects:
+\begin{itemize}
+\item Theorem~6.6 (convergence) only needs \emph{some} CFL condition
+to guarantee solutions exist along the discretization sequence.
+The corrected $\dt_{*}=O(h^{d}/R^{2})$ still goes to zero with $h$,
+so the convergence argument is unaffected.
+\item In 2D ($d=2$) the corrected CFL is $\dt\lesssim h^{2}/R^{2}$,
+roughly the standard parabolic-type CFL one expects from a
+nonlinear Brouwer fixed-point argument.  The original $\dt\lesssim
+h/R$ would have been remarkably mild for a genuinely nonlinear
+coupling and was suspicious on physical grounds.
+\end{itemize}
+
+\subsection*{Proposed fix}
+
+Replace \texttt{existence.tex:164} with:
+\begin{equation*}
+  \dt_{*}(h,R)\;:=\;\bigl(2\Ctilde^{2}\bigr)^{-1}\,h^{d}\,R^{-2}.
+\end{equation*}
+
+Replace \texttt{existence.tex:237--243} with:
+\begin{quote}
+Choosing $\dt\le\dt_{*}(h,R)=(2\Ctilde^{2})^{-1}h^{d}R^{-2}$ gives
+$\Ctilde^{2}h^{-d}R^{4}\dt\le R^{2}/2$ directly, so
+$\|(\bU^{k},\bM^{k})\|_{*}^{2}\le R^{2}$.  Since $\Ctilde$ depends
+only on $C_{\mathrm{inv}},\alpha,\mu_{0}$, and shape-regularity, and
+$R$ depends only on the data $(\mathcal{E}^{k-1},\bha^{k})$, the
+condition $\dt\le\dt_{*}(h,R)$ is non-circular.
+\end{quote}
+
+Update Theorem~5.4 statement to reflect the new $\dt_{*}$.  In
+Remark~5.6, note that the existence CFL is $O(h^{d}/R^{2})$, which
+is comparable to the parabolic-type stability constraints of related
+fully-implicit FEM schemes; uniqueness (Theorem~5.5) requires the
+even tighter $\dt\le\dt_{0}=O(h/R^{2/3})$.
+
+\section{Issue~4 --- $\partial_{t}\widehat{\bM}$ bound carries an $h^{-1}$
+factor}
+
+\textbf{Where.}  Lemma~6.2(73), \texttt{convergence.tex} (the bound on
+$\partial_{t}\widehat{\bM}_{h,\dt}$ in $L^{2}(0,T;[H^{-1}(\Omega)]^{d})$).
+
+\textbf{The issue.}  In bounding the T2 contribution
+$\tfrac{1}{2}\bigl((\nabla\!\times\!\bU^{k})\times\bM^{k},\bZ\bigr)$,
+the proof writes
+\begin{quote}
+``\dots and the inverse inequality
+$\|\nabla\!\times\!\bU^{k}\|_{L^{2}}\le C_{\mathrm{inv}}h^{-1}
+\|\bU^{k}\|_{L^{2}(\Omega)}$ for the T2 term (which contributes a
+factor $h^{-1}$, acceptable since all spaces are finite-dimensional
+for fixed~$h$)\dots''
+\end{quote}
+
+The remark ``acceptable since all spaces are finite-dimensional for
+fixed $h$'' is true, but the bound on $\partial_{t}\widehat{\bM}$
+that emerges has constant $\propto h^{-1}$.  Aubin--Lions then needs
+\emph{uniform-in-}$h$ bounds on $\partial_{t}\widehat{\bM}$ to
+extract a strongly-converging subsequence as $h\to 0$.
+
+The proof of Proposition~6.4 (\texttt{convergence.tex}, around the
+``triple $L^{2}\subset\subset H^{-\delta}\subset H^{-1}$ collapses''
+passage) acknowledges this and proposes using
+$L^{2}\hookrightarrow H^{-\delta}$ (Rellich) plus a bound in
+$L^{2}(0,T;H^{-1})$.  But that bound still degrades like $h^{-1}$.
+
+\textbf{What's needed.}  Either:
+\begin{enumerate}[leftmargin=*]
+\item Use a better functional-space pairing for the T2 term that
+avoids the $h^{-1}$ factor.  For instance, in 2D, $\nabla\!\times\!\bU^{k}$
+is a scalar, and one can bound
+$\bigl|\bigl((\nabla\!\times\!\bU^{k})\times\bM^{k},\,\bZ\bigr)\bigr|
+\le \|\nabla\bU^{k}\|_{L^{2}}\,\|\bM^{k}\|_{L^{4}}\,\|\bZ\|_{L^{4}}$,
+where $\|\bM^{k}\|_{L^{4}}$ is uniformly controlled if one assumes
+slightly more energy regularity ($L^{\infty}_{t}H^{1}_{x}$ is
+overkill; one only needs a uniform $L^{4}_{x}$ bound), and
+$\|\bZ\|_{L^{4}}\le C\|\bZ\|_{H^{1}}$ by Sobolev embedding in 2D.
+This gives a $h$-independent bound on the T2 piece.
+
+\item Or, restrict the convergence claim to the limit $h\to 0$ along
+sequences for which the T2 term remains uniformly controlled (e.g.,
+require an a-priori $L^{\infty}_{t}H^{1}_{x}$ bound on
+$\bM_{h,\dt}$, which is stronger than what Proposition~6.1
+provides).
+\end{enumerate}
+
+\textbf{Suggestion.}  Option~1 is cleaner.  In the energy
+identity~(7), the relaxation term $\frac{\mu_{0}}{T}\|\bM\|^{2}$ at
+the discrete level gives an $L^{\infty}_{t}L^{2}_{x}$ bound on
+$\bM^{k}$.  In 2D, a uniform $L^{4}_{x}$ bound on $\bM_{h,\dt}$ would
+follow if the energy controlled
+$\|\bM_{h,\dt}\|_{L^{2}_{t}H^{1}_{x}}$ --- but the energy law
+\emph{does not} give that for DG $\bM$.  One workaround is to bound
+the T2 term using the inverse inequality \emph{without} pulling out
+the $h^{-1}$, by absorbing into the Sobolev embedding constant of
+$H^{1}\hookrightarrow L^{p}$ for some $p<\infty$ in 2D.  Concrete
+plan:
+
+\begin{itemize}[leftmargin=*]
+\item In 2D: $H^{1}\hookrightarrow L^{p}$ for any $p<\infty$,
+hence $\|\bZ\|_{L^{p}}\le C_{p}\|\bZ\|_{H^{1}}$.
+\item Pick $p=4$, $q=4$ (Hölder triple $\tfrac{1}{2}+\tfrac{1}{4}+\tfrac{1}{4}=1$):
+\(
+|((\nabla\!\times\!\bU^{k})\times\bM^{k},\bZ)|\le
+\|\nabla\bU^{k}\|_{L^{2}}\,\|\bM^{k}\|_{L^{4}}\,\|\bZ\|_{L^{4}}.
+\)
+\item Bound $\|\bM^{k}\|_{L^{4}}$ via the inverse inequality
+$\|\bM^{k}\|_{L^{4}}\le C_{\mathrm{inv}}\,h^{-d/4}\|\bM^{k}\|_{L^{2}}$ ---
+this still gives an $h^{-1/2}$ in $d=2$, milder than $h^{-1}$ but
+still nonzero.
+\end{itemize}
+
+So Option~1 reduces the $h^{-1}$ to $h^{-1/2}$ but does not remove
+it entirely.  In~3D the situation is worse.  An honest fix likely
+requires either (a) restricting the convergence theorem to a regime
+where additional regularity on $\bM_{h,\dt}$ can be assumed, or (b)
+adding an $\eta\,\|\nabla\bM^{k}\|^{2}$ stabilization term to the
+discretization to recover an $H^{1}$-bound on $\bM_{h,\dt}$ at the
+expense of consistency.  Given the scope of the paper, option~(a) is
+probably more honest --- state the convergence theorem with an
+explicit additional hypothesis (uniform $L^{4}_{t,x}$ bound on
+$\bM_{h,\dt}$, say) and note that this can be relaxed to the stated
+bounds if a stronger inverse inequality / extra stabilization is
+used.  The current ``acceptable since\ldots'' remark is too quick.
+
+\section*{Things that are correct (worth keeping)}
+
+To balance the report, here is what I checked and confirmed correct:
+
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+\item \textbf{Eq.~(7), continuous energy identity.}  The
+$+\frac{2\mu_{0}\beta}{T^{2}}\|\bM\times\bH\|^{2}$ extra dissipation
+from T1 is real and follows from the corrected $\bH$-test identity.
+
+\item \textbf{Lemma 4.1, $\Bhm(\bU,\bV,\bV)=0$ when
+$\bU\!\cdot\!\bn|_{\Gamma}=0$.}  Proof proceeds correctly via cellwise
+integration by parts and the DG product rule.  The boundary
+$\bU\!\cdot\!\bn=0$ assumption is essential and is satisfied by
+$\mathcal{U}_{h}\subset[H^{1}_{0}]^{d}$.
+
+\item \textbf{Lemma 4.2, skew-antisymmetry of $\Bhm$.}  Proof uses
+$(\bU\!\cdot\!\nabla)\bV\!\cdot\!\bW + (\bU\!\cdot\!\nabla)\bW\!\cdot\!\bV
+= \bU\!\cdot\!\nabla(\bV\!\cdot\!\bW)$ and the DG product rule
+$\llbracket\bV\!\cdot\!\bW\rrbracket
+= \llbracket\bV\rrbracket\!\cdot\!\{\bW\}+\{\bV\}\!\cdot\!\llbracket\bW\rrbracket$.
+The volume--face cancellation is exact under
+$\bU\!\cdot\!\bn|_{\Gamma}=0$.  Importantly, no continuity of $\bV,\bW$
+across faces is required, so the lemma applies to DG fields.
+
+\item \textbf{Lemma 4.4, cross-product identities.}  Both items
+follow directly from BAC--CAB and the scalar triple product.
+
+\item \textbf{Theorem 4.5 (T1+T2 conditional stability for
+Scheme~I).}  Steps~1--5 carry through.  The remainder
+$\mathcal{R}_{T2}^{k}=C\mu_{0}\|\nabla\!\times\!\bU^{k-1}\|_{L^{\infty}}^{2}
+\|\bM^{k-1}\|_{L^{2}}^{2}$ correctly captures the explicit-T2
+mismatch.
+
+\item \textbf{Theorem 4.7 (T1+T2+T3 unconditional stability).}
+Steps 3a$'$ (T2 self-cancellation via Lemma~4.4(25), Eq.~(42)),
+3b$'$ (T2-with-$\bH^{k}$, Eq.~(45)), and the T2--T3 cross
+cancellation (Eq.~(46)) are correct.  Step~5$'$ Kelvin cancellation
+is also correct in substance --- only the explanatory paragraph
+needs the rephrasing in Issue~2.
+
+\item \textbf{Lemma 4.4(24)} as the genuine source of the
+$\beta$-dissipation: the H-test calculation (Eq.~(35)) is right.
+
+\item \textbf{Theorem 5.1 (Scheme~I uniqueness).}  Standard linear
+argument; correct.
+
+\item \textbf{Mass conservation (Cor.~4.9).}  Setting $\Lambda=1$ in
+the CH equation kills all terms; trivially correct.
+
+\item \textbf{Brouwer fixed-point setup (Theorem~5.4).}  The map
+$\mathcal{F}$, the absorbing ball $B_{R}$, the product-space norm
+$\|(\bV,\bZ)\|_{*}^{2}$, the continuity argument (Lemma~5.3), and
+the application of Brouwer are all standard and correct.  Only the
+self-mapping $\dt_{*}$ formula is wrong (Issue~3).
+
+\item \textbf{Theorem~5.5 (Scheme~II uniqueness).}  The
+$\dt_{0}=C_{*}^{-2/3}$ argument is standard; correct.
+
+\item \textbf{Proposition 6.1 (uniform a-priori bounds).}  Correct.
+
+\item \textbf{Proposition 6.4 weak/strong limits, except for the
+$\partial_{t}\bM$ argument noted in Issue~4.}  The strong $L^{2}$
+convergence of $\bU_{h,\dt}$, $\Theta_{h,\dt}$ via Aubin--Lions is
+correct.
+
+\item \textbf{Lemma 6.5 (nonlinear-limit identification).}  All five
+weak-$L^{1}$ limits follow from the
+strong-$\times$-weak~$\to$~weak-$L^{1}$ principle.  Correct.
+
+\item \textbf{Theorem 6.6 (main convergence).}  Modulo the
+$\partial_{t}\bM$ technicality (Issue~4), the passage to the limit
+in each scheme equation is correct, and the limit energy
+inequality~(90) follows from weak lower semicontinuity of squared
+$L^{2}$ norms plus the strong convergences from
+Proposition~6.4.
+\end{itemize}
+
+\section*{Suggested next steps}
+
+In order:
+
+\begin{enumerate}[leftmargin=*,itemsep=2pt]
+\item \textbf{Issues 1 and 2 first} --- five-minute edits, no
+mathematical work.
+\item \textbf{Issue 3 next} --- re-derive $\dt_{*}=h^{d}/(2\Ctilde^{2}R^{2})$
+in Lemma~5.2; update Theorem~5.4 and Remark~5.6 to reflect the
+tighter CFL.  Reorganize Remark~5.7 (comparison with related
+schemes) accordingly.
+\item \textbf{Issue 4 last} --- this is the only one that may
+require an additional hypothesis or a tighter compactness argument.
+Decide whether to (a) state the convergence theorem with an
+explicit additional regularity hypothesis on $\bM_{h,\dt}$ in 2D, or
+(b) add an $\eta\,\|\nabla\bM^{k}\|^{2}$ stabilization to recover an
+$H^{1}$-bound (changes the consistency analysis but is benign for
+energy stability).
+\item Once corrections are in place, compile a v20 draft and I can
+do a second pass.
+\end{enumerate}
+
+\medskip
+\noindent
+None of these changes alter the headline result that Scheme~II is
+unconditionally energy-stable, has at least one solution per step,
+and produces subsequences converging to a weak solution of the full
+Shliomis--Nochetto system with T1, T2, and T3.
+
+\end{document}

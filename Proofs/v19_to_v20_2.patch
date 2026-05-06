@@ -1,0 +1,390 @@
+--- /tmp/proofs_unpacked/continuous_model.tex	2026-05-04 19:12:06
++++ /tmp/proofs_v20/continuous_model.tex	2026-05-04 15:03:06
+@@ -160,8 +160,11 @@
+ (antisymmetry); the Poisson equation to convert the
+ $\nabla\phi$-equation to a term involving $\partial_t\mathbf{M}$;
+ and the identity
+-$\ip{\mathbf{M}\times(\mathbf{M}\times\mathbf{H})}{\mathbf{M}}
+-= -\|\mathbf{M}\times\mathbf{H}\|^2$~\cite{Zhang2021}.
++$\ip{\mathbf{M}\times(\mathbf{M}\times\mathbf{H})}{\mathbf{H}}
++= -\|\mathbf{M}\times\mathbf{H}\|^2$, which follows pointwise from
++$\bigl(\bm{a}\times(\bm{a}\times\bm{b})\bigr)\cdot\bm{b}
++= -|\bm{a}\times\bm{b}|^2$ (Lemma~\ref{lem:vec};
++cf.~\cite{Zhang2021}).
+ 
+ \begin{remark}[Positivity of dissipation and the role of $\chi_0 < 4$]
+ \label{rem:pos_diss}
+@@ -256,8 +259,9 @@
+ system~\eqref{eq:CH_strong}--\eqref{eq:poisson_strong}
+ for $\beta=0$ was established in~\cite{Nochetto2016}.
+ The $\beta>0$ case follows analogously, using the identity
+-$\ip{\mathbf{M}\times(\mathbf{M}\times\mathbf{H})}{\mathbf{M}}
+-= -\|\mathbf{M}\times\mathbf{H}\|^2\le 0$,
++$\ip{\mathbf{M}\times(\mathbf{M}\times\mathbf{H})}{\mathbf{H}}
++= -\|\mathbf{M}\times\mathbf{H}\|^2\le 0$ (test with $\mathbf{H}$,
++not $\mathbf{M}$; cf.\ Lemma~\ref{lem:vec}),
+ which shows the T1 term contributes additional dissipation
+ in the energy estimate.
+ The present paper does not revisit continuous well-posedness;
+--- /tmp/proofs_unpacked/scheme.tex	2026-05-04 19:12:06
++++ /tmp/proofs_v20/scheme.tex	2026-05-04 15:14:07
+@@ -91,7 +91,7 @@
+   \label{eq:scheme_a}\\[4pt]
+   \ip{\Psi^k}{\Upsilon}
+   + \eps\ip{\nabla\Theta^k}{\nabla\Upsilon}
+-  + \tfrac{1}{\eps}\ip{f(\Theta^{k-1})}{\Upsilon}
++  + \tfrac{1}{\eps}\ip{f'(\Theta^{k-1})}{\Upsilon}
+   + \tfrac{1}{\eta}\ip{\delta\Theta^k}{\Upsilon}
+   &= 0,
+   \label{eq:scheme_b}\\[4pt]
+--- /tmp/proofs_unpacked/stability.tex	2026-05-04 19:12:06
++++ /tmp/proofs_v20/stability.tex	2026-05-04 14:51:11
+@@ -551,21 +551,31 @@
+ 
+ In Scheme~II, the magnetization transport uses $\bU^k$
+ (see~\eqref{eq:scheme_IIc} and Remark~\ref{rem:T2_time}).
+-From Step~2, the NS Kelvin force tested with $\bV=2\ddt\bU^k$ gives
++From Step~2, the NS Kelvin force tested with $\bV=2\ddt\bU^k$
++contributes
+ $+2\ddt\mu_0\Bhm(\bU^k,\bH^k,\bM^k)$.
+ The magnetization transport tested with $\bZ=2\ddt\mu_0\bH^k$
+-(using $\Bhm(\bU^k,\bZ,\bM^k)$ from~\eqref{eq:scheme_IIc}) gives
++(using $-\Bhm(\bU^k,\bZ,\bM^k)$ from~\eqref{eq:scheme_IIc}) contributes
+ $-2\ddt\mu_0\Bhm(\bU^k,\bH^k,\bM^k)$.
+-By skew-antisymmetry (Lemma~\ref{lem:skewanti}):
+-\begin{equation}\label{eq:kelvin_cancel}
+-  \Bhm(\bU^k,\bH^k,\bM^k) + \Bhm(\bU^k,\bM^k,\bH^k) = 0,
++The two contributions share the same argument order
++$(\bU^k,\bH^k,\bM^k)$ and equal magnitude with opposite signs:
++\begin{equation}\label{eq:kelvin_cancel}
++  +2\ddt\mu_0\Bhm(\bU^k,\bH^k,\bM^k)
++  \;-\;2\ddt\mu_0\Bhm(\bU^k,\bH^k,\bM^k)\;=\;0,
+ \end{equation}
+-so these two contributions cancel exactly.
++so they cancel exactly without any further identity.
+ No mismatch term of the form~\eqref{eq:kelvin_mismatch} arises
+-because both NS and the magnetization transport use $\bU^k$.
+-This is the principal reason Scheme~II has no remainder while
+-Scheme~I does.
++because both NS and the magnetization transport are tested at the
++same velocity time level $\bU^k$.
++This is the principal reason Scheme~II has no
++$\mathcal{R}^k_{\mathrm{T2}}$ remainder while Scheme~I does.
+ 
++(Skew-antisymmetry of $\Bhm$ in the second and third arguments
++(Lemma~\ref{lem:skewanti}) is still used elsewhere --- in particular
++to derive the cell-and-face cancellations behind
++$\Bhm(\bU,\bV,\bV)=0$ (Lemma~\ref{lem:skew}) --- but is not
++needed here.)
++
+ \medskip
+ \noindent\textbf{Assembly.}
+ Since $\mathcal{R}^k_{\mathrm{T2}}=0$
+--- /tmp/proofs_unpacked/existence.tex	2026-05-04 19:12:06
++++ /tmp/proofs_v20/existence.tex	2026-05-04 15:19:13
+@@ -96,16 +96,17 @@
+ Existence is established via the Brouwer fixed-point theorem.
+ Throughout this subsection we write
+ \begin{equation}\label{eq:Yh_def}
+-  \mathcal{Y}_h \;:=\; \mathcal{Y}_h
++  \mathcal{Z}_h \;:=\; \Uhsp\times\Mhsp
+ \end{equation}
+-for the product space, and we note that all constants $C$,
++for the product space (note: distinct from the chemical-potential
++space $\Yhsp$ in~\eqref{eq:spaces}), and we note that all constants $C$,
+ $\widetilde{C}$, $C_0$ depend only on physical parameters
+ ($\nu_w$, $\mu_0$, $T$, $\chi_0$) and mesh shape-regularity,
+ but are independent of $h$ and $\ddt$.
+ 
+ \subsubsection*{The fixed-point map}
+ 
+-Given $(\tilde\bU,\tilde\bM)\in\mathcal{Y}_h$, let
++Given $(\tilde\bU,\tilde\bM)\in\mathcal{Z}_h$, let
+ $(\bU^k[\tilde\bU,\tilde\bM],\bM^k[\tilde\bU,\tilde\bM])$
+ denote the unique solution of the \emph{linearized} Scheme~II:
+ Scheme~I with T2 replaced by the known source
+@@ -128,7 +129,7 @@
+ \end{equation}
+ which is the relaxation coefficient appearing in the energy
+ estimate (positive under $\chi_0 < 4$).
+-We work in $\mathcal{Y}_h$ equipped with the norm
++We work in $\mathcal{Z}_h$ equipped with the norm
+ \begin{equation}\label{eq:FP_norm}
+   \norm{(\bV,\bZ)}_*^2
+   \;:=\;
+@@ -154,17 +155,17 @@
+ for all $\ddt\le 1$).
+ Define
+ \begin{equation}\label{eq:ball}
+-  B_R \;:=\; \bigl\{(\tilde\bU,\tilde\bM)\in\mathcal{Y}_h
++  B_R \;:=\; \bigl\{(\tilde\bU,\tilde\bM)\in\mathcal{Z}_h
+                : \norm{(\tilde\bU,\tilde\bM)}_*\le R\bigr\}.
+ \end{equation}
+ 
+ \begin{lemma}[Self-mapping]\label{lem:selfmap}
+ There exists
+ \begin{equation}\label{eq:tau_star}
+-  \tau_*(h,R) \;:=\; \widetilde{C}^{-1}\,h^{d/2}\,R^{-1},
++  \tau_*(h,R) \;:=\; \bigl(2\widetilde{C}^{2}\bigr)^{-1}\,h^{d}\,R^{-2},
+ \end{equation}
+ where $\widetilde{C}>0$ depends only on $C_{\mathrm{inv}}$,
+-$\alpha$, $\mu_0$, and shape-regularity constants
++$\alpha$, $\mu_0$, $\nu_w$, and shape-regularity constants
+ (not on $\ddt$, $h$, or any iterate), such that for
+ $\ddt\le\tau_*(h,R)$: $\mathcal{F}(B_R)\subset B_R$.
+ \end{lemma}
+@@ -234,13 +235,15 @@
+   C_0 + \widetilde{C}^2\,h^{-d}\,R^4\,\ddt,
+ \end{equation}
+ where $C_0 \le R^2/2$ by definition~\eqref{eq:ball_R} of $R$.
+-Choosing $\ddt\le\tau_*(h,R) = \widetilde{C}^{-1}h^{d/2}R^{-1}$
+-gives $\widetilde{C}^2 h^{-d} R^4\ddt \le \widetilde{C}\,h^{-d/2}\,R^3\le R^2/2$
+-for $R\le \widetilde{C}^{-1}h^{d/2}$
+-(which holds for any fixed $h$ by choosing $R$ accordingly),
+-so $\norm{(\bU^k,\bM^k)}_*\le R$.
+-Since $R$ and $\widetilde{C}$ are both independent of $\ddt$,
+-the condition $\ddt\le\tau_*(h,R)$ is non-circular.
++The remainder term in~\eqref{eq:selfmap_ineq} satisfies
++$\widetilde{C}^2 h^{-d} R^4\,\ddt\le R^2/2$ \emph{iff}
++$\ddt\le (2\widetilde{C}^2)^{-1}\,h^{d}\,R^{-2}=\tau_*(h,R)$.
++Choosing $\ddt\le\tau_*(h,R)$ therefore gives
++$\norm{(\bU^k,\bM^k)}_*^2\le R^2$, i.e.\ $\mathcal{F}(B_R)\subset B_R$.
++Since $R$ depends only on the data $(\mathcal{E}^{k-1},\bha^k)$
++(via~\eqref{eq:ball_R}) and $\widetilde{C}$ depends only on
++$(C_{\mathrm{inv}},\alpha,\mu_0,\nu_w)$ and shape-regularity, the
++condition $\ddt\le\tau_*(h,R)$ is non-circular.
+ \end{proof}
+ 
+ \begin{lemma}[Continuity of $\mathcal{F}$]\label{lem:continuity}
+@@ -272,7 +275,7 @@
+ 
+ \begin{proof}
+ Since $\Uhsp$ and $\Mhsp$ are finite-dimensional vector spaces,
+-the product $\mathcal{Y}_h$ is a finite-dimensional Euclidean
++the product $\mathcal{Z}_h$ is a finite-dimensional Euclidean
+ space and Brouwer's theorem applies.
+ $B_R$ is a convex compact subset of this space.
+ By Lemmas~\ref{lem:selfmap}--\ref{lem:continuity},
+@@ -342,16 +345,16 @@
+ \noindent\emph{First term:}
+ Using the trilinearity bound~\eqref{eq:Bhm_bound} and
+ $\Lnorm{\bM^k_1}\le\mu_0^{-1/2}R$:
+-\begin{equation}\label{eq:diff_T2_bound}
++\begin{multline}\label{eq:diff_T2_bound}
+   \mu_0\ddt
+   \bigl|\ip{(\nabla\times e_\bU)\times\bM^k_1}{e_\bM}\bigr|
+   \;\le\;
+   C_{\mathrm{inv}}\mu_0\ddt\,h^{-1}\,\mu_0^{-1/2}R\,
+-  \Lnorm{e_\bU}\Lnorm{e_\bM}
++  \Lnorm{e_\bU}\Lnorm{e_\bM}\\
+   \;\le\;
+   \frac{C^2_*\ddt^2}{2}\,\triplenorm{(e_\bU,e_\bM)}^2
+   +\frac{1}{2\ddt}\triplenorm{(e_\bU,e_\bM)}^2,
+-\end{equation}
++\end{multline}
+ where $C_* = C_{\mathrm{inv}}\mu_0^{1/2}h^{-1}R$ and the
+ last step uses Young's inequality with parameter $\ddt$.
+ 
+@@ -375,22 +378,35 @@
+ then follows from the argument of Theorem~\ref{thm:exist_I}.
+ \end{proof}
+ 
+-\begin{remark}[Stability vs.\ uniqueness]\label{rem:stab_vs_unique}
+-The condition $\ddt<\tau_0$ in Theorem~\ref{thm:unique_II}
+-governs uniqueness only.
+-Theorem~\ref{thm:stab123} establishes unconditional energy
+-stability for all $\ddt>0$ and all $h>0$.
+-The uniqueness restriction arises because the nonlinear T2 term
+-in Scheme~II couples $(\bU^k,\bM^k)$ at the current time level:
+-a contractivity argument for the difference of two solutions
+-requires $\ddt$ to be small enough that the nonlinear coupling
+-does not create a second branch.
+-The constant $\tau_0\sim h/R^{2/3}$ depends on the mesh and the
+-energy level, and is typically far above accuracy-driven time steps
+-in practice.
+-For Scheme~I, no such condition is needed: the fully explicit
++\begin{remark}[Stability vs.\ existence vs.\ uniqueness]
++\label{rem:stab_vs_unique}
++Theorem~\ref{thm:stab123} establishes \emph{unconditional} energy
++stability for Scheme~II: it holds for all $\ddt>0$ and all $h>0$.
++Existence and uniqueness, however, both require time-step
++restrictions because the nonlinear T2 term in Scheme~II couples
++$(\bU^k,\bM^k)$ at the current time level.
++\begin{itemize}[leftmargin=*]
++\item \emph{Existence} (Theorem~\ref{thm:exist_II}) requires
++$\ddt\le\tau_*(h,R)=(2\widetilde{C}^2)^{-1}\,h^d\,R^{-2}$,
++arising from the absorbing-ball self-mapping argument.
++In two dimensions this is a parabolic-type CFL,
++$\tau_*\sim h^2/R^2$, which is the standard restriction one
++expects for a fully nonlinear Brouwer fixed-point construction.
++\item \emph{Uniqueness} (Theorem~\ref{thm:unique_II}) requires
++$\ddt<\tau_0=C_*^{-2/3}\sim h^{2/3}/R^{2/3}$,
++arising from a contractivity argument for the difference of two
++solutions.
++\end{itemize}
++For typical data with $R\ge\sqrt{2}$ and $h\ll R$, one has
++$\tau_*\ll\tau_0$, so the existence-CFL is the binding constraint
++in practice; whenever existence is achieved, uniqueness is
++automatic.
++
++Both restrictions depend on the mesh and the energy level, and are
++typically far below accuracy-driven time steps.
++For Scheme~I, neither condition is needed: the fully explicit
+ T2 term makes the system linear and unconditionally uniquely
+-solvable.
++solvable (Theorem~\ref{thm:exist_I}).
+ \end{remark}
+ 
+ \begin{remark}[Comparison with related schemes]\label{rem:exist_compare}
+--- /tmp/proofs_unpacked/convergence.tex	2026-05-04 19:12:06
++++ /tmp/proofs_v20/convergence.tex	2026-05-04 15:16:23
+@@ -12,6 +12,32 @@
+ $\chi_0 < 4$, $\beta T\le 1$, and
+ $\bha\in L^2(0,T;[H^1(\Omega)]^d)$.
+ 
++\begin{assumption}[Spatial integrability of $\bM_{h,\ddt}$]
++\label{ass:M_L4}
++We assume that the discrete magnetization satisfies a uniform
++$L^4_{t,x}$ bound:
++\begin{equation}\label{eq:M_L4}
++  \sup_{(h,\ddt)}
++  \,\|\bar\bM_{h,\ddt}\|_{L^4(0,T;\,L^4(\Omega)^d)}
++  \;\le\; C,
++\end{equation}
++with $C$ independent of $h$ and $\ddt$ but depending on the data
++$(\mathcal{E}^0,\bha)$.
++This regularity is not implied by the discrete energy
++law~\eqref{eq:stab123_sum} for the DG space
++$\mathcal{M}_h\subset[L^2(\Omega)]^d$ (which only
++controls $\bar\bM_{h,\ddt}$ in $L^\infty(0,T;L^2(\Omega)^d)$),
++but is needed to obtain a uniform-in-$h$ bound on
++$\partial_t\hat\bM_{h,\ddt}$ in a negative-order space and hence
++to apply the Aubin--Lions theorem to the magnetization.
++In two dimensions, \eqref{eq:M_L4} can equivalently be enforced by
++adding a small $\eta\,\|\nabla\bM^k\|^2_{L^2}$ stabilization term
++to the Cahn--Hilliard--magnetization coupling at the cost of
++modifying the consistency analysis; we work directly under
++Assumption~\ref{ass:M_L4} to keep the scheme as stated in
++Section~\ref{sec:scheme}.
++\end{assumption}
++
+ % ============================================================
+ \subsection{Piecewise-Constant and Piecewise-Linear Extensions}
+ \label{subsec:extensions}
+@@ -110,16 +136,17 @@
+ $H^1$-projection onto $\Uhsp$, which satisfies
+ $\Lnorm{\nabla\bV}\le C$ uniformly.
+ Test~\eqref{eq:scheme_IIe} with $\bV$:
+-\[
++\begin{align*}
+   \bigl|\ip{\delta\bU^k/\ddt}{\bV}\bigr|
+-  \le
++  &\le
+   \bigl|\Bh(\bU^{k-1},\bU^k,\bV)\bigr|
+   +\bigl|\ip{\nu_\Theta\mathbf{T}(\bU^k)}{\mathbf{T}(\bV)}\bigr|
+-  +\bigl|\ip{P^k}{\nabla\cdot\bV}\bigr|
++  +\bigl|\ip{P^k}{\nabla\cdot\bV}\bigr|\\
++  &\quad
+   +\mu_0\bigl|\Bhm(\bV,\bH^k,\bM^k)\bigr|
+   +\tfrac{\lambda}{\eps}\bigl|\ip{\Theta^{k-1}\nabla\Psi^k}{\bV}\bigr|
+   + |\text{T3}|.
+-\]
++\end{align*}
+ Each term on the right is bounded using:
+ the skew-symmetry of $\Bh$ and
+ $\Lnorm{\bU^{k-1}}\le C$ for the advection;
+@@ -138,34 +165,50 @@
+ \emph{Bound~\eqref{eq:dt_M}.}
+ Test~\eqref{eq:scheme_IIc} with $\bZ=\mathcal{P}_h\boldsymbol{\psi}$ for
+ $\boldsymbol{\psi}\in[H^1(\Omega)]^d$, $\norm{\boldsymbol{\psi}}_{H^1}\le 1$:
+-\[
++\begin{align*}
+   \bigl|\ip{\delta\bM^k/\ddt}{\bZ}\bigr|
+-  \le
++  &\le
+   \bigl|\Bhm(\bU^k,\bZ,\bM^k)\bigr|
+-  +\tfrac{1}{T}\bigl|\ip{\bM^k-\chiT\bH^k}{\bZ}\bigr|
++  +\tfrac{1}{T}\bigl|\ip{\bM^k-\chiT\bH^k}{\bZ}\bigr|\\
++  &\quad
+   +\beta\bigl|\ip{\bM^{k-1}\times(\bM^{k-1}\times\bH^k)}{\bZ}\bigr|
+   +\tfrac{1}{2}\bigl|\ip{(\nabla\times\bU^k)\times\bM^k}{\bZ}\bigr|.
+-\]
++\end{align*}
+ Each term is bounded using the trilinearity of $\Bhm$, the
+ uniform bounds on $\bM^k$, $\bH^k$, and $\bU^k$ from
+-Proposition~\ref{prop:bounds}, and the inverse inequality
+-$\Lnorm{\nabla\times\bU^k}\le C_{\mathrm{inv}}h^{-1}\Lnorm{\bU^k}$
+-for the T2 term (which contributes a factor $h^{-1}$,
+-acceptable since all spaces are finite-dimensional for fixed $h$).
++Proposition~\ref{prop:bounds}.
++The T2 term requires more care.  In two dimensions, the Sobolev
++embedding $H^1(\Omega)\hookrightarrow L^4(\Omega)$ gives
++$\|\bZ\|_{L^4}\le C\|\bZ\|_{H^1}\le C$, so by H\"older's
++inequality with the triple
++$\tfrac12+\tfrac14+\tfrac14=1$:
++\begin{equation}\label{eq:T2_holder}
++  \bigl|\ip{(\nabla\times\bU^k)\times\bM^k}{\bZ}\bigr|
++  \;\le\;
++  \|\nabla\bU^k\|_{L^2}\,\|\bM^k\|_{L^4}\,\|\bZ\|_{L^4}
++  \;\le\;
++  C\,\|\nabla\bU^k\|_{L^2}\,\|\bM^k\|_{L^4}.
++\end{equation}
++Squaring~\eqref{eq:T2_holder}, summing over $k$, and multiplying
++by $\ddt$ gives a contribution bounded by
++$C\,\|\bar\bU\|_{L^2(0,T;H^1)}^2\,
++ \|\bar\bM_{h,\ddt}\|_{L^4(0,T;L^4)}^2$, which is uniformly
++bounded by Proposition~\ref{prop:bounds} and
++Assumption~\ref{ass:M_L4}.
+ Summing in $k$ gives~\eqref{eq:dt_M}.
+ 
+ \emph{Bound~\eqref{eq:dt_theta}.}
+ Test~\eqref{eq:scheme_a} with $\Lambda=\mathcal{P}_h\phi$ for
+ $\phi\in H^1(\Omega)$, $\norm{\phi}_{H^1}\le 1$:
+-\[
++\begin{align*}
+   \bigl|\ip{\delta\Theta^k/\ddt}{\Lambda}\bigr|
+-  \le
++  &\le
+   \bigl|\ip{\bU^{k-1}\Theta^{k-1}}{\nabla\Lambda}\bigr|
+-  +\gamma\bigl|\ip{\nabla\Psi^k}{\nabla\Lambda}\bigr|
+-  \le
++  +\gamma\bigl|\ip{\nabla\Psi^k}{\nabla\Lambda}\bigr|\\
++  &\le
+   \Lnorm{\bU^{k-1}}\Lnorm{\Theta^{k-1}}\Lnorm{\nabla\Lambda}
+   +\gamma\Lnorm{\nabla\Psi^k}\Lnorm{\nabla\Lambda}.
+-\]
++\end{align*}
+ Using $\Lnorm{\bU^{k-1}},\Lnorm{\Theta^{k-1}},\Lnorm{\nabla\Psi^k}\le C$
+ and summing gives~\eqref{eq:dt_theta}.
+ \end{proof}
+@@ -278,9 +321,14 @@
+ 
+ For $\bM$: Proposition~\ref{prop:bounds} gives
+ $\hat\bM_{h,\ddt}$ bounded in $L^\infty(0,T;L^2(\Omega))$
+-(hence in $L^2(0,T;L^2(\Omega))$), and
+-Lemma~\ref{lem:time_deriv}\eqref{eq:dt_M} gives
+-$\partial_t\hat\bM_{h,\ddt}$ bounded in $L^2(0,T;H^{-1}(\Omega))$.
++(hence in $L^2(0,T;L^2(\Omega))$).
++Under Assumption~\ref{ass:M_L4}, the bound on
++$\partial_t\hat\bM_{h,\ddt}$ derived in
++Lemma~\ref{lem:time_deriv}\eqref{eq:dt_M} from~\eqref{eq:T2_holder}
++is uniform in $h$, since $\|\bar\bM_{h,\ddt}\|_{L^4(L^4)}\le C$
++controls the only nonstandard factor in the T2 estimate.
++Hence $\partial_t\hat\bM_{h,\ddt}$ is uniformly bounded in
++$L^2(0,T;H^{-1}(\Omega))$.
+ The triple $L^2(\Omega)\subset\subset L^2(\Omega)$ collapses,
+ so we use instead the triple
+ $L^2(\Omega)\subset\subset H^{-\delta}(\Omega)\subset H^{-1}(\Omega)$
+@@ -494,8 +542,10 @@
+ \begin{theorem}[Convergence to a weak solution]
+ \label{thm:convergence}
+ Under the conditions of Theorems~\ref{thm:stab123}
+-and~\ref{thm:unique_II}, and with
+-$\bha\in L^2(0,T;[H^1(\Omega)]^d)$, let
++and~\ref{thm:unique_II}, with
++$\bha\in L^2(0,T;[H^1(\Omega)]^d)$, and assuming
++Assumption~\ref{ass:M_L4} (uniform $L^4_{t,x}$ bound on
++$\bar\bM_{h,\ddt}$), let
+ $\{(\bar\bU_{h,\ddt},\bar\bM_{h,\ddt},\bar\PhiField_{h,\ddt},
+     \bar\Theta_{h,\ddt},\bar\Psi_{h,\ddt},\bar P_{h,\ddt})\}$
+ be the sequence of piecewise-constant extensions of Scheme~II
