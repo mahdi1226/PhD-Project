@@ -1,0 +1,4 @@
+frame,y_sample,n_zero_crossings,n_spikes,mean_crossing_spacing,std_crossing_spacing,dominant_wavelength_fft
+solution__45000,0.18,4,2,0.08796790655824614,0.07304783270040006,0.25
+solution__48000,0.18,4,2,0.087927427941067,0.07179655438817742,0.25
+solution__50000,0.18,4,2,0.08784263703321583,0.0712108798727388,0.25
