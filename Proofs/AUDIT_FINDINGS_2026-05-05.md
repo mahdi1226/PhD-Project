@@ -233,3 +233,86 @@ Most consequential:
 - A2-19 (zero-RHS handling) and A2-3 (CH AMG cache) deferred
 
 *Verified and consolidated 2026-05-05 evening. Plan: implement Rounds 1-4 in this session; commit per-tier.*
+
+---
+
+## ✅ Status — end of 2026-05-05 session
+
+| Round | Commit | Status |
+|---|---|---|
+| Round 1 — Tier-1 correctness | `2ed5ae1` | ✅ shipped (6 bugs fixed, 2 downgraded after verification) |
+| Round 2 — Diagnostic clarity | `e7b45b3` | ✅ shipped (M_max docstring, CFL via Lobatto, macOS memory) |
+| Round 3 — Small perf wins | `b32fcec` | ✅ shipped (output allocs, magnetic dedup, AMR memory) |
+| Round 4 — Tree hygiene | `674e2b2` | ✅ shipped (TEST_ID, dead params, ensure_directory, convergence.csv gate, stray PNG) |
+
+VTK output cadence (`9c7a253`) shipped earlier in this session. All five
+audit-related commits are on `rosensweig-working` ahead of origin by 5
+commits.
+
+## 🚧 Deferred to next session
+
+### High-value perf
+- **A4-1** NS Schur preconditioner cross-AMR cache. Estimated 15-30% step
+  time recoverable. Requires moving `BlockSchurPreconditionerParallel` from
+  a `solve_ns_system_schur_parallel` local to a `unique_ptr` member of
+  `PhaseFieldProblem`, with a `needs_ns_preconditioner_rebuild_` flag set
+  on AMR (mirroring the `needs_mag_preconditioner_rebuild_` pattern).
+  Touches: `solvers/ns_solver.{cc,h}`, `solvers/ns_block_preconditioner.{cc,h}`,
+  `core/phase_field.{cc,h}`. ~1 day of work + validation.
+- **A2-3** CH solver AMG cache. Same shape as A4-1 but smaller. CH is
+  faster than NS, less impact (~5-10% step time), but the same refactor
+  pattern applies. Likely lump with A4-1.
+
+### Silent stubs
+- **A3-1** `mms/magnetic/magnetic_mms_test.h:47-72` magnetic standalone /
+  single-level MMS runners are stubs. MAGNETIC_STANDALONE / MAG_TEMPORAL
+  always FAIL even on correct code. Either implement or remove.
+- **A5-5** `mms/mms_core/long_duration_mms.cc:675-735`
+  `run_ch_ns_long_duration_mms` and `run_full_long_duration_mms` are stubs
+  printing "Not yet implemented". Wired into dispatcher → silent-success
+  risk if anyone runs them in CI.
+
+### Build / test infra
+- **A7-16** Top-level `CMakeLists.txt` has no `enable_testing()` /
+  `add_test()`. CI cannot run regressions via `ctest`. Add explicit
+  `add_test(NAME mms_ch_standalone COMMAND mpirun -np 2 …)` for each
+  parallel_test_* target.
+- **A7-15** `mms/ns/ns_variable_nu_mms_test.cc` — orphan source not in
+  CMakeLists. The companion `mms/ns/STALE_ns_variable_nu.md` documents
+  the variable-ν files as STALE; verify the `_test.cc` is included in the
+  STALE list or delete it.
+
+### Defensive correctness (low priority)
+- **A2-1** CH solver `constraints.distribute(coupled_solution)` on an
+  owned-only Trilinos vector. MMS rates at optimum suggest deal.II handles
+  it correctly via internal ghost copy, but a defensive refactor (use
+  ghosted intermediate) is safer for hanging-node-on-rank-boundary cases.
+- **A2-19** CH solver: when `rhs.l2_norm() == 0` exactly, `tol = rel·norm`
+  becomes 0, GMRES never converges → spurious NoConvergence and direct
+  fallback fires. Use `max(rel·norm, abs_tol)`.
+- **A6-7, A6-17** `interface_tracking.h` and `validation_diagnostics.cc`
+  read DoFs without locally-owned check on non-ghosted vectors. Has not
+  bitten yet but is fragile.
+
+### Benchmarks (need hedgehog to finish)
+- Confirm A4-1 / A4-2 / A4-3 perf estimates with real wall-time deltas.
+- Compare LSC vs direct on hedgehog L5 (the original Plan A/B perf goal).
+- Validate cache invariants by running `--iterative_mag` with vs without
+  Plan A on a 200-step dome L5 and confirming matching diagnostics.csv.
+
+### Documentation tasks
+- **A6-12** `force_diagnostics.h:117-147` — header comment claims one
+  formula, implementation computes a different (truncated) form. Either
+  rename `F_mag_max` → `F_mag_interface_max` or include the missing
+  `∇|H|²` term.
+- **A6-22/23** Drop unused StepData fields (`poisson_iterations`,
+  `ns_inner_iterations`) from CSV header — risks breaking Python
+  analysis, so do alongside an analyzer update.
+- **A4-1 / A2-3 etc.** all need to land before SCHEME_II branch starts;
+  T1+T2+T3 work assumes a clean and fast Nochetto base.
+
+---
+
+*Last updated 2026-05-05 night. Total: 5 audit-related commits on
+`rosensweig-working`. Tree is clean for current scope; deferred list
+above guides the next cleanup pass.*
